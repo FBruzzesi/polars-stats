@@ -1,0 +1,19 @@
+[package]
+name = "polars-stats"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "polars_stats"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py39"] }
+pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-struct", "dtype-array"] }
+serde = { version = "1", features = ["derive"] }
+polars = { version = "0.52.0", default-features = false, features = ["dtype-u8"] }
+polars-arrow = { version = "0.52.0", default-features = false }
+statrs = "0.18.0"
+rand = "0.8"
+rand_chacha = "0.3"
+

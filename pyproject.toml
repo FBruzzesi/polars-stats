@@ -1,0 +1,148 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0", "polars>=1.3.0"]
+build-backend = "maturin"
+
+[project]
+name = "polars-stats"
+description = "Probability distributions in polars"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{ name = "Francesco Bruzzesi"}]
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Rust",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed"
+]
+
+dynamic = ["version"]
+dependencies = [
+    "polars>=1.3.0",
+]
+
+[tool.maturin]
+module-name = "polars_stats._internal"
+
+[[tool.mypy.overrides]]
+module = "polars.utils.udfs"
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "maturin>=1.13.1",
+]
+testing = [
+    "numpy>=2.2.6",
+    "pytest>=8.3.5",
+]
+typing = [
+    "mypy>=1.14.1",
+    "pyrefly>=0.62.0",
+    "pyright>=1.1.409",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "error",
+]
+xfail_strict = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+fix = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "COM812",
+  "D100",  # Checks for undocumented public module definitions.
+  "D104",  # Checks for undocumented public package definitions.
+  "D107",  # Checks for public __init__ method definitions that are missing docstrings.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  "D",
+  "S101",
+  "UP",
+  "SLF",
+]
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pylint]
+max-args = 6
+
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+disallow_untyped_defs = true
+disallow_any_unimported = true
+no_implicit_optional = true
+check_untyped_defs = true
+warn_return_any = true
+show_error_codes = true
+warn_unused_ignores = true
+pretty = true
+strict = true
+files = ["polars_stats", "tests"]
+
+[tool.pyright]
+pythonPlatform = "All"
+pythonVersion = "3.10"
+reportMissingTypeStubs = "none"
+reportPrivateUsage = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownLambdaType = "none"
+reportUnusedFunction = "none"
+enableExperimentalFeatures = true
+typeCheckingMode = "strict"
+include = ["polars_stats", "tests"]
+
+[tool.coverage.run]
+plugins = ["covdefaults"]
+
+[tool.coverage.report]
+fail_under = 95
+omit = [
+  "polars_stats/typing.py",
+]
+
+[tool.rumdl]
+line-length = 120
+flavor = "mkdocs"
+include = ["docs/**", "README.md", "AGENTS.md"]
+disable = [
+  # NOTE: These look like either false positives or unsupported case
+  # TODO(FBruzzesi): Report upstream
+  # No blank line after admonition block
+  "MD031",
+  # Use fenced code blocks
+  "MD046",
+]
+
+[tool.rumdl.MD007]
+# Keep list indentation consistent
+indent = 4
+start-indented = false
