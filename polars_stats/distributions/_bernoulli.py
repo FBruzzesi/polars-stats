@@ -24,11 +24,9 @@ class Bernoulli:
             if not 0.0 <= p <= 1.0:
                 msg = f"p must be in the [0, 1] range, found {p}"
                 raise ValueError(msg)
-            # Expand the scalar to a length-N expression so the plugin always
-            # receives a row-aligned input. This lets the call stay
-            # `is_elementwise=True`, which is what makes `over` / `group_by`
-            # invoke the function once per partition rather than treating it
-            # as an aggregation.
+            # Expand the scalar to a length-N expression so the plugin always receives a row-aligned input.
+            # This lets the call stay `is_elementwise=True`, which is what makes `over` / `group_by`
+            # invoke the function once per partition rather than treating it as an aggregation.
             self._p = pl.repeat(p, n=pl.len(), dtype=pl.Float64())
         else:
             msg = f"p should be either a pl.Expr or float, found {type(p)}"

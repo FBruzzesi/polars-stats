@@ -25,7 +25,7 @@ def _frame(size: int = _DEFAULT_SIZE) -> pl.DataFrame:
 @pytest.mark.parametrize("size", [0, 100, 1_000])
 def test_sample_basice_properties(size: int) -> None:
     result = _frame(size=size).lazy().with_columns(bernoulli=Bernoulli(p=0.5).sample(seed=_SEED))
-    assert result.collect_schema()["bernoulli"] == pl.UInt8
+    assert result.collect_schema()["bernoulli"] == pl.Boolean
     assert set(result.collect()["bernoulli"].to_list()) <= {0, 1}
     assert result.collect().height == size
 
@@ -49,7 +49,7 @@ def test_sample_different_seeds_differ(p: float | pl.Expr) -> None:
 @pytest.mark.parametrize("p", [0.0, 1.0])
 def test_sample_extreme_p(p: float) -> None:
     result = _frame().with_columns(b=Bernoulli(p=p).sample(seed=7))
-    assert result["b"].eq(p).all()
+    assert result["b"].eq(bool(p)).all()
 
 
 @pytest.mark.parametrize("p", [0.0, 0.3, 0.5, 0.8, 1.0])
@@ -72,7 +72,7 @@ def test_sample_with_column_p_per_row() -> None:
     p_values = [0.0, 1.0, 0.0, 1.0, 0.0]
     dframe = pl.DataFrame({"p": p_values})
     result = dframe.with_columns(b=Bernoulli(p=pl.col("p")).sample(seed=_SEED))
-    assert result["b"].to_list() == p_values
+    assert result["b"].to_list() == [bool(v) for v in p_values]
 
 
 @pytest.mark.parametrize("bad_p", [-0.1, 1.5, float("nan")])
@@ -95,7 +95,7 @@ def test_sample_multi_columns() -> None:
     dframe = _frame()
     bernoulli_expr = Bernoulli(p=pl.col("p1", "p2"))
     result = dframe.with_columns(bernoulli_expr.sample(seed=_SEED).name.suffix("_b"))
-    assert result.schema == pl.Schema(dframe.schema | {"p1_b": pl.UInt8(), "p2_b": pl.UInt8()})
+    assert result.schema == pl.Schema(dframe.schema | {"p1_b": pl.Boolean(), "p2_b": pl.Boolean()})
 
 
 def test_sample_in_select_returns_full_length() -> None:
@@ -105,7 +105,7 @@ def test_sample_in_select_returns_full_length() -> None:
     assert result.height == n
 
     series = result.get_column("b")
-    assert series.dtype == pl.UInt8
+    assert series.dtype == pl.Boolean
     assert set(series.unique().to_list()) == {0, 1}
 
 
@@ -116,7 +116,7 @@ def test_sample_in_with_columns_is_not_constant_broadcast() -> None:
     assert result.height == n
 
     series = result.get_column("b")
-    assert series.dtype == pl.UInt8
+    assert series.dtype == pl.Boolean
     assert set(series.unique().to_list()) == {0, 1}
 
 

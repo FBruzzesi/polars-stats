@@ -26,7 +26,7 @@ fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
 /// `NaN` or out-of-range raises `InvalidOperation`.
 ///
 /// Returns a `UInt8` series of 0/1, with nulls propagated from `p`.
-#[polars_expr(output_type=UInt8)]
+#[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: BernoulliSampleKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
     let proba_ca = proba.f64()?;
@@ -42,5 +42,5 @@ fn bernoulli_sample(inputs: &[Series], kwargs: BernoulliSampleKwargs) -> PolarsR
         Ok::<bool, PolarsError>(<Bernoulli as Distribution<bool>>::sample(&dist, &mut rng))
     })?;
 
-    ca.with_name(name).into_series().cast(&DataType::UInt8)
+    Ok(ca.with_name(name).into_series())
 }
