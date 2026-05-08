@@ -20,12 +20,13 @@ fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
 
 /// Element-wise Bernoulli sampler.
 ///
-/// `inputs[0]` carries the success probability, one per row (the Python side
-/// expands a scalar `p` to a length-N expression so this function never has
-/// to special-case broadcast). Per-row validation: `null` propagates;
-/// `NaN` or out-of-range raises `InvalidOperation`.
+/// `inputs[0]` carries the success probability (one per row).
 ///
-/// Returns a `UInt8` series of 0/1, with nulls propagated from `p`.
+/// Per-row validation:
+///   * `null` propagates;
+///   * `NaN` or out-of-range raises `InvalidOperation`.
+///
+/// Returns a `Boolean` series, with nulls propagated from `p`.
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: BernoulliSampleKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;

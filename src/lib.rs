@@ -1,4 +1,4 @@
-mod expressions;
+mod distributions;
 
 use pyo3::prelude::*;
 use pyo3_polars::PolarsAllocator;
