@@ -6,12 +6,13 @@ import polars as pl
 from polars.plugins import register_plugin_function
 
 from polars_stats._lib import LIB
+from polars_stats.distributions._base import DiscreteDistribution
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn
 
 
-class Bernoulli:
+class Bernoulli(DiscreteDistribution):
     """Bernoulli distribution with success probability ``p``.
 
     Arguments:
@@ -48,3 +49,31 @@ class Bernoulli:
             kwargs={"seed": seed},
             is_elementwise=True,
         )
+
+    def samples(self, size: int, seed: int | None = None) -> pl.Expr:
+        msg = "samples is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def cdf(self, value: float | pl.Expr) -> pl.Expr:
+        msg = "cdf is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def ppf(self, quantile: float | pl.Expr) -> pl.Expr:
+        msg = "ppf is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def mean(self) -> pl.Expr:
+        msg = "mean is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def variance(self) -> pl.Expr:
+        msg = "variance is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def entropy(self) -> pl.Expr:
+        msg = "entropy is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
+
+    def pmf(self, value: float | pl.Expr) -> pl.Expr:
+        msg = "pmf is not yet implemented for Bernoulli"
+        raise NotImplementedError(msg)
