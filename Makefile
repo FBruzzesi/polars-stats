@@ -1,13 +1,13 @@
 SHELL=/bin/bash
 
 lint:
-	cargo +nightly fmt --all 
-	cargo clippy --all-features
 	uvx ruff version
-	uvx ruff format .
-	uvx ruff check . --fix
+	uvx ruff format polars_stats tests
+	uvx ruff check polars_stats tests --fix
 	uvx ruff clean
 	uvx rumdl check .
+	cargo +nightly fmt --all
+	cargo clippy --all-features
 
 test:
 	uv run --group testing pytest tests
