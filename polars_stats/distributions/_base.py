@@ -105,7 +105,6 @@ class ContinuousDistribution(_UnivariateDistribution, ABC):
     def pdf(self, value: float | pl.Expr) -> pl.Expr:
         """Probability density function evaluated at `value`."""
 
-    @abstractmethod
     def log_pdf(self, value: float | pl.Expr) -> pl.Expr:
         """Natural logarithm of the pdf."""
         return self.pdf(value).log()
