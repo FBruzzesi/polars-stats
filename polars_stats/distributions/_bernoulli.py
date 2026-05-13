@@ -55,8 +55,6 @@ class Bernoulli(DiscreteDistribution):
         )
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
-        msg = "samples is not yet implemented for Bernoulli"
-        raise NotImplementedError(msg)
         return register_plugin_function(
             args=[self._p],
             plugin_path=LIB,
