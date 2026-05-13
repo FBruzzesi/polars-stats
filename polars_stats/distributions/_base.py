@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import random
 from abc import ABC, abstractmethod
+from itertools import repeat
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import polars as pl
+import polars as pl
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # TODO(FBruzzesi): Investigate better implementations for log_* methods over
 # the naive ones due to concerns on numerical stability
@@ -28,12 +31,21 @@ class _UnivariateDistribution(ABC):
         Returns a polars Expr evaluating to a column with one variate per input row.
         """
 
-    @abstractmethod
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
         """Draw `size` random variates per row.
 
         Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.
+
+        When ``seed`` is set, distinct sub-seeds are derived from it so the `size` underlying ``sample`` calls
+        produce independent streams. Without this, every plugin call would re-seed the same RNG and yield
+        ``size`` identical columns.
         """
+        rng = random.Random(seed)  # noqa: S311
+        seeds: Iterable[int] | Iterable[None] = (
+            repeat(None, size) if seed is None else (rng.randrange(2**64) for _ in range(size))
+        )
+
+        return pl.concat_arr(self.sample(seed=s) for s in seeds)
 
     @abstractmethod
     def cdf(self, value: float | pl.Expr) -> pl.Expr:

@@ -50,16 +50,7 @@ class Bernoulli(DiscreteDistribution):
             args=[self._p],
             plugin_path=LIB,
             function_name="bernoulli_sample",
-            kwargs={"size": 1, "seed": seed},  #  size is unused, passed for compatibility
-            is_elementwise=True,
-        )
-
-    def samples(self, size: int, seed: int | None = None) -> pl.Expr:
-        return register_plugin_function(
-            args=[self._p],
-            plugin_path=LIB,
-            function_name="bernoulli_samples",
-            kwargs={"size": size, "seed": seed},
+            kwargs={"seed": seed},
             is_elementwise=True,
         )
 

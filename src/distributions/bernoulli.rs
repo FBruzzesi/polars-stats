@@ -9,7 +9,6 @@ use statrs::distribution::Bernoulli;
 
 #[derive(Deserialize)]
 struct BernoulliSampleKwargs {
-    size: u64,
     seed: Option<u64>,
 }
 
@@ -45,42 +44,4 @@ fn bernoulli_sample(inputs: &[Series], kwargs: BernoulliSampleKwargs) -> PolarsR
     })?;
 
     Ok(ca.with_name(name).into_series())
-}
-
-fn list_bool_output(input_fields: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new(
-        input_fields[0].name().clone(),
-        DataType::List(Box::new(DataType::Boolean)),
-    ))
-}
-
-#[polars_expr(output_type_func=list_bool_output)]
-fn bernoulli_samples(inputs: &[Series], kwargs: BernoulliSampleKwargs) -> PolarsResult<Series> {
-    let proba = inputs[0].cast(&DataType::Float64)?;
-    let proba_ca = proba.f64()?;
-    let name = inputs[0].name().clone();
-
-    let mut rng = match kwargs.seed {
-        Some(s) => ChaCha20Rng::seed_from_u64(s),
-        None => ChaCha20Rng::from_entropy(),
-    };
-
-    let size = kwargs.size as usize;
-    let len = proba_ca.len();
-
-    let mut builder = ListBooleanChunkedBuilder::new(name, len, len * size);
-
-    for opt_p in proba_ca.iter() {
-        match opt_p {
-            None => builder.append_null(),
-            Some(p) => {
-                let dist = build_dist(p)?;
-                let row: Vec<Option<bool>> =
-                    dist.sample_iter(&mut rng).take(size).map(Some).collect();
-                builder.append_iter(row.into_iter());
-            }
-        }
-    }
-
-    Ok(builder.finish().into_series())
 }
