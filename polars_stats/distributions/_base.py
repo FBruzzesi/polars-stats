@@ -42,7 +42,7 @@ class _UnivariateDistribution(ABC):
         """
         rng = random.Random(seed)  # noqa: S311
         seeds: Iterable[int] | Iterable[None] = (
-            repeat(None, size) if seed is None else (rng.randrange(2**64) for _ in range(size))
+            repeat(None, size) if seed is None else (rng.randrange(2**63) for _ in range(size))
         )
 
         return pl.concat_arr(self.sample(seed=s) for s in seeds)
