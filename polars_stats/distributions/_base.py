@@ -31,7 +31,7 @@ class _UnivariateDistribution(ABC):
         Returns a polars Expr evaluating to a column with one variate per input row.
         """
 
-    def samples(self, size: int, seed: int | None = None) -> pl.Expr:
+    def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
         """Draw `size` random variates per row.
 
         Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.

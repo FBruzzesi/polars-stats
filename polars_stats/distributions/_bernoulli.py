@@ -54,6 +54,19 @@ class Bernoulli(DiscreteDistribution):
             is_elementwise=True,
         )
 
+    def samples(self, size: int, seed: int | None = None) -> pl.Expr:
+        """Draw `size` Bernoulli samples per row, returning an expression of type ``Array(Boolean, size)``.
+
+        When ``seed`` is set, distinct sub-seeds are derived from it so the `size` underlying ``sample`` calls
+        produce independent streams. Without this, every plugin call would re-seed the same RNG and yield
+        ``size`` identical columns.
+        """
+        return (
+            pl.when(self._p.is_not_null())
+            .then(self._samples(size=size, seed=seed))
+            .otherwise(pl.lit(None, dtype=pl.Array(pl.Boolean(), shape=size)))
+        )
+
     def pmf(self, value: float | pl.Expr) -> pl.Expr:
         """Probability mass function. Returns ``1 - p`` at 0, ``p`` at 1, and ``0`` elsewhere."""
         v = value if isinstance(value, pl.Expr) else pl.lit(value)
