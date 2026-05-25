@@ -41,3 +41,9 @@ def frame(rng: np.random.Generator) -> Callable[..., pl.DataFrame]:
 def unit_frame() -> pl.DataFrame:
     """Single-row frame for evaluating scalar-output expressions."""
     return pl.DataFrame({"_": [0]})
+
+
+@pytest.fixture
+def p_with_null() -> pl.DataFrame:
+    """A `p` column with a null in the middle row: (0.3, null, 0.8)."""
+    return pl.DataFrame({"p": [0.3, None, 0.8]}, schema={"p": pl.Float64})

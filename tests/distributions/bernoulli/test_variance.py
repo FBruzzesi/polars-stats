@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from polars.testing import assert_series_equal
 
 from polars_stats import Bernoulli
 
@@ -15,5 +16,12 @@ def test_variance_scalar(p: float, unit_frame: pl.DataFrame) -> None:
 def test_variance_column_p() -> None:
     probs = [0.1, 0.4, 0.6, 0.9]
     df = pl.DataFrame({"p": probs})
-    out = df.select(v=Bernoulli(p=pl.col("p")).variance())["v"].to_list()
-    assert out == pytest.approx([x * (1 - x) for x in probs])
+    result = df.select(v=Bernoulli(p=pl.col("p")).variance())["v"]
+    expected = pl.Series("v", [x * (1 - x) for x in probs], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_variance_propagates_null_in_p(p_with_null: pl.DataFrame) -> None:
+    result = p_with_null.select(v=Bernoulli(p=pl.col("p")).variance())["v"]
+    expected = pl.Series("v", [0.3 * 0.7, None, 0.8 * 0.2], dtype=pl.Float64)
+    assert_series_equal(result, expected)

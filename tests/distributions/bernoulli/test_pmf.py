@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+from polars.testing import assert_series_equal
 
 from polars_stats import Bernoulli
 
@@ -35,7 +36,28 @@ def test_pmf_scalar_p(
 def test_pmf_column_p() -> None:
     probs = [0.1, 0.4, 0.6, 0.9]
     df = pl.DataFrame({"p": probs})
-    pmf_at_1 = df.select(v=Bernoulli(p=pl.col("p")).pmf(1))["v"].to_list()
-    pmf_at_0 = df.select(v=Bernoulli(p=pl.col("p")).pmf(0))["v"].to_list()
-    assert pmf_at_1 == pytest.approx(probs)
-    assert pmf_at_0 == pytest.approx([1 - x for x in probs])
+    pmf_at_1 = df.select(v=Bernoulli(p=pl.col("p")).pmf(1))["v"]
+    pmf_at_0 = df.select(v=Bernoulli(p=pl.col("p")).pmf(0))["v"]
+    assert_series_equal(pmf_at_1, pl.Series("v", probs, dtype=pl.Float64))
+    assert_series_equal(pmf_at_0, pl.Series("v", [1 - x for x in probs], dtype=pl.Float64))
+
+
+def test_pmf_column_value() -> None:
+    p = 0.3
+    df = pl.DataFrame({"v": [-1, 0, 1, 2]}, schema={"v": pl.Int64})
+    result = df.select(r=Bernoulli(p=p).pmf(pl.col("v")))["r"]
+    expected = pl.Series("r", [0.0, 1 - p, p, 0.0], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_pmf_propagates_null_in_value() -> None:
+    df = pl.DataFrame({"v": [0, None, 1]}, schema={"v": pl.Int64})
+    result = df.select(r=Bernoulli(p=0.3).pmf(pl.col("v")))["r"]
+    expected = pl.Series("r", [0.7, None, 0.3], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_pmf_propagates_null_in_p(p_with_null: pl.DataFrame) -> None:
+    result = p_with_null.select(r=Bernoulli(p=pl.col("p")).pmf(1))["r"]
+    expected = pl.Series("r", [0.3, None, 0.8], dtype=pl.Float64)
+    assert_series_equal(result, expected)

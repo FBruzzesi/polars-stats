@@ -207,8 +207,12 @@ def test_sample_in_group_by_draws_per_group(seed: int) -> None:
 
 def test_sample_over_partitions_draws_per_partition(seed: int) -> None:
     # `over` evaluates the expression per window and aligns back to row order.
-    # We need: full length output, both 0 and 1 present, and seed reproducibility
-    # across two identical calls (the elementwise-optimization concern).
+    # Requirements:
+    #   1. full-length output;
+    #   2. seed reproducibility across two identical calls;
+    #   3. partitions are NOT identical sequences. If polars reseeds the RNG per partition,
+    #      every group would receive the same draw vector. With p=0.5 and 200 draws per
+    #      group the per-group sums would then collide on a single value; check they vary.
     n_per_group = 200
     n_groups = 20
     dframe = pl.DataFrame({"group": np.repeat(np.arange(n_groups), n_per_group)})
@@ -217,3 +221,22 @@ def test_sample_over_partitions_draws_per_partition(seed: int) -> None:
     assert s1.len() == n_groups * n_per_group
     assert set(s1.unique().to_list()) == {0, 1}
     assert_series_equal(s1, s2)
+
+    per_group_sums = (
+        dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=seed).over("group"))
+        .group_by("group")
+        .agg(pl.col("b").sum())
+        .get_column("b")
+        .to_list()
+    )
+    assert len(set(per_group_sums)) > 1
+
+
+def test_sample_unseeded_produces_variability(frame: Callable[..., pl.DataFrame]) -> None:
+    # Without a seed, two successive draws on the same frame should not collide. They are not
+    # required to be statistically independent, but `assert_series_not_equal` is sufficient
+    # to catch the pathological case where `seed=None` accidentally became deterministic.
+    dframe = frame(size=512)
+    s1 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=None))["b"]
+    s2 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=None))["b"]
+    assert_series_not_equal(s1, s2)

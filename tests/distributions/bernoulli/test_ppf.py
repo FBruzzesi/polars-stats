@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from polars.testing import assert_series_equal
 
 from polars_stats import Bernoulli
 
@@ -24,9 +25,15 @@ def test_ppf_scalar(p: float, quantile: float, *, expected: bool, unit_frame: pl
     assert out is expected
 
 
-def test_ppf_propagates_null() -> None:
+def test_ppf_propagates_null_in_quantile() -> None:
     df = pl.DataFrame({"q": [0.1, None, 0.9]}, schema={"q": pl.Float64})
-    out = df.select(v=Bernoulli(p=0.3).ppf(pl.col("q")))["v"].to_list()
-    assert out[1] is None
-    assert out[0] is False
-    assert out[2] is True
+    result = df.select(v=Bernoulli(p=0.3).ppf(pl.col("q")))["v"]
+    expected = pl.Series("v", [False, None, True], dtype=pl.Boolean)
+    assert_series_equal(result, expected)
+
+
+def test_ppf_propagates_null_in_p(p_with_null: pl.DataFrame) -> None:
+    # ppf(0.5) is False when p <= 0.5, True when p > 0.5, null when p is null.
+    result = p_with_null.select(v=Bernoulli(p=pl.col("p")).ppf(0.5))["v"]
+    expected = pl.Series("v", [False, None, True], dtype=pl.Boolean)
+    assert_series_equal(result, expected)

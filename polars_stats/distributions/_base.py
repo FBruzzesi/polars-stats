@@ -70,7 +70,9 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | pl.Expr) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        `quantile` must lie in `[0, 1]`. Nulls are propagated; any other out-of-range value raises an error.
+        `quantile` is expected to lie in `[0, 1]`. Nulls are propagated. Behaviour for out-of-range
+        quantiles is implementation-defined and should not be relied on; callers are responsible for
+        bounding `quantile` upstream when the source allows invalid values.
         """
 
     def isf(self, quantile: float | pl.Expr) -> pl.Expr:

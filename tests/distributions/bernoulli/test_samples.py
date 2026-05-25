@@ -55,3 +55,21 @@ def test_samples_mean_close_to_p_for_large_total(
     result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"]
     flat = np.asarray(result.to_list(), dtype=float).ravel()
     assert abs(flat.mean() - p) < tolerance
+
+
+@pytest.mark.parametrize("bad_size", [0, -1])
+def test_samples_rejects_non_positive_size(bad_size: int) -> None:
+    with pytest.raises(ValueError, match="size must be a positive integer"):
+        Bernoulli(p=0.5).samples(size=bad_size, seed=0)
+
+
+def test_samples_null_p_row_is_null_array(seed: int) -> None:
+    # When `p` is null on a row, the entire array for that row must be null,
+    # not an array of inner-null elements (which would still be a non-null array).
+    size = 4
+    dframe = pl.DataFrame({"p": [0.5, None, 0.5]}, schema={"p": pl.Float64})
+    result = dframe.select(s=Bernoulli(p=pl.col("p")).samples(size=size, seed=seed))["s"]
+    assert result.dtype == pl.Array(pl.Boolean, size)
+    assert result.item(1) is None
+    assert result.item(0) is not None
+    assert result.item(2) is not None

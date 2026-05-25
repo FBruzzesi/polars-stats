@@ -61,6 +61,9 @@ class Bernoulli(DiscreteDistribution):
         produce independent streams. Without this, every plugin call would re-seed the same RNG and yield
         ``size`` identical columns.
         """
+        if size <= 0:
+            msg = f"size must be a positive integer, got {size}"
+            raise ValueError(msg)
         return (
             pl.when(self._p.is_not_null())
             .then(self._samples(size=size, seed=seed))
@@ -68,17 +71,39 @@ class Bernoulli(DiscreteDistribution):
         )
 
     def pmf(self, value: float | pl.Expr) -> pl.Expr:
-        """Probability mass function. Returns ``1 - p`` at 0, ``p`` at 1, and ``0`` elsewhere."""
+        """Probability mass function. Returns ``1 - p`` at 0, ``p`` at 1, and ``0`` elsewhere.
+
+        Nulls in ``value`` are propagated.
+        """
         v = value if isinstance(value, pl.Expr) else pl.lit(value)
-        return pl.when(v.eq(0)).then(1 - self._p).when(v.eq(1)).then(self._p).otherwise(0.0)
+        # Null predicates in `when` collapse to the `otherwise` branch, so an explicit guard is needed
+        # to propagate nulls from `value` instead of silently returning 0.0.
+        return (
+            pl.when(v.is_null())
+            .then(pl.lit(None, dtype=pl.Float64))
+            .when(v.eq(0))
+            .then(1 - self._p)
+            .when(v.eq(1))
+            .then(self._p)
+            .otherwise(0.0)
+        )
 
     def cdf(self, value: float | pl.Expr) -> pl.Expr:
         """Cumulative distribution function.
 
         Piecewise constant: ``0`` for ``value < 0``, ``1 - p`` for ``0 <= value < 1``, ``1`` for ``value >= 1``.
+        Nulls in ``value`` are propagated.
         """
         v = value if isinstance(value, pl.Expr) else pl.lit(value)
-        return pl.when(v.lt(0)).then(0.0).when(v.lt(1)).then(1 - self._p).otherwise(1.0)
+        return (
+            pl.when(v.is_null())
+            .then(pl.lit(None, dtype=pl.Float64))
+            .when(v.lt(0))
+            .then(0.0)
+            .when(v.lt(1))
+            .then(1 - self._p)
+            .otherwise(1.0)
+        )
 
     def ppf(self, quantile: float | pl.Expr) -> pl.Expr:
         """Percent point function (inverse cdf).
