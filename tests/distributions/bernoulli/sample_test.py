@@ -214,29 +214,47 @@ def test_sample_in_group_by_draws_per_group(seed: int) -> None:
 
 def test_sample_over_partitions_draws_per_partition(seed: int) -> None:
     # `over` evaluates the expression per window and aligns back to row order.
-    # Requirements:
+    # Under genuine elementwise semantics, draws depend only on (seed, row index, p).
+    # `pl.len()` inside `over` is the partition length, so every partition sees the
+    # same per-row indices 0..n-1. Requirements:
     #   1. full-length output;
     #   2. seed reproducibility across two identical calls;
-    #   3. partitions are NOT identical sequences. If polars reseeds the RNG per partition,
-    #      every group would receive the same draw vector. With p=0.5 and 200 draws per
-    #      group the per-group sums would then collide on a single value; check they vary.
+    #   3. with constant p + constant seed, per-partition sums are identical (deterministic);
+    #   4. with per-row p, per-partition sums vary.
+    local_rng = np.random.default_rng(seed=seed)
     n_per_group = 200
     n_groups = 20
-    dframe = pl.DataFrame({"group": np.repeat(np.arange(n_groups), n_per_group)})
+    dframe = pl.DataFrame(
+        {
+            "group": np.repeat(np.arange(n_groups), n_per_group),
+            "probas": local_rng.uniform(0.01, 0.99, size=n_groups * n_per_group),
+        },
+    )
     s1 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=seed).over("group"))["b"]
     s2 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=seed).over("group"))["b"]
     assert s1.len() == n_groups * n_per_group
     assert set(s1.unique().to_list()) == {0, 1}
     assert_series_equal(s1, s2)
 
-    per_group_sums = (
+    sums_p05 = (
         dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=seed).over("group"))
-        .group_by("group")
+        .group_by("group", maintain_order=True)
         .agg(pl.col("b").sum())
         .get_column("b")
         .to_list()
     )
-    assert len(set(per_group_sums)) > 1
+    # Constant p + constant seed + same per-partition indices => identical sums.
+    assert len(set(sums_p05)) == 1
+
+    sums_probas = (
+        dframe.with_columns(b=Bernoulli(p=pl.col("probas")).sample(seed=seed).over("group"))
+        .group_by("group", maintain_order=True)
+        .agg(pl.col("b").sum())
+        .get_column("b")
+        .to_list()
+    )
+    # Per-row p varies across partitions, so per-partition sums must vary too.
+    assert len(set(sums_probas)) > 1
 
 
 def test_sample_unseeded_produces_variability(frame: Callable[..., pl.DataFrame]) -> None:

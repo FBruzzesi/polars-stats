@@ -123,6 +123,10 @@ enableExperimentalFeatures = true
 typeCheckingMode = "strict"
 include = ["polars_stats", "tests"]
 
+[tool.pyrefly]
+project-includes = ["polars_stats", "tests"]
+search_path = ["polars_stats", "tests"]
+
 [tool.coverage.run]
 plugins = ["covdefaults"]
 
