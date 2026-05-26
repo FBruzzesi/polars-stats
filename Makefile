@@ -6,7 +6,7 @@ lint:
 	uvx ruff check polars_stats tests --fix
 	uvx ruff clean
 	uvx rumdl check .
-	cargo +nightly fmt --all
+	cargo +nightly fmt --all --check
 	cargo clippy --all-features
 
 test:
