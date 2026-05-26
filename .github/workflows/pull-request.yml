@@ -1,0 +1,188 @@
+---
+
+name: Pull Request
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUSTFLAGS: "-Dwarnings"
+  CARGO_TERM_COLOR: always
+  TYPING_PYTHON_VERSION: "3.13"
+  PYTHON_VERSIONS_LATEST: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
+  PYTHON_VERSIONS_OLDEST: '["3.10", "3.11", "3.12"]'
+  POLARS_OLDEST: "1.4.0"
+
+jobs:
+  # `strategy.matrix` cannot read the workflow-level `env` context, so this
+  # job re-publishes the version lists as job outputs. Downstream matrices
+  # then read them via `needs.setup.outputs.*`, keeping `env:` above as the
+  # single source of truth.
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      python-versions-latest: ${{ env.PYTHON_VERSIONS_LATEST }}
+      python-versions-oldest: ${{ env.PYTHON_VERSIONS_OLDEST }}
+      polars-oldest: ${{ env.POLARS_OLDEST }}
+    steps:
+      - run: 'true'
+
+  ruff:
+    name: lint / ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: ruff format
+        run: uvx ruff format --check polars_stats tests
+      - name: ruff check
+        run: uvx ruff check --no-fix polars_stats tests
+
+  rumdl:
+    name: lint / rumdl
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: rumdl check
+        run: uvx rumdl check .
+
+  rust-lint:
+    name: lint / cargo fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+  # Build the extension once as an abi3 wheel. The `abi3-py39` pyo3 feature
+  # means a single wheel runs on every CPython >= 3.9, so downstream
+  # typing / test jobs just download and pip-install it.
+  build:
+    name: build wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.10"
+          enable-cache: true
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-wheel
+      - name: Build abi3 wheel
+        run: uvx maturin build --release --out dist
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  typing:
+    name: typing
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.TYPING_PYTHON_VERSION }}
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Sync project dependencies
+        run: uv sync --group typing --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      - name: Show resolved dependencies
+        run: uv export --no-annotate --no-hashes --group typing --group testing
+      - name: pyrefly
+        run: uv run --no-sync pyrefly check polars_stats tests
+      - name: pyright
+        run: uv run --no-sync pyright polars_stats tests
+      - name: mypy
+        run: uv run --no-sync mypy polars_stats tests
+
+  test-latest:
+    name: test-latest / py${{ matrix.python-version }}
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions-latest) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Sync project dependencies
+        run: uv sync --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      - name: Show resolved dependencies
+        run: uv export --no-annotate --no-hashes --group testing
+      - name: Run tests
+        run: uv run --no-sync pytest tests
+
+  test-oldest:
+    name: test-oldest / py${{ matrix.python-version }} polars-${{ needs.setup.outputs.polars-oldest }}
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions-oldest) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Sync project dependencies
+        run: uv sync --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      - name: Pin polars to oldest supported version
+        run: uv pip install "polars==${{ needs.setup.outputs.polars-oldest }}"
+      - name: Show resolved dependencies
+        run: uv export --no-annotate --no-hashes --group testing
+      - name: Run tests
+        run: uv run --no-sync pytest tests

@@ -41,9 +41,14 @@ class Bernoulli(DiscreteDistribution):
 
         * frame length under ``with_columns`` / ``select``
         * partition length under ``over`` / ``group_by``
+
+        The plugin is genuinely elementwise: each row's draw is derived from a per-row
+        sub-seed mixed from ``seed`` and the row's position in the surrounding context,
+        so the result is independent of Polars chunking and thread scheduling.
         """
+        row_index = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias("__polars_stats_row_index__")
         return register_plugin_function(
-            args=[self._p],
+            args=[self._p, row_index],
             plugin_path=LIB,
             function_name="bernoulli_sample",
             kwargs={"seed": seed},
