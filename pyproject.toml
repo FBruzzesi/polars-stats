@@ -148,3 +148,29 @@ disable = [
 # Keep list indentation consistent
 indent = 4
 start-indented = false
+
+[tool.ryl]
+yaml-files = ["*.yaml", "*.yml"]
+
+[tool.ryl.rules.line-length]
+max = 120
+allow-non-breakable-words = true
+allow-non-breakable-inline-mappings = true
+
+[tool.ryl.rules.indentation]
+spaces = 2
+indent-sequences = true
+check-multi-line-strings = false
+
+[tool.ryl.rules.document-start]
+present = true
+
+[tool.ryl.rules.truthy]
+allowed-values = ["true", "false"]
+check-keys = false
+
+[tool.ryl.rules.comments]
+min-spaces-from-content = 1
+
+[tool.ryl.rules.braces]
+max-spaces-inside = 1
