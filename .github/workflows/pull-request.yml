@@ -19,7 +19,7 @@ env:
   TYPING_PYTHON_VERSION: "3.13"
   PYTHON_VERSIONS_LATEST: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
   PYTHON_VERSIONS_OLDEST: '["3.10", "3.11", "3.12"]'
-  POLARS_OLDEST: "1.4.0"
+  POLARS_OLDEST: "1.15.0"
 
 jobs:
   # `strategy.matrix` cannot read the workflow-level `env` context, so this
