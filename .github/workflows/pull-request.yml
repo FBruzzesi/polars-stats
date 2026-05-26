@@ -18,9 +18,8 @@ env:
   CARGO_TERM_COLOR: always
   TYPING_PYTHON_VERSION: "3.13"
   PYTHON_VERSIONS_LATEST: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
-  # polars 1.3.0 only ships wheels for cp310-cp312, so the oldest matrix is narrower.
   PYTHON_VERSIONS_OLDEST: '["3.10", "3.11", "3.12"]'
-  POLARS_OLDEST: "1.3.0"
+  POLARS_OLDEST: "1.4.0"
 
 jobs:
   # `strategy.matrix` cannot read the workflow-level `env` context, so this
@@ -74,8 +73,37 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
 
+  # Build the extension once as an abi3 wheel. The `abi3-py39` pyo3 feature
+  # means a single wheel runs on every CPython >= 3.9, so downstream
+  # typing / test jobs just download and pip-install it.
+  build:
+    name: build wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.10"
+          enable-cache: true
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-wheel
+      - name: Build abi3 wheel
+        run: uvx maturin build --release --out dist
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 1
+
   typing:
     name: typing
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -84,17 +112,16 @@ jobs:
         with:
           python-version: ${{ env.TYPING_PYTHON_VERSION }}
           enable-cache: true
-      - name: Install pinned Rust toolchain
-        run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          key: typing
+          name: wheel
+          path: dist
       - name: Sync project dependencies
         run: uv sync --group typing --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group typing --group testing
-      - name: Build and install extension
-        run: uv run --no-sync maturin develop
       - name: pyrefly
         run: uv run --no-sync pyrefly check polars_stats tests
       - name: pyright
@@ -104,7 +131,7 @@ jobs:
 
   test-latest:
     name: test-latest / py${{ matrix.python-version }}
-    needs: setup
+    needs: [setup, build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -117,23 +144,22 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - name: Install pinned Rust toolchain
-        run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          key: test-latest-${{ matrix.python-version }}
+          name: wheel
+          path: dist
       - name: Sync project dependencies
         run: uv sync --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group testing
-      - name: Build and install extension
-        run: uv run --no-sync maturin develop
       - name: Run tests
         run: uv run --no-sync pytest tests
 
   test-oldest:
     name: test-oldest / py${{ matrix.python-version }} polars-${{ needs.setup.outputs.polars-oldest }}
-    needs: setup
+    needs: [setup, build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -146,18 +172,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - name: Install pinned Rust toolchain
-        run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          key: test-oldest-${{ matrix.python-version }}
+          name: wheel
+          path: dist
       - name: Sync project dependencies
         run: uv sync --group testing --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
       - name: Pin polars to oldest supported version
         run: uv pip install "polars==${{ needs.setup.outputs.polars-oldest }}"
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group testing
-      - name: Build and install extension
-        run: uv run --no-sync maturin develop
       - name: Run tests
         run: uv run --no-sync pytest tests
