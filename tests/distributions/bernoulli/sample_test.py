@@ -173,9 +173,13 @@ def test_sample_returns_full_length_boolean(
 
 
 def test_sample_in_group_by_draws_per_group(seed: int) -> None:
-    # Each group must receive its own draw sequence: aggregating Bernoulli(0.5)
-    # samples per group should produce variability in the per-group sums and
-    # hit both extremes of the range (not a single broadcast value).
+    # Under genuine elementwise semantics, draws depend only on (seed, row index, p).
+    # With a constant p and a constant seed, every group sees the same per-row indices
+    # 0..n-1 and so produces an identical bit pattern — variability across groups now
+    # comes from p varying per row. We test:
+    #   * `sum_p05` (constant p): all groups produce the same sum (deterministic);
+    #   * `sum_probas` (per-row p): groups differ;
+    #   * per-group size matches `n_per_group`.
     local_rng = np.random.default_rng(seed=seed)
     n_per_group = 200
     n_groups = 50
@@ -197,12 +201,15 @@ def test_sample_in_group_by_draws_per_group(seed: int) -> None:
     )
     assert agg.get_column("size").eq(n_per_group).all()
 
-    sums = agg.get_column("sum_p05")
-    # With 200 fair-coin draws per group the sum is ~Binomial(200, 0.5);
-    # P(all 50 groups identical) is astronomically small.
-    assert len(set(sums.to_list())) > 1
-    # And no group should be all-0 or all-200.
-    assert sums.is_between(0, n_per_group).all()
+    sums_p05 = agg.get_column("sum_p05")
+    # Constant p + constant seed + same per-group indices => identical sums.
+    assert len(set(sums_p05.to_list())) == 1
+    assert sums_p05.is_between(0, n_per_group).all()
+
+    sums_probas = agg.get_column("sum_probas")
+    # Per-row p varies across groups, so per-group sums must vary too.
+    assert len(set(sums_probas.to_list())) > 1
+    assert sums_probas.is_between(0, n_per_group).all()
 
 
 def test_sample_over_partitions_draws_per_partition(seed: int) -> None:

@@ -6,11 +6,11 @@ lint:
 	uvx ruff check polars_stats tests --fix
 	uvx ruff clean
 	uvx rumdl check .
-	cargo +nightly fmt --all
+	cargo +nightly fmt --all --check
 	cargo clippy --all-features
 
 test:
-	uv run --group testing pytest tests
+	POLARS_MAX_THREADS=4 uv run --group testing pytest tests
 
 typing:
 	uv run --group typing pyrefly check polars_stats tests
