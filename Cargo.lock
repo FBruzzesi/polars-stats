@@ -1845,7 +1845,7 @@ dependencies = [
  "pyo3",
  "pyo3-polars",
  "rand 0.8.6",
- "rand_chacha 0.3.1",
+ "rand_pcg",
  "serde",
  "statrs",
 ]
@@ -2260,6 +2260,15 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
  "rand 0.9.4",
+]
+
+[[package]]
+name = "rand_pcg"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59cad018caf63deb318e5a4586d99a24424a364f40f1e5778c29aca23f4fc73e"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]

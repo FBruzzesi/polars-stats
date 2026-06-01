@@ -73,6 +73,25 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
 
+  rust-test:
+    name: test / cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # `extension-module` is disabled below, so the test binary links libpython
+      # itself rather than expecting a host interpreter; setup-python provides it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-test
+      - name: cargo test
+        run: cargo test --no-default-features
+
   # Build the extension once as an abi3 wheel. The `abi3-py39` pyo3 feature
   # means a single wheel runs on every CPython >= 3.9, so downstream
   # typing / test jobs just download and pip-install it.
@@ -156,6 +175,56 @@ jobs:
         run: uv export --no-annotate --no-hashes --group testing
       - name: Run tests
         run: uv run --no-sync pytest tests
+
+  benchmark:
+    name: benchmark
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Sync project dependencies
+        run: uv sync --group benchmark --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      # Persist prior results so pytest-benchmark can compare against the last run.
+      # `restore-keys` pulls the most recent cache; the run-id key writes a fresh one.
+      - name: Restore benchmark baseline
+        uses: actions/cache@v4
+        with:
+          path: .benchmarks
+          key: benchmarks-${{ github.run_id }}
+          restore-keys: benchmarks-
+      # `min` is the noise-robust statistic (noise only adds time). GitHub runners use
+      # heterogeneous hardware, so absolute timings drift run-to-run: the gate is set
+      # to trip only on catastrophic (>3x) regressions like the ChaCha20-per-row one.
+      # A deterministic instruction-count gate (CodSpeed) should replace this once the
+      # repo is public and CI minutes are unconstrained. First run has no baseline to
+      # compare against and simply records one.
+      - name: Run benchmarks
+        run: >
+          uv run --no-sync pytest benchmarks
+          -o filterwarnings=default
+          --benchmark-only
+          --benchmark-autosave
+          --benchmark-compare
+          --benchmark-compare-fail=min:200%
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: .benchmarks
+          if-no-files-found: warn
+          retention-days: 30
 
   test-oldest:
     name: test-oldest / py${{ matrix.python-version }} polars-${{ needs.setup.outputs.polars-oldest }}
