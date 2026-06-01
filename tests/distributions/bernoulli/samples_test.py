@@ -70,6 +70,4 @@ def test_samples_null_p_row_is_null_array(seed: int) -> None:
     dframe = pl.DataFrame({"p": [0.5, None, 0.5]}, schema={"p": pl.Float64})
     result = dframe.select(s=Bernoulli(p=pl.col("p")).samples(size=size, seed=seed))["s"]
     assert result.dtype == pl.Array(pl.Boolean, size)
-    assert result.item(1) is None
-    assert result.item(0) is not None
-    assert result.item(2) is not None
+    assert_series_equal(result.is_null(), pl.Series("s", [False, True, False]))
