@@ -5,7 +5,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
 use statrs::distribution::Bernoulli;
 
-use super::sampling::{resolve_root_seed, row_rng, SampleKwargs};
+use crate::rng::SampleKwargs;
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
@@ -53,7 +53,7 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let root_seed = resolve_root_seed(kwargs.seed);
+    let rngs = kwargs.row_rngs();
 
     let ca: BooleanChunked = try_binary_elementwise(
         proba_ca,
@@ -62,7 +62,7 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
             match (p_opt, i_opt) {
                 (Some(p), Some(i)) => {
                     let dist = build_dist(p)?;
-                    let mut rng = row_rng(root_seed, i);
+                    let mut rng = rngs.rng(i);
                     Ok(Some(<Bernoulli as Distribution<bool>>::sample(
                         &dist, &mut rng,
                     )))

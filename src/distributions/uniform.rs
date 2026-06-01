@@ -5,7 +5,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
 use statrs::distribution::Uniform;
 
-use super::sampling::{resolve_root_seed, row_rng, SampleKwargs};
+use crate::rng::SampleKwargs;
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     Uniform::new(min, max).map_err(|e| {
@@ -38,7 +38,7 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let root_seed = resolve_root_seed(kwargs.seed);
+    let rngs = kwargs.row_rngs();
 
     let ca: Float64Chunked = try_ternary_elementwise(
         min_ca,
@@ -48,7 +48,7 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
             match (min_opt, max_opt, i_opt) {
                 (Some(lo), Some(hi), Some(i)) => {
                     let dist = build_dist(lo, hi)?;
-                    let mut rng = row_rng(root_seed, i);
+                    let mut rng = rngs.rng(i);
                     Ok(Some(dist.sample(&mut rng)))
                 },
                 _ => Ok(None),
