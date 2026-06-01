@@ -13,14 +13,17 @@ if TYPE_CHECKING:
 
 
 class Uniform(ContinuousDistribution):
-    """Continuous uniform distribution on the half-open interval ``[min, max)``.
+    """Continuous uniform distribution over ``[min, max]``.
 
     Equivalent to ``scipy.stats.uniform(loc=min, scale=max - min)``.
 
+    Following scipy, the density, cdf and the other closed forms treat the support as the closed interval ``[min, max]``
+    (so ``pdf(max) == 1 / (max - min)``); the ``sample`` plugin draws on the half-open ``[min, max)``.
+
     Arguments:
-        min: Inclusive lower bound. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``,
+        min: Lower bound. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``,
             ``pl.Series`` or column name ``str``) carrying one bound per row.
-        max: Exclusive upper bound, with ``max > min``. Same accepted types as ``min``.
+        max: Upper bound, with ``max > min``. Same accepted types as ``min``.
 
     An invalid parameterisation (``max <= min`` or a non-finite bound) is not checked at construction;
     matching every other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any
@@ -73,11 +76,13 @@ class Uniform(ContinuousDistribution):
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""
-        return pl.when((value >= self._min) & (value <= self._max)).then(1 / self.range).otherwise(0.0)
+        in_range = value.is_between(self._min, self._max, closed="both")
+        return pl.when(in_range).then(1 / self.range).otherwise(0.0)
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
         """``-log(max - min)`` on the support, ``-inf`` outside."""
-        return pl.when((value >= self._min) & (value <= self._max)).then(-self.range.log()).otherwise(float("-inf"))
+        in_range = value.is_between(self._min, self._max, closed="both")
+        return pl.when(in_range).then(-self.range.log()).otherwise(float("-inf"))
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """``(value - min) / (max - min)`` clamped to ``[0, 1]``."""
@@ -112,9 +117,9 @@ class Uniform(ContinuousDistribution):
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """``min + quantile * (max - min)``; null for ``quantile`` outside ``[0, 1]``."""
         return (
-            pl.when(~quantile.is_between(0, 1))
-            .then(pl.lit(None, dtype=pl.Float64))
-            .otherwise(self._min + quantile * self.range)
+            pl.when(quantile.is_between(0, 1))
+            .then(self._min + quantile * self.range)
+            .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
     def mean(self) -> pl.Expr:

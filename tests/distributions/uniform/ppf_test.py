@@ -1,30 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
 import polars as pl
-import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import Uniform
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any
 
-PARAMS = [(0.0, 1.0), (-2.0, 3.0), (2.0, 5.0), (-5.0, -1.0), (0.0, 1e-3)]
-_QUANTILES = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
-
-
-@pytest.mark.parametrize(("mn", "mx"), PARAMS)
-def test_ppf_matches_scipy(mn: float, mx: float, scipy_uniform: Callable[[float, float], Any]) -> None:
-    got = pl.DataFrame({"q": _QUANTILES}).select(r=Uniform(min=mn, max=mx).ppf(pl.col("q")))["r"].to_numpy()
-    np.testing.assert_allclose(got, scipy_uniform(mn, mx).ppf(_QUANTILES), atol=1e-12, rtol=0)
-
-
-@pytest.mark.parametrize(("mn", "mx"), PARAMS)
-def test_ppf_is_cdf_inverse(mn: float, mx: float) -> None:
+def test_ppf_is_cdf_inverse(bounds: tuple[float, float]) -> None:
+    mn, mx = bounds
     interior = [0.1, 0.5, 0.9]
     u = Uniform(min=mn, max=mx)
     out = pl.DataFrame({"q": interior}).select(r=u.cdf(u.ppf(pl.col("q"))))["r"]

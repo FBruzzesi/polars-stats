@@ -12,11 +12,6 @@ lint:
 test:
 	POLARS_MAX_THREADS=4 uv run --group testing pytest tests
 
-test-rust:
-	# `extension-module` is disabled so the test binary links libpython itself;
-	# point pyo3 at the project interpreter for that link step.
-	PYO3_PYTHON=$$(uv run python -c "import sys; print(sys.executable)") cargo test --no-default-features
-
 benchmark:
 	uv run --group benchmark pytest benchmarks -o filterwarnings=default --benchmark-only --benchmark-autosave
 

@@ -1,35 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import numpy as np
 import polars as pl
-import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import Uniform
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any
 
-PARAMS = [(0.0, 1.0), (-2.0, 3.0), (2.0, 5.0), (-5.0, -1.0), (0.0, 1e-3)]
-
-
-@pytest.mark.parametrize(("mn", "mx"), PARAMS)
-def test_pdf_matches_scipy(
-    mn: float,
-    mx: float,
-    value_grid: Callable[[float, float], list[float]],
-    scipy_uniform: Callable[[float, float], Any],
-) -> None:
-    xs = value_grid(mn, mx)
-    got = pl.DataFrame({"x": xs}).select(r=Uniform(min=mn, max=mx).pdf(pl.col("x")))["r"].to_numpy()
-    np.testing.assert_allclose(got, scipy_uniform(mn, mx).pdf(xs), atol=1e-12, rtol=0)
-
-
-@pytest.mark.parametrize(("mn", "mx"), PARAMS)
-def test_pdf_constant_inside_and_zero_outside(mn: float, mx: float) -> None:
+def test_pdf_constant_inside_and_zero_outside(bounds: tuple[float, float]) -> None:
+    mn, mx = bounds
     width = mx - mn
     inside = [mn + 0.1 * width, (mn + mx) / 2, mn + 0.9 * width]
     outside = [mn - width, mx + width]

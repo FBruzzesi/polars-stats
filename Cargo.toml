@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [features]
 # `extension-module` tells pyo3 not to link libpython (the host interpreter provides the symbols at runtime).
 # That is required for the wheel but breaks a standalone `cargo test` binary on Linux,
-# so it is a default feature that the Rust test job turns off via `--no-default-features`.
+# so it is a default feature (enabled automatically by `maturin build`) that a local standalone `cargo build` / `cargo test` can turn off via `--no-default-features`.
 default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
 

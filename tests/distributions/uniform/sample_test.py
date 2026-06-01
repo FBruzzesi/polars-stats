@@ -122,3 +122,13 @@ def test_sample_unseeded_produces_variability(frame: Callable[..., pl.DataFrame]
     s1 = dframe.with_columns(u=Uniform(min=0.0, max=1.0).sample(seed=None))["u"]
     s2 = dframe.with_columns(u=Uniform(min=0.0, max=1.0).sample(seed=None))["u"]
     assert_series_not_equal(s1, s2)
+
+
+def test_sample_rows_are_independent_no_aliasing(seed: int) -> None:
+    # Each row derives its stream from `(seed, row_index)`, so even with constant bounds and a fixed
+    # seed every row must draw an independent value. Two identical draws would mean two rows aliased
+    # to the same stream; among independent Float64 draws a collision is astronomically unlikely, so
+    # full uniqueness is the observable form of the per-row non-aliasing guarantee.
+    size = 50_000
+    s = pl.DataFrame({"x": range(size)}).with_columns(u=Uniform(min=0.0, max=1.0).sample(seed=seed))["u"]
+    assert s.n_unique() == size

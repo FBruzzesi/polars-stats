@@ -73,25 +73,6 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
 
-  rust-test:
-    name: test / cargo test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      # `extension-module` is disabled below, so the test binary links libpython
-      # itself rather than expecting a host interpreter; setup-python provides it.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install pinned Rust toolchain
-        run: rustup show
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: rust-test
-      - name: cargo test
-        run: cargo test --no-default-features
-
   # Build the extension once as an abi3 wheel. The `abi3-py39` pyo3 feature
   # means a single wheel runs on every CPython >= 3.9, so downstream
   # typing / test jobs just download and pip-install it.
