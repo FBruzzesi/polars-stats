@@ -43,6 +43,7 @@ dev = [
 testing = [
     "numpy>=2.2.6",
     "pytest>=8.3.5",
+    "scipy>=1.13.0",
 ]
 benchmark = [
     "pytest>=8.3.5",
@@ -52,6 +53,8 @@ typing = [
     "mypy>=1.14.1",
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
+    "scipy-stubs>=1.15.3.0",
+    {include-group = "testing"},
 ]
 
 [tool.pytest.ini_options]

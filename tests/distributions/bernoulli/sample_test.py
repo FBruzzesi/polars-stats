@@ -98,7 +98,8 @@ def test_sample_with_into_expr_column_p_per_row(
     seed: int,
 ) -> None:
     result = dframe.with_columns(b=Bernoulli(p=p_arg).sample(seed=seed))  # type: ignore[arg-type]
-    assert result["b"].to_list() == [bool(v) for v in _EXTREME_P]
+    expected = pl.Series("b", [bool(v) for v in _EXTREME_P], dtype=pl.Boolean)
+    assert_series_equal(result["b"], expected)
 
 
 def test_sample_with_str_p_matches_col(frame: Callable[..., pl.DataFrame], seed: int) -> None:
@@ -138,7 +139,7 @@ def test_sample_with_column_p_out_of_range_raises(bad_p: float, seed: int) -> No
 def test_sample_with_null_p_row_is_null(seed: int) -> None:
     dframe = pl.DataFrame({"p": [0.5, None, 0.5]}, schema={"p": pl.Float64})
     result = dframe.with_columns(Bernoulli(p=pl.col("p")).sample(seed=seed))
-    assert result["p"].item(1) is None
+    assert_series_equal(result["p"].is_null(), pl.Series("p", [False, True, False]))
 
 
 def test_sample_multi_columns(frame: Callable[..., pl.DataFrame], seed: int) -> None:

@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+import polars as pl
+import pytest
+from polars.testing import assert_series_equal
+
+from polars_stats import Uniform
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+@pytest.mark.parametrize("size", [1, 4, 16])
+def test_samples_shape_and_dtype(size: int, frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    n = 32
+    result = frame(size=n).select(s=Uniform(min=0.0, max=1.0).samples(size=size, seed=seed))
+    assert result.height == n
+    assert result.schema["s"] == pl.Array(pl.Float64, size)
+
+
+def test_samples_seed_reproducible(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    dframe = frame(size=128)
+    s1 = dframe.select(s=Uniform(min=0.0, max=1.0).samples(size=8, seed=seed))["s"]
+    s2 = dframe.select(s=Uniform(min=0.0, max=1.0).samples(size=8, seed=seed))["s"]
+    assert_series_equal(s1, s2)
+
+
+def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    size = 8
+    dframe = frame(size=512)
+    result = dframe.select(s=Uniform(min=0.0, max=1.0).samples(size=size, seed=seed))["s"]
+    columns = [result.arr.get(i) for i in range(size)]
+    distinct = {tuple(c.to_list()) for c in columns}
+    assert len(distinct) == size
+
+
+def test_samples_within_bounds(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    mn, mx = -3.0, 2.0
+    flat = np.asarray(
+        frame(size=2_000).select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"].to_list(),
+        dtype=float,
+    ).ravel()
+    assert flat.min() >= mn
+    assert flat.max() <= mx
+
+
+def test_samples_mean_close_to_midpoint(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    flat = np.asarray(
+        frame(size=4_000).select(s=Uniform(min=2.0, max=5.0).samples(size=16, seed=seed))["s"].to_list(),
+        dtype=float,
+    ).ravel()
+    assert abs(flat.mean() - 3.5) < 0.01 * 3.0
+
+
+@pytest.mark.parametrize("bad_size", [0, -1])
+def test_samples_rejects_non_positive_size(bad_size: int) -> None:
+    with pytest.raises(ValueError, match="size must be a positive integer"):
+        Uniform(min=0.0, max=1.0).samples(size=bad_size, seed=0)
+
+
+def test_samples_null_bound_row_is_null_array(seed: int) -> None:
+    size = 4
+    dframe = pl.DataFrame(
+        {"lo": [0.0, None, 1.0], "hi": [1.0, 2.0, 3.0]},
+        schema={"lo": pl.Float64, "hi": pl.Float64},
+    )
+    result = dframe.select(s=Uniform(min=pl.col("lo"), max=pl.col("hi")).samples(size=size, seed=seed))["s"]
+    assert result.dtype == pl.Array(pl.Float64, size)
+    # A null bound row yields a null array, not an array of inner-null elements.
+    assert_series_equal(result.is_null(), pl.Series("s", [False, True, False]))
+
+
+def test_samples_max_le_min_raises(seed: int) -> None:
+    dframe = pl.DataFrame({"lo": [0.0, 5.0], "hi": [1.0, 2.0]})  # row 1: hi (2.0) <= lo (5.0)
+    with pytest.raises(pl.exceptions.ComputeError, match="max must be strictly greater than min"):
+        dframe.select(s=Uniform(min=pl.col("lo"), max=pl.col("hi")).samples(size=4, seed=seed))
