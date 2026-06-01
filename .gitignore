@@ -8,3 +8,5 @@ venv
 *.pyd
 
 *__pycache__/
+.benchmarks/
+benchmark.json
