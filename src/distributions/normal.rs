@@ -9,11 +9,10 @@ use crate::rng::SampleKwargs;
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::Normal::new` rejects a non-finite `mean`, a `NaN` `std_dev`, or `std_dev <= 0`. We
-/// surface that as `InvalidOperation` so an invalid scale fails the whole evaluation consistently
-/// with how `Bernoulli` and `Uniform` report invalid parameters (ARCHITECTURE.md §7), rather than
-/// silently nulling the row. Validation lives here so every method that builds a distribution
-/// reports an invalid scale identically.
+/// `statrs::Normal::new` rejects a non-finite `mean`, a `NaN` `std_dev`, or `std_dev <= 0`.
+/// We surface that as `InvalidOperation` so an invalid scale fails the whole evaluation,
+/// rather than silently nulling the row.
+/// Validation lives here so every method that builds a distribution reports an invalid scale identically.
 fn build_dist(mean: f64, std_dev: f64) -> PolarsResult<Normal> {
     Normal::new(mean, std_dev).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -162,8 +161,8 @@ fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
 ///
-/// A quantile outside `[0, 1]` yields `null` (the ARCHITECTURE.md §7 contract); the closed endpoints
-/// map to the infinite tails (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
+/// A quantile outside `[0, 1]` yields `null`; the closed endpoints map to the infinite tails
+/// (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
 #[polars_expr(output_type=Float64)]
 fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, |dist, q| {
