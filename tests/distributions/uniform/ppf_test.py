@@ -17,13 +17,13 @@ def test_ppf_is_cdf_inverse(bounds: tuple[float, float]) -> None:
 
 def test_ppf_out_of_range_is_null() -> None:
     df = pl.DataFrame({"q": [-0.1, 0.0, 0.5, 1.0, 1.1]})
-    got = df.select(r=Uniform(min=0.0, max=1.0).ppf(pl.col("q")))["r"]
+    result = df.select(r=Uniform(min=0.0, max=1.0).ppf(pl.col("q")))["r"]
     expected = pl.Series("r", [None, 0.0, 0.5, 1.0, None], dtype=pl.Float64)
-    assert_series_equal(got, expected)
+    assert_series_equal(result, expected)
 
 
 def test_ppf_propagates_null_in_quantile() -> None:
     df = pl.DataFrame({"q": [0.2, None, 0.8]}, schema={"q": pl.Float64})
-    got = df.select(r=Uniform(min=0.0, max=2.0).ppf(pl.col("q")))["r"]
+    result = df.select(r=Uniform(min=0.0, max=2.0).ppf(pl.col("q")))["r"]
     expected = pl.Series("r", [0.4, None, 1.6], dtype=pl.Float64)
-    assert_series_equal(got, expected)
+    assert_series_equal(result, expected)

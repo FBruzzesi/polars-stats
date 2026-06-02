@@ -68,11 +68,11 @@ def test_method_matches_scipy(case: _Case, mn: float, mx: float) -> None:
     frozen = scipy_uniform(loc=mn, scale=mx - mn)
 
     if case.kind == "scalar":
-        got = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(u, pl.lit(0.0)))["r"].to_numpy()
+        result = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(u, pl.lit(0.0)))["r"].to_numpy()
         expected = np.asarray([getattr(frozen, case.scipy_attr)()], dtype=float)
     else:
         xs = _value_grid(mn, mx) if case.kind == "value" else _QUANTILES
-        got = pl.DataFrame({"x": xs}).select(r=case.pl_fn(u, pl.col("x")))["r"].to_numpy()
+        result = pl.DataFrame({"x": xs}).select(r=case.pl_fn(u, pl.col("x")))["r"].to_numpy()
         expected = np.asarray(getattr(frozen, case.scipy_attr)(xs), dtype=float)
 
-    np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+    np.testing.assert_allclose(result, expected, atol=1e-12, rtol=0)
