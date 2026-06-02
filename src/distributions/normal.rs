@@ -1,0 +1,180 @@
+#![allow(clippy::unused_unit)]
+use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
+use polars::prelude::*;
+use pyo3_polars::derive::polars_expr;
+use rand::distributions::Distribution as RandDistribution;
+use statrs::distribution::{Continuous, ContinuousCDF, Normal};
+
+use crate::rng::SampleKwargs;
+
+/// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
+///
+/// `statrs::Normal::new` rejects a non-finite `mean`, a `NaN` `std_dev`, or `std_dev <= 0`. We
+/// surface that as `InvalidOperation` so an invalid scale fails the whole evaluation consistently
+/// with how `Bernoulli` and `Uniform` report invalid parameters (ARCHITECTURE.md §7), rather than
+/// silently nulling the row. Validation lives here so every method that builds a distribution
+/// reports an invalid scale identically.
+fn build_dist(mean: f64, std_dev: f64) -> PolarsResult<Normal> {
+    Normal::new(mean, std_dev).map_err(|e| {
+        PolarsError::InvalidOperation(
+            format!(
+                "std_dev must be finite and strictly positive, got mean={mean}, std_dev={std_dev}: {e}"
+            )
+            .into(),
+        )
+    })
+}
+
+/// Validate the `(mean, std_dev)` parameterisation and return the validated `std_dev`.
+///
+/// `inputs[0]` is `mean`, `inputs[1]` is `std_dev`. Mirrors `uniform_range`: the closed-form moments
+/// (`mean`, `variance`, `median`, `entropy`) all derive from this single FFI round-trip, so they
+/// report an invalid parameterisation identically to the value-keyed methods that build the
+/// distribution directly. `null` in either input propagates; a `NaN` mean or a non-positive / `NaN`
+/// `std_dev` raises `InvalidOperation` via [`build_dist`].
+#[polars_expr(output_type=Float64)]
+fn normal_std_dev(inputs: &[Series]) -> PolarsResult<Series> {
+    let mean = inputs[0].cast(&DataType::Float64)?;
+    let mean_ca = mean.f64()?;
+    let std_dev = inputs[1].cast(&DataType::Float64)?;
+    let std_dev_ca = std_dev.f64()?;
+    let name = inputs[1].name().clone();
+
+    let ca: Float64Chunked = try_binary_elementwise(
+        mean_ca,
+        std_dev_ca,
+        |mean_opt, std_opt| -> PolarsResult<Option<f64>> {
+            match (mean_opt, std_opt) {
+                (Some(m), Some(s)) => {
+                    build_dist(m, s)?;
+                    Ok(Some(s))
+                },
+                _ => Ok(None),
+            }
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
+}
+
+/// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mean, std_dev)`.
+///
+/// `inputs[0]` is the evaluation point, `inputs[1]` is `mean`, `inputs[2]` is `std_dev`. `null` in
+/// any input propagates to `null`; an invalid `std_dev` raises via [`build_dist`]. `f` returns an
+/// `Option` so a method can null a row on its own terms (e.g. `ppf` outside `[0, 1]`). Shared by
+/// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
+fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
+where
+    F: Fn(&Normal, f64) -> Option<f64>,
+{
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let value_ca = value.f64()?;
+    let mean = inputs[1].cast(&DataType::Float64)?;
+    let mean_ca = mean.f64()?;
+    let std_dev = inputs[2].cast(&DataType::Float64)?;
+    let std_dev_ca = std_dev.f64()?;
+    let name = inputs[0].name().clone();
+
+    let ca: Float64Chunked = try_ternary_elementwise(
+        value_ca,
+        mean_ca,
+        std_dev_ca,
+        |value_opt, mean_opt, std_opt| -> PolarsResult<Option<f64>> {
+            match (value_opt, mean_opt, std_opt) {
+                (Some(v), Some(m), Some(s)) => {
+                    let dist = build_dist(m, s)?;
+                    Ok(f(&dist, v))
+                },
+                _ => Ok(None),
+            }
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
+}
+
+/// Element-wise Normal sampler.
+///
+/// `inputs[0]` carries `mean`, `inputs[1]` `std_dev`, and `inputs[2]` a per-row index used to derive
+/// a per-row sub-seed, so the function is genuinely element-wise: chunking and threading cannot
+/// change the output. With `seed=None`, a fresh root seed is drawn once per call.
+///
+/// Per-row validation:
+///   * `null` (in any input) propagates;
+///   * a `NaN` `mean`, or a non-positive / `NaN` `std_dev`, raises `InvalidOperation`.
+///
+/// Returns a `Float64` series.
+#[polars_expr(output_type=Float64)]
+fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let mean = inputs[0].cast(&DataType::Float64)?;
+    let mean_ca = mean.f64()?;
+    let std_dev = inputs[1].cast(&DataType::Float64)?;
+    let std_dev_ca = std_dev.f64()?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let name = inputs[0].name().clone();
+
+    let rngs = kwargs.row_rngs();
+
+    let ca: Float64Chunked = try_ternary_elementwise(
+        mean_ca,
+        std_dev_ca,
+        index_ca,
+        |mean_opt, std_opt, i_opt| -> PolarsResult<Option<f64>> {
+            match (mean_opt, std_opt, i_opt) {
+                (Some(m), Some(s), Some(i)) => {
+                    let dist = build_dist(m, s)?;
+                    let mut rng = rngs.rng(i);
+                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
+                    Ok(Some(draw))
+                },
+                _ => Ok(None),
+            }
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
+}
+
+/// Element-wise pdf via `statrs` `Continuous::pdf`. See [`value_keyed`] for the null/error contract.
+#[polars_expr(output_type=Float64)]
+fn normal_pdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, |dist, v| Some(dist.pdf(v)))
+}
+
+/// Element-wise log-pdf via native `Continuous::ln_pdf` (more accurate than `pdf().ln()`).
+#[polars_expr(output_type=Float64)]
+fn normal_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, |dist, v| Some(dist.ln_pdf(v)))
+}
+
+/// Element-wise cdf via `statrs` `ContinuousCDF::cdf`.
+#[polars_expr(output_type=Float64)]
+fn normal_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, |dist, v| Some(dist.cdf(v)))
+}
+
+/// Element-wise survival function via native `ContinuousCDF::sf` (accurate in the upper tail).
+#[polars_expr(output_type=Float64)]
+fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, |dist, v| Some(dist.sf(v)))
+}
+
+/// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
+///
+/// A quantile outside `[0, 1]` yields `null` (the ARCHITECTURE.md §7 contract); the closed endpoints
+/// map to the infinite tails (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
+#[polars_expr(output_type=Float64)]
+fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, |dist, q| {
+        if !(0.0..=1.0).contains(&q) {
+            None
+        } else if q == 0.0 {
+            Some(f64::NEG_INFINITY)
+        } else if q == 1.0 {
+            Some(f64::INFINITY)
+        } else {
+            Some(dist.inverse_cdf(q))
+        }
+    })
+}
