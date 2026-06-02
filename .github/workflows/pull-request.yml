@@ -92,7 +92,7 @@ jobs:
         with:
           key: build-wheel
       - name: Build abi3 wheel
-        run: uvx maturin build --release --uv --out dist
+        run: uvx maturin build --release --out dist
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
