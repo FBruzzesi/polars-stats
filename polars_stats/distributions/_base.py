@@ -6,6 +6,9 @@ from itertools import repeat
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
+from polars.plugins import register_plugin_function
+
+from polars_stats._lib import LIB
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -40,6 +43,33 @@ def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
         return pl.col(value)
     msg = f"{name} should be a float or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
     raise TypeError(msg)
+
+
+def register_plugin(
+    function_name: str,
+    args: IntoExprColumn | Iterable[IntoExprColumn],
+    *,
+    kwargs: dict[str, int | None] | None = None,
+) -> pl.Expr:
+    """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
+
+    Wraps `register_plugin_function` so each call site spells only what varies (the function name, its input exprs,
+    and an optional sampler `seed`). `plugin_path=LIB`, `is_elementwise` is fixed to `True`: every distribution plugin
+    is per-row by contract (see `coerce_param`), and an aggregating plugin would break `over` / `group_by`, so this is a
+    guard rather than a default.
+
+    Arguments:
+        function_name: The `#[polars_expr]` function exported by the Rust crate.
+        args: One expr or an iterable of exprs forming the plugin's positional inputs.
+        kwargs: Static keyword arguments serialised to Rust (only a sampler `seed` today).
+    """
+    return register_plugin_function(
+        plugin_path=LIB,
+        function_name=function_name,
+        args=args,
+        kwargs=kwargs,
+        is_elementwise=True,
+    )
 
 
 def as_expr(value: float | pl.Expr) -> pl.Expr:

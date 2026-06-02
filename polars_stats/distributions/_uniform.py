@@ -3,10 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
-from polars_stats._lib import LIB
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, row_index_expr
+from polars_stats.distributions._base import ContinuousDistribution, coerce_param, register_plugin, row_index_expr
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -46,12 +44,7 @@ class Uniform(ContinuousDistribution):
         rather than silently yielding a non-positive width. Every closed-form method derives from this,
         so they all validate consistently. Null bounds propagate.
         """
-        return register_plugin_function(
-            args=(self._min, self._max),
-            plugin_path=LIB,
-            function_name="uniform_range",
-            is_elementwise=True,
-        )
+        return register_plugin("uniform_range", (self._min, self._max))
 
     def _valid_mask(self) -> pl.Expr:
         # Only null bounds are masked to a null array here; `max <= min` raises via `range`.
@@ -66,13 +59,7 @@ class Uniform(ContinuousDistribution):
         independent of Polars chunking and thread scheduling. Rows with ``max <= min`` or a null bound
         yield null.
         """
-        return register_plugin_function(
-            args=(self._min, self._max, row_index_expr()),
-            plugin_path=LIB,
-            function_name="uniform_sample",
-            kwargs={"seed": seed},
-            is_elementwise=True,
-        )
+        return register_plugin("uniform_sample", (self._min, self._max, row_index_expr()), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""

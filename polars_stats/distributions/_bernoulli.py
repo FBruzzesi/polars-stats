@@ -3,10 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
-from polars_stats._lib import LIB
-from polars_stats.distributions._base import DiscreteDistribution, coerce_param, row_index_expr
+from polars_stats.distributions._base import DiscreteDistribution, coerce_param, register_plugin, row_index_expr
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -33,12 +31,7 @@ class Bernoulli(DiscreteDistribution):
         Computed in Rust so the closed-form methods report an invalid ``p`` consistently with
         ``sample`` rather than silently computing a negative probability. Null propagates.
         """
-        return register_plugin_function(
-            args=self._p,
-            plugin_path=LIB,
-            function_name="bernoulli_proba",
-            is_elementwise=True,
-        )
+        return register_plugin("bernoulli_proba", self._p)
 
     def _valid_mask(self) -> pl.Expr:
         # Only null p is masked to a null array here; an out-of-range p raises via `_checked_p`.
@@ -56,13 +49,7 @@ class Bernoulli(DiscreteDistribution):
         sub-seed mixed from ``seed`` and the row's position in the surrounding context,
         so the result is independent of Polars chunking and thread scheduling.
         """
-        return register_plugin_function(
-            args=(self._p, row_index_expr()),
-            plugin_path=LIB,
-            function_name="bernoulli_sample",
-            kwargs={"seed": seed},
-            is_elementwise=True,
-        )
+        return register_plugin("bernoulli_sample", (self._p, row_index_expr()), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""
