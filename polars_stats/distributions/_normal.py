@@ -4,10 +4,8 @@ import math
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
-from polars_stats._lib import LIB
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, row_index_expr
+from polars_stats.distributions._base import ContinuousDistribution, coerce_param, register_plugin, row_index_expr
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -52,12 +50,7 @@ class Normal(ContinuousDistribution):
         Validation of ``std_dev`` happens inside the plugin, so every value-keyed method reports an
         invalid scale consistently; null inputs propagate per row.
         """
-        return register_plugin_function(
-            args=(value, self._mean, self._std_dev),
-            plugin_path=LIB,
-            function_name=function_name,
-            is_elementwise=True,
-        )
+        return register_plugin(function_name, (value, self._mean, self._std_dev))
 
     @property
     def _checked_std_dev(self) -> pl.Expr:
@@ -66,12 +59,7 @@ class Normal(ContinuousDistribution):
         # single FFI round-trip, so they report an invalid parameterisation (``std_dev <= 0``, or a
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
-        return register_plugin_function(
-            args=(self._mean, self._std_dev),
-            plugin_path=LIB,
-            function_name="normal_std_dev",
-            is_elementwise=True,
-        )
+        return register_plugin("normal_std_dev", (self._mean, self._std_dev))
 
     def _valid_mask(self) -> pl.Expr:
         # Only null parameters are masked to a null array here; an invalid `std_dev` raises in the plugin.
@@ -86,13 +74,7 @@ class Normal(ContinuousDistribution):
         independent of Polars chunking and thread scheduling. Rows with an invalid ``std_dev`` raise;
         rows with a null parameter yield null.
         """
-        return register_plugin_function(
-            args=(self._mean, self._std_dev, row_index_expr()),
-            plugin_path=LIB,
-            function_name="normal_sample",
-            kwargs={"seed": seed},
-            is_elementwise=True,
-        )
+        return register_plugin("normal_sample", (self._mean, self._std_dev, row_index_expr()), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""

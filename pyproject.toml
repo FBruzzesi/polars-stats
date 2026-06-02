@@ -41,6 +41,7 @@ dev = [
     "maturin>=1.13.1",
 ]
 testing = [
+    "hypothesis>=6.100.0",
     "numpy>=2.2.6",
     "pytest>=8.3.5",
     "scipy>=1.13.0",
@@ -132,7 +133,12 @@ include = ["polars_stats", "tests"]
 
 [tool.pyrefly]
 project-includes = ["polars_stats", "tests"]
-search_path = ["polars_stats", "tests"]
+# Resolve first-party imports from the project root so module names match their full dotted path
+# (`polars_stats.*`, `tests.*`), the same way mypy/pyright and pytest's importlib mode see them. Listing
+# `polars_stats` / `tests` as roots instead would name `tests/property/_specs.py` as `property._specs`,
+# so the cross-test `from tests.property._specs import ...` only resolves via the editable `.pth` on a
+# local dev machine and breaks under CI's wheel-only install.
+search_path = ["."]
 
 [tool.coverage.run]
 plugins = ["covdefaults"]
