@@ -69,12 +69,12 @@ def test_method_matches_scipy(case: _Case, p: float) -> None:
     frozen = scipy_bernoulli(p)
 
     if case.kind == "scalar":
-        got = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(b, pl.lit(0.0)))["r"].to_numpy()
+        result = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(b, pl.lit(0.0)))["r"].to_numpy()
         expected = np.asarray([getattr(frozen, case.scipy_attr)()], dtype=float)
     else:
         xs = _VALUE_GRID if case.kind == "value" else _QUANTILES
-        got = pl.DataFrame({"x": xs}).select(r=case.pl_fn(b, pl.col("x")))["r"].to_numpy()
+        result = pl.DataFrame({"x": xs}).select(r=case.pl_fn(b, pl.col("x")))["r"].to_numpy()
         expected = np.asarray(getattr(frozen, case.scipy_attr)(xs), dtype=float)
 
-    # Cast `got` to float so Boolean outputs (ppf / isf / median) compare as 0.0 / 1.0.
-    np.testing.assert_allclose(np.asarray(got, dtype=float), expected, atol=1e-12, rtol=0)
+    # Cast `result` to float so Boolean outputs (ppf / isf / median) compare as 0.0 / 1.0.
+    np.testing.assert_allclose(np.asarray(result, dtype=float), expected, atol=1e-12, rtol=0)

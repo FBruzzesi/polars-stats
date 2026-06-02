@@ -8,6 +8,6 @@ from polars_stats import Uniform
 
 def test_isf_out_of_range_is_null() -> None:
     df = pl.DataFrame({"q": [-0.1, 0.0, 1.0, 1.1]})
-    got = df.select(r=Uniform(min=0.0, max=1.0).isf(pl.col("q")))["r"]
+    result = df.select(r=Uniform(min=0.0, max=1.0).isf(pl.col("q")))["r"]
     expected = pl.Series("r", [None, 1.0, 0.0, None], dtype=pl.Float64)
-    assert_series_equal(got, expected)
+    assert_series_equal(result, expected)

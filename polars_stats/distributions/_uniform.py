@@ -47,7 +47,7 @@ class Uniform(ContinuousDistribution):
         so they all validate consistently. Null bounds propagate.
         """
         return register_plugin_function(
-            args=[self._min, self._max],
+            args=(self._min, self._max),
             plugin_path=LIB,
             function_name="uniform_range",
             is_elementwise=True,
@@ -67,7 +67,7 @@ class Uniform(ContinuousDistribution):
         yield null.
         """
         return register_plugin_function(
-            args=[self._min, self._max, row_index_expr()],
+            args=(self._min, self._max, row_index_expr()),
             plugin_path=LIB,
             function_name="uniform_sample",
             kwargs={"seed": seed},

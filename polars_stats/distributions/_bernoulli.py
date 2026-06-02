@@ -34,7 +34,7 @@ class Bernoulli(DiscreteDistribution):
         ``sample`` rather than silently computing a negative probability. Null propagates.
         """
         return register_plugin_function(
-            args=[self._p],
+            args=self._p,
             plugin_path=LIB,
             function_name="bernoulli_proba",
             is_elementwise=True,
@@ -57,7 +57,7 @@ class Bernoulli(DiscreteDistribution):
         so the result is independent of Polars chunking and thread scheduling.
         """
         return register_plugin_function(
-            args=[self._p, row_index_expr()],
+            args=(self._p, row_index_expr()),
             plugin_path=LIB,
             function_name="bernoulli_sample",
             kwargs={"seed": seed},

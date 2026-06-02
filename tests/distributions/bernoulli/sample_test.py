@@ -92,11 +92,7 @@ def test_sample_invalid_float_p_raises(p: float, frame: Callable[..., pl.DataFra
         ),
     ],
 )
-def test_sample_with_into_expr_column_p_per_row(
-    dframe: pl.DataFrame,
-    p_arg: object,
-    seed: int,
-) -> None:
+def test_sample_with_into_expr_column_p_per_row(dframe: pl.DataFrame, p_arg: object, seed: int) -> None:
     result = dframe.with_columns(b=Bernoulli(p=p_arg).sample(seed=seed))  # type: ignore[arg-type]
     expected = pl.Series("b", [bool(v) for v in _EXTREME_P], dtype=pl.Boolean)
     assert_series_equal(result["b"], expected)
