@@ -11,3 +11,13 @@ def test_median_equals_location_column_params() -> None:
     result = df.select(r=Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).median())["r"]
     expected = pl.Series("r", [0.0, -3.0, 10.0], dtype=pl.Float64)
     assert_series_equal(result, expected)
+
+
+def test_median_propagates_null_params() -> None:
+    # A null in either parameter nulls the row (null mean, then null std_dev).
+    df = pl.DataFrame(
+        {"mu": [0.0, None, 1.0], "sigma": [1.0, 2.0, None]}, schema={"mu": pl.Float64, "sigma": pl.Float64}
+    )
+    result = df.select(r=Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).median())["r"]
+    expected = pl.Series("r", [0.0, None, None], dtype=pl.Float64)
+    assert_series_equal(result, expected)

@@ -122,26 +122,29 @@ class Normal(ContinuousDistribution):
         """
         return self._value_plugin("normal_ppf", quantile)
 
-    def mean(self) -> pl.Expr:
-        """Expected value, the ``mean`` location parameter.
+    def _moment(self, value: pl.Expr) -> pl.Expr:
+        """Gate a closed-form moment on a non-null, valid ``(mean, std_dev)`` parameterisation.
 
-        Gated on the validated scale so an invalid parameterisation raises here too; the gate is null
-        for a null ``std_dev`` and ``self._mean`` is null for a null ``mean``, so either null propagates.
+        Evaluating ``_checked_std_dev`` validates ``std_dev`` in Rust (raising on ``std_dev <= 0`` or a
+        non-finite parameter) and is null when ``std_dev`` is null; the ``mean`` term propagates a null
+        ``mean``. So every moment nulls on either null input and raises identically on an invalid scale,
+        regardless of which parameter ``value`` itself references. Validation lives in the gate, so
+        ``value`` can read the raw ``self._std_dev`` / ``self._mean`` without re-validating.
         """
-        return pl.when(self._checked_std_dev.is_not_null()).then(self._mean)
+        return pl.when(self._checked_std_dev.is_not_null() & self._mean.is_not_null()).then(value)
+
+    def mean(self) -> pl.Expr:
+        """Expected value, the ``mean`` location parameter."""
+        return self._moment(self._mean)
 
     def variance(self) -> pl.Expr:
-        """Variance, ``std_dev ** 2``.
-
-        Squaring the validated scale propagates a null/invalid ``std_dev``; the ``mean`` guard
-        propagates a null ``mean`` so any null input nulls the row.
-        """
-        return pl.when(self._mean.is_not_null()).then(self._checked_std_dev**2)
+        """Variance, ``std_dev ** 2``."""
+        return self._moment(self._std_dev**2)
 
     def median(self) -> pl.Expr:
         """Median, equal to the ``mean`` location parameter."""
-        return pl.when(self._checked_std_dev.is_not_null()).then(self._mean)
+        return self._moment(self._mean)
 
     def entropy(self) -> pl.Expr:
         """Differential entropy, ``0.5 * log(2 * pi * e * std_dev ** 2)``."""
-        return pl.when(self._mean.is_not_null()).then(0.5 * (_TWO_PI_E * self._checked_std_dev**2).log())
+        return self._moment(0.5 * (_TWO_PI_E * self._std_dev**2).log())
