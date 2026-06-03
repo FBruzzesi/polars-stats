@@ -11,16 +11,16 @@ from polars_stats import Bernoulli
 
 @pytest.mark.parametrize("p", [0.1, 0.3, 0.5, 0.7, 0.9])
 def test_entropy_interior(p: float, unit_frame: pl.DataFrame) -> None:
-    out = unit_frame.select(v=Bernoulli(p=p).entropy()).item(0, "v")
+    result = unit_frame.select(v=Bernoulli(p=p).entropy()).item(0, "v")
     expected = -p * math.log(p) - (1 - p) * math.log(1 - p)
-    assert out == pytest.approx(expected)
+    assert result == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("p", [0.0, 1.0])
 def test_entropy_degenerate_endpoints_are_zero(p: float, unit_frame: pl.DataFrame) -> None:
     # 0 * log 0 = 0 convention: degenerate Bernoulli has zero entropy.
-    out = unit_frame.select(v=Bernoulli(p=p).entropy()).item(0, "v")
-    assert out == 0.0
+    result = unit_frame.select(v=Bernoulli(p=p).entropy()).item(0, "v")
+    assert result == 0.0
 
 
 def test_entropy_at_half_equals_log_two(unit_frame: pl.DataFrame) -> None:

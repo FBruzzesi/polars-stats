@@ -21,8 +21,8 @@ from polars_stats import Bernoulli
     ],
 )
 def test_ppf_scalar(p: float, quantile: float, *, expected: bool, unit_frame: pl.DataFrame) -> None:
-    out = unit_frame.select(v=Bernoulli(p=p).ppf(quantile)).item(0, "v")
-    assert out is expected
+    result = unit_frame.select(v=Bernoulli(p=p).ppf(quantile)).item(0, "v")
+    assert result is expected
 
 
 def test_ppf_propagates_null_in_quantile() -> None:

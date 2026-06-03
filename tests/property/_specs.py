@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,6 +65,18 @@ _BERNOULLI = DistSpec(
     support=lambda _: [0.0, 1.0],
 )
 
+_BINOMIAL = DistSpec(
+    name="binomial",
+    continuous=False,
+    # `n` is drawn as an integer trial count; `p` spans the closed unit interval (incl. the
+    # degenerate endpoints, where the mass collapses onto a single support point).
+    params=st.tuples(st.integers(min_value=0, max_value=20), _finite(0.0, 1.0)),
+    make=lambda p: Binomial(n=int(p[0]), p=p[1]),
+    density=lambda d, c: d.pmf(c),
+    eval_range=lambda p: (-1.0, p[0] + 1.0),
+    support=lambda p: [float(k) for k in range(int(p[0]) + 1)],
+)
+
 _NORMAL = DistSpec(
     name="normal",
     continuous=True,
@@ -101,6 +113,6 @@ _LOGNORMAL = DistSpec(
     integration_bounds=lambda p: (0.0, exp(p[0] + 6.0 * p[1])),
 )
 
-ALL_SPECS = [_BERNOULLI, _NORMAL, _UNIFORM, _LOGNORMAL]
+ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL]
 CONTINUOUS_SPECS = [s for s in ALL_SPECS if s.continuous]
 DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]

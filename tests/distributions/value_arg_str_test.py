@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal
 
-from polars_stats import Bernoulli, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution
 
 if TYPE_CHECKING:
@@ -26,6 +26,7 @@ DISTRIBUTIONS: list[tuple[_UnivariateDistribution, str]] = [
     (LogNormal(mu="mu", sigma="sigma"), "LogNormal"),
     (Uniform(min="lo", max="hi"), "Uniform"),
     (Bernoulli(p="p"), "Bernoulli"),
+    (Binomial(n="n", p="p"), "Binomial"),
 ]
 
 FRAME = pl.DataFrame(
@@ -34,6 +35,7 @@ FRAME = pl.DataFrame(
         "sigma": [1.0, 2.0, 0.5],
         "lo": [0.0, -1.0, 2.0],
         "hi": [1.0, 3.0, 5.0],
+        "n": [5, 10, 20],
         "p": [0.2, 0.5, 0.9],
         "x": [0.5, 1.5, 3.0],  # support points for pdf / pmf / cdf / sf
         "q": [0.1, 0.5, 0.9],  # quantiles in [0, 1] for ppf / isf

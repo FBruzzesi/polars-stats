@@ -9,8 +9,8 @@ from polars_stats import Bernoulli
 
 @pytest.mark.parametrize("p", [0.0, 0.25, 0.5, 0.75, 1.0])
 def test_variance_scalar(p: float, unit_frame: pl.DataFrame) -> None:
-    out = unit_frame.select(v=Bernoulli(p=p).variance()).item(0, "v")
-    assert out == pytest.approx(p * (1 - p))
+    result = unit_frame.select(v=Bernoulli(p=p).variance()).item(0, "v")
+    assert result == pytest.approx(p * (1 - p))
 
 
 def test_variance_column_p() -> None:
