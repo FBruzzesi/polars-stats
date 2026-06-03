@@ -21,7 +21,7 @@ questions, see [Design notes](design.md).
 
 The method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, `isf`, the `log_*` family, `mean`, `variance`, `std`, `median`,
 `entropy`, `sample`, `samples`) is defined on the abstract base classes `ContinuousDistribution` and
-`DiscreteDistribution`. The catalogue and the full table live in [Distributions](distributions.md#method-surface).
+`DiscreteDistribution`. The catalogue and the full table live in the [API reference](reference/index.md#method-surface).
 
 **Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`,
 applies `propagate_null`, then delegates the maths to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses
@@ -134,9 +134,9 @@ the deliberately-excluded crates are in [Contributing / Stack](contributing.md#s
 
 | Dimension | Values |
 |---|---|
-| OS | Target: Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64. PR CI runs Linux x86_64 only; the full matrix is a release-build concern. |
-| Python | 3.10 to 3.14, single abi3 wheel. |
-| Polars | `>=1.15`; PR CI tests the oldest pin (`1.15.0`) and the latest. |
+| OS | Wheels target Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64. |
+| Python | 3.10 to 3.14 (per `requires-python`), single abi3 wheel. |
+| Polars | `>=1.15` (the `pyo3-polars` ABI floor). |
 
-`pyo3-polars` breaks its ABI on most Polars minor releases, so the release cadence is a patch within roughly one week of
-each Polars minor. License: MIT OR Apache-2.0.
+`pyo3-polars` breaks its ABI on most Polars minor releases, so a release is expected to follow each Polars minor
+closely. License: MIT OR Apache-2.0.

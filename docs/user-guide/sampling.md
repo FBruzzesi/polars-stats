@@ -36,18 +36,21 @@ The sample element dtype is per distribution and is not normalised to `Float64`:
 
 ## Seeding and reproducibility
 
-Pass an integer `seed` for output that is deterministic across platforms, chunking, and thread count:
+Pass an integer `seed` for output that is deterministic across platforms, chunking, thread count, and execution engine:
 
 | `seed` | Behaviour |
 |---|---|
-| `int` | Deterministic across OS, architecture, chunking, and thread count |
+| `int` | Deterministic across OS, architecture, chunking, thread count, and engine (in-memory or streaming) |
 | `None` | Non-reproducible by design (OS entropy) |
 
 Determinism comes from deriving a fresh per-row generator from `(seed, row_index)` rather than advancing one shared RNG
-in iteration order. That keying makes a row's draw independent of how Polars chunks or threads the data, so `sample` is
-genuinely elementwise and correct under `over` / `group_by`. The mechanics are in
-[Architecture / Sampling](../architecture.md#sampling).
+in iteration order. That keying makes a row's draw depend only on its global position, not on how Polars chunks,
+threads, or morsels the data, so `sample` is genuinely elementwise and correct under `over` / `group_by`. The mechanics
+are in [Architecture / Sampling](../architecture.md#sampling).
 
-!!! warning "Call `.collect()` before sampling in a lazy pipeline"
+!!! info "Streaming engine"
 
-    Sampling is not yet declared streaming-safe, so collect a `LazyFrame` before drawing from it.
+    Seeded sampling is engine-invariant: a `LazyFrame` collected with `engine="streaming"` yields the same draws as
+    the default in-memory engine. A property test (`tests/property/sample_test.py`) asserts this across a multi-chunk
+    source for every distribution. Note that the row index is a whole-frame quantity, so the sampling step is not
+    memory-bounded streaming, it is correct, not lazy in the streaming sense.

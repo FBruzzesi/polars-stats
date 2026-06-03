@@ -48,8 +48,10 @@ A wrong parameter *type* (e.g. passing a `list`) is rejected earlier, at constru
 | `x` outside the support (e.g. `pdf` below a Uniform's `min`) | per row | `0.0` (matches `scipy`) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches `scipy`) |
 | Type mismatch (a string column into `pdf`) | Rust evaluation | `ComputeError` |
-| Moment permanently undefined (e.g. Cauchy mean) | Python | `NotImplementedError` |
-| Moment undefined only in the current regime (Student-t with `df <= 1`, Pareto with `shape <= 1`) | per row | `null` |
+
+Every distribution shipped today (`Normal`, `LogNormal`, `Uniform`, `Bernoulli`) has finite moments on its valid
+parameter range, so this contract is exhaustive for them. The policy for distributions whose moments can be undefined
+(some are on the roadmap) is set out in [Design notes](../design.md#moments-that-are-undefined).
 
 Raising is loud, uniform across distributions, and uniform across scalar vs column inputs. The rationale is in
 [Design notes](../design.md#invalid-parameters-raise-they-never-silently-null).

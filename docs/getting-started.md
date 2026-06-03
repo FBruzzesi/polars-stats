@@ -39,8 +39,8 @@ result = df.with_columns(
 print(result)
 ```
 
-The full method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, the `log_*` family, moments, sampling) is listed in
-[Distributions](distributions.md#method-surface).
+The full method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, the `log_*` family, moments, sampling) is listed in the
+[API reference](reference/index.md#method-surface).
 
 ## Where to next
 

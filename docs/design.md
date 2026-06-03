@@ -54,13 +54,17 @@ because scalars are coerced to columns and validated per row exactly like column
 validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)). A `strict=False` opt-in
 that nulls instead of raising is deferred until a user asks.
 
-### `NotImplementedError` for permanently undefined moments, `null` for regime-dependent
+### Moments that are undefined
 
-Cauchy's mean and variance are permanently undefined, so Cauchy raises `NotImplementedError`: silently returning null
-would hide a modelling error from a user who chains `.mean().sum()`. Student-t with `df <= 1` also has no mean, but the
-same distribution with `df > 1` does. That is regime-dependent, and a user sweeping a parameter across the threshold
-should not get an exception that breaks the sweep, so it returns `null`. Inconsistent on its face, defensible per case,
-documented in each class.
+Every distribution shipped today has finite moments on its valid parameter range, so this policy does not bite yet; it
+governs distributions on the roadmap. Two cases, handled differently on purpose:
+
+- **Permanently undefined** (e.g. a Cauchy mean): raise `NotImplementedError`. Silently returning null would hide a
+  modelling error from a user who chains `.mean().sum()`.
+- **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
+  return `null`. A user sweeping a parameter across the threshold should not get an exception that breaks the sweep.
+
+Inconsistent on its face, defensible per case, and to be documented in each class as it lands.
 
 ## Open questions
 
@@ -68,19 +72,21 @@ documented in each class.
   (`Normal(mean, std_dev)`, `Uniform(min, max)`, `Exp(rate)` rather than `Exp(scale)`), which avoids the `scipy`
   `(loc, scale)` collision across location-scale families but breaks scipy-compat at the constructor. Each docstring
   spells out the `scipy` reparameterisation. Whether to keep this or adopt `scipy`'s uniform `(loc, scale)` is not yet
-  settled; revisit before `1.0`.
+  settled.
 - **API namespace.** `polars_stats.Normal(...).pdf(x)` (scipy-style, current) versus
   `pl.col("x").dist.normal_pdf(loc=..., scale=...)` (Polars namespace style, fits `.dt` / `.str` / `.list`). Picked
   scipy-style without strong evidence; revisit after first external feedback.
 - **Sample output dtype.** Currently per distribution (`Boolean`, `UInt64`, `Float64`); `scipy` returns `f64`
   uniformly. Revisit if it forces awkward casting in user code.
-- **Streaming-safe sampling.** The per-row keying already removed cross-chunk coupling; what is unverified is the
-  streaming engine's handling of the injected row-index expression. Add a streaming test, then relax the `.collect()`
-  guidance.
-- **GIL release inside plugin entry points.** Wrapping the hot loop in `py.allow_threads` is a hardening pass tracked
-  before v0.5, not yet audited.
+- **Streaming-safe sampling.** Resolved. The per-row keying removed cross-chunk coupling, and a property test
+  (`tests/property/sample_test.py`) now asserts seeded draws are identical under the in-memory and streaming engines
+  on a multi-chunk source, so the earlier `.collect()`-first guidance was dropped. What remains is a performance note,
+  not a correctness one: the injected `pl.int_range(0, pl.len())` row index is a whole-frame quantity, so the sampling
+  step is not memory-bounded under streaming.
+- **GIL release inside plugin entry points.** Wrapping the hot loop in `py.allow_threads` is a hardening pass, not yet
+  audited.
 - **Pure-Rust consumption.** Publishing to crates.io works, but the `cdylib` + PyO3 stack makes Rust-only use awkward.
-  Splitting into `polars-stats-core` (no PyO3) + `polars-stats` (binding) is the v2 fix.
+  Splitting into `polars-stats-core` (no PyO3) + `polars-stats` (binding) is the planned fix.
 
 ## Risks
 
@@ -88,7 +94,7 @@ documented in each class.
 |---|---|
 | `pyo3-polars` breaks its ABI on most Polars minor releases | Automated bump + CI on a weekly cadence; pin the upper bound to the next Polars minor |
 | `statrs` is a single-maintainer project | Track activity; vendor or fork the specific distributions we use if upstream archives |
-| `statrs` accuracy in the tails (binary-search `inverse_cdf` for Gamma / Poisson / NegBinom / ...) | Per-distribution tolerance documented in tests; v2 candidate: native `ppf` via the `special` crate or Newton refinement |
+| `statrs` accuracy in the tails (binary-search `inverse_cdf` for Gamma / Poisson / NegBinom / ...) | Per-distribution tolerance documented in tests; candidate fix: native `ppf` via the `special` crate or Newton refinement |
 | `rand` 0.8 to 0.9 transition (`distributions` renamed to `distr`) | Pin 0.8 until `statrs` moves; follow in lockstep |
 | Reference values for tests come from `scipy.stats`, the library we partly replace | Acknowledged; freeze the SciPy version in dev deps |
 | abi3 compatibility across the Python range | Test on all supported versions in CI even though abi3 claims compatibility |
@@ -105,8 +111,6 @@ documented in each class.
   names the offending value but not the row index, which is hard to locate in a wide frame.
 - **`scipy` parity tests create a circular dev dependency** on the library being partly replaced.
 - **MSRV is not pinned.** `rust-toolchain.toml` pins a nightly (needed for the `rustfmt.toml` import-granularity
-  options). Decide a stable N-2 floor before release.
+  options). A stable N-2 floor is still to be decided.
 - **`statrs` lacks some `scipy` distributions** (GEV, Skew Normal, Truncated Normal, mixtures). If users need these we
   either upstream to `statrs` or fork.
-- **Demand for column-valued parameters is unvalidated** beyond the authors' satellite-telemetry anomaly-detection case.
-  Check Polars Discord / GitHub before v0.5.

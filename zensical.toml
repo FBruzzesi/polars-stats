@@ -22,10 +22,10 @@ nav = [
     { "Sampling" = "user-guide/sampling.md" },
     { "Nulls and errors" = "user-guide/nulls-and-errors.md" },
   ] },
-  { "Distributions" = "distributions.md" },
   { "API reference" = [
     { "Overview" = "reference/index.md" },
-    { "Distributions" = "reference/distributions.md" },
+    { "Continuous" = "reference/continuous.md" },
+    { "Discrete" = "reference/discrete.md" },
   ] },
   { "Explanation" = [
     { "Architecture" = "architecture.md" },
