@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -24,10 +23,9 @@ def test_cdf_is_monotone_non_decreasing(
 ) -> None:
     mean, std = params
     xs = value_grid(mean, std)
-    result = pl.DataFrame({"x": xs}).select(r=Normal(mean=mean, std_dev=std).cdf(pl.col("x")))["r"].to_numpy()
-    assert np.all(np.diff(result) >= 0.0)
-    assert result.min() >= 0.0
-    assert result.max() <= 1.0
+    result = pl.DataFrame({"x": xs}).select(r=Normal(mean=mean, std_dev=std).cdf(pl.col("x")))["r"]
+    assert result.is_sorted()
+    assert result.is_between(0.0, 1.0).all()
 
 
 def test_cdf_column_params() -> None:

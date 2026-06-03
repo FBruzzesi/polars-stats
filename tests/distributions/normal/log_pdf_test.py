@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -23,5 +24,5 @@ def test_log_pdf_equals_log_of_pdf(value_grid: Callable[[float, float], list[flo
 def test_log_pdf_propagates_null_in_value() -> None:
     df = pl.DataFrame({"x": [0.0, None]}, schema={"x": pl.Float64})
     result = df.select(r=Normal().log_pdf(pl.col("x")))["r"]
-    expected = pl.Series("r", [float(np.log(1.0 / np.sqrt(2.0 * np.pi))), None], dtype=pl.Float64)
+    expected = pl.Series("r", [math.log(1.0 / math.sqrt(2.0 * math.pi)), None], dtype=pl.Float64)
     assert_series_equal(result, expected)

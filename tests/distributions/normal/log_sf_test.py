@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -23,5 +24,5 @@ def test_log_sf_equals_log_of_sf(value_grid: Callable[[float, float], list[float
 def test_log_sf_propagates_null_in_value() -> None:
     df = pl.DataFrame({"x": [0.0, None]}, schema={"x": pl.Float64})
     result = df.select(r=Normal().log_sf(pl.col("x")))["r"]
-    expected = pl.Series("r", [float(np.log(0.5)), None], dtype=pl.Float64)
+    expected = pl.Series("r", [math.log(0.5), None], dtype=pl.Float64)
     assert_series_equal(result, expected)

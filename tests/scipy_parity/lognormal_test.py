@@ -46,7 +46,8 @@ _CASES: list[Case[LogNormal]] = [
 
 def _value_grid(mu: float, sigma: float) -> list[float]:
     """Positive evaluation points, geometric around the median `exp(mu)`."""
-    return [float(np.exp(mu + k * sigma)) for k in (-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0)]
+    ks = np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
+    return np.exp(mu + ks * sigma).tolist()
 
 
 @pytest.mark.parametrize(("mu", "sigma"), _PARAMS, ids=[f"mu={m},sigma={s}" for m, s in _PARAMS])
