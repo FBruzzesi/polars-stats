@@ -54,7 +54,7 @@ def value_grid() -> Callable[[float, float], list[float]]:
     """
 
     def _make(mu: float, sigma: float) -> list[float]:
-        ks = np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
-        return np.exp(mu + ks * sigma).tolist()
+        ks = pl.Series([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
+        return (mu + ks * sigma).exp().to_list()
 
     return _make

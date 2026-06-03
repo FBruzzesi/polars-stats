@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
 from scipy.stats import lognorm as scipy_lognorm
 
@@ -46,8 +47,8 @@ _CASES: list[Case[LogNormal]] = [
 
 def _value_grid(mu: float, sigma: float) -> list[float]:
     """Positive evaluation points, geometric around the median `exp(mu)`."""
-    ks = np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
-    return np.exp(mu + ks * sigma).tolist()
+    ks = pl.Series([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
+    return (mu + ks * sigma).exp().to_list()
 
 
 @pytest.mark.parametrize(("mu", "sigma"), _PARAMS, ids=[f"mu={m},sigma={s}" for m, s in _PARAMS])
