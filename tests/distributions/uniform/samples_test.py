@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -39,20 +38,15 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_within_bounds(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mn, mx = -3.0, 2.0
-    flat = np.asarray(
-        frame(size=2_000).select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"].to_list(),
-        dtype=float,
-    ).ravel()
-    assert flat.min() >= mn
-    assert flat.max() <= mx
+    series = frame(size=2_000).select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"].arr.explode()
+
+    assert series.is_between(mn, mx).all()
 
 
 def test_samples_mean_close_to_midpoint(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    flat = np.asarray(
-        frame(size=4_000).select(s=Uniform(min=2.0, max=5.0).samples(size=16, seed=seed))["s"].to_list(),
-        dtype=float,
-    ).ravel()
-    assert abs(flat.mean() - 3.5) < 0.01 * 3.0
+    series = frame(size=4_000).select(s=Uniform(min=2.0, max=5.0).samples(size=16, seed=seed))["s"].arr.explode()
+    mean = cast("float", series.mean())
+    assert abs(mean - 3.5) < 0.01 * 3.0
 
 
 @pytest.mark.parametrize("bad_size", [0, -1])

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -41,7 +40,7 @@ def test_pdf_propagates_null_in_value() -> None:
     result = df.select(r=Normal().pdf(pl.col("x")))["r"]
     expected = pl.Series(
         "r",
-        [1.0 / math.sqrt(2.0 * math.pi), None, float(np.exp(-0.5) / math.sqrt(2.0 * math.pi))],
+        [1.0 / math.sqrt(2.0 * math.pi), None, math.exp(-0.5) / math.sqrt(2.0 * math.pi)],
         dtype=pl.Float64,
     )
     assert_series_equal(result, expected)

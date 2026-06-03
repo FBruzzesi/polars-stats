@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import polars as pl
+import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import Normal
@@ -10,7 +11,7 @@ from polars_stats import Normal
 def test_ppf_at_half_is_mean(params: tuple[float, float]) -> None:
     mean, std = params
     result = pl.DataFrame({"q": [0.5]}).select(r=Normal(mean=mean, std_dev=std).ppf(pl.col("q")))["r"].item()
-    np.testing.assert_allclose(result, mean, atol=1e-12, rtol=0)
+    assert result == pytest.approx(mean, abs=1e-12)
 
 
 def test_ppf_is_cdf_inverse(params: tuple[float, float]) -> None:

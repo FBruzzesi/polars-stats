@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import numpy as np
+import polars as pl
+from polars.testing import assert_series_equal
+
+from polars_stats import LogNormal
+
+
+def test_isf_equals_ppf_of_complement(params: tuple[float, float]) -> None:
+    mu, sigma = params
+    qs = [0.05, 0.25, 0.5, 0.75, 0.95]
+    d = LogNormal(mu=mu, sigma=sigma)
+    isf = pl.DataFrame({"q": qs}).select(r=d.isf(pl.col("q")))["r"].to_numpy()
+    ppf_comp = pl.DataFrame({"q": [1 - q for q in qs]}).select(r=d.ppf(pl.col("q")))["r"].to_numpy()
+    np.testing.assert_allclose(isf, ppf_comp, atol=1e-12, rtol=0)
+
+
+def test_isf_endpoints_map_to_support_boundaries() -> None:
+    # isf(0) = ppf(1) = +inf, isf(1) = ppf(0) = 0.
+    df = pl.DataFrame({"q": [0.0, 1.0]})
+    result = df.select(r=LogNormal().isf(pl.col("q")))["r"]
+    expected = pl.Series("r", [float("inf"), 0.0], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_isf_out_of_range_is_null() -> None:
+    df = pl.DataFrame({"q": [-0.1, 0.0, 1.0, 1.1]})
+    result = df.select(r=LogNormal().isf(pl.col("q")))["r"]
+    expected = pl.Series("r", [None, float("inf"), 0.0, None], dtype=pl.Float64)
+    assert_series_equal(result, expected)
