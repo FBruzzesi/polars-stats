@@ -41,9 +41,12 @@ dev = [
     "maturin>=1.13.1",
 ]
 testing = [
+    "covdefaults>=2.3.0",
     "hypothesis>=6.100.0",
     "numpy>=2.2.6",
+    "packaging>=26.2",
     "pytest>=8.3.5",
+    "pytest-cov>=7.1.0",
     "scipy>=1.13.0",
 ]
 benchmark = [
@@ -60,11 +63,24 @@ typing = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--import-mode=importlib"]
+addopts = [
+  "--import-mode=importlib",
+  "--cov=polars_stats",
+  "--cov=tests",
+]
 filterwarnings = [
   "error",
 ]
 xfail_strict = true
+
+[tool.coverage.run]
+plugins = ["covdefaults"]
+
+[tool.coverage.report]
+fail_under = 95
+omit = [
+  "polars_stats/_typing.py",
+]
 
 [tool.ruff]
 line-length = 120
@@ -139,15 +155,6 @@ project-includes = ["polars_stats", "tests"]
 # so the cross-test `from tests.property._specs import ...` only resolves via the editable `.pth` on a
 # local dev machine and breaks under CI's wheel-only install.
 search_path = ["."]
-
-[tool.coverage.run]
-plugins = ["covdefaults"]
-
-[tool.coverage.report]
-fail_under = 95
-omit = [
-  "polars_stats/typing.py",
-]
 
 [tool.rumdl]
 line-length = 120
