@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Normal, Uniform
+from polars_stats import Bernoulli, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -86,6 +87,20 @@ _UNIFORM = DistSpec(
     integration_bounds=lambda p: (p[0], p[1]),
 )
 
-ALL_SPECS = [_BERNOULLI, _NORMAL, _UNIFORM]
+_LOGNORMAL = DistSpec(
+    name="lognormal",
+    continuous=True,
+    # `sigma` is capped at 0.9: the heavy right tail makes a uniform-grid trapezoidal integral lose
+    # accuracy as `sigma` grows, and past ~1.0 the 4096-point mass check drifts above the 1e-3
+    # tolerance. The functional and scipy-parity suites cover larger `sigma` directly.
+    params=st.tuples(_finite(-1.5, 1.5), _finite(0.1, 0.9)),
+    make=lambda p: LogNormal(mu=p[0], sigma=p[1]),
+    density=lambda d, c: d.pdf(c),
+    # Support is (0, inf); the grid stays on the positive side and out to a 4-sigma-in-log upper tail.
+    eval_range=lambda p: (0.0, float(np.exp(p[0] + 4.0 * p[1]))),
+    integration_bounds=lambda p: (0.0, float(np.exp(p[0] + 6.0 * p[1]))),
+)
+
+ALL_SPECS = [_BERNOULLI, _NORMAL, _UNIFORM, _LOGNORMAL]
 CONTINUOUS_SPECS = [s for s in ALL_SPECS if s.continuous]
 DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]

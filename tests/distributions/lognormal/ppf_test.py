@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import polars as pl
+import pytest
+from polars.testing import assert_series_equal
+
+from polars_stats import LogNormal
+
+
+def test_ppf_at_half_is_median(params: tuple[float, float]) -> None:
+    mu, sigma = params
+    result = pl.DataFrame({"q": [0.5]}).select(r=LogNormal(mu=mu, sigma=sigma).ppf(pl.col("q")))["r"].item()
+    assert result == pytest.approx(math.exp(mu), abs=1e-12)
+
+
+def test_ppf_is_cdf_inverse(params: tuple[float, float]) -> None:
+    mu, sigma = params
+    interior = [0.05, 0.25, 0.5, 0.75, 0.95]
+    d = LogNormal(mu=mu, sigma=sigma)
+    out = pl.DataFrame({"q": interior}).select(r=d.cdf(d.ppf(pl.col("q"))))["r"]
+    np.testing.assert_allclose(out.to_numpy(), interior, atol=1e-9, rtol=0)
+
+
+def test_ppf_endpoints_map_to_support_boundaries() -> None:
+    # The support is (0, inf): ppf(0) = 0, ppf(1) = +inf (matching scipy.stats.lognorm.ppf).
+    df = pl.DataFrame({"q": [0.0, 1.0]})
+    result = df.select(r=LogNormal().ppf(pl.col("q")))["r"]
+    expected = pl.Series("r", [0.0, float("inf")], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_ppf_out_of_range_is_null() -> None:
+    df = pl.DataFrame({"q": [-0.1, 0.0, 0.5, 1.0, 1.1]})
+    result = df.select(r=LogNormal().ppf(pl.col("q")))["r"]
+    expected = pl.Series("r", [None, 0.0, 1.0, float("inf"), None], dtype=pl.Float64)
+    assert_series_equal(result, expected)
+
+
+def test_ppf_propagates_null_in_quantile() -> None:
+    df = pl.DataFrame({"q": [0.5, None]}, schema={"q": pl.Float64})
+    result = df.select(r=LogNormal(mu=2.0, sigma=1.0).ppf(pl.col("q")))["r"]
+    expected = pl.Series("r", [math.exp(2.0), None], dtype=pl.Float64)
+    assert_series_equal(result, expected)
