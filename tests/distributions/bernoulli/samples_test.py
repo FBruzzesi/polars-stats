@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -52,9 +51,9 @@ def test_samples_mean_close_to_p_for_large_total(
 ) -> None:
     n, size, p = 4_000, 16, 0.3
     tolerance = 0.01
-    result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"]
-    flat = np.asarray(result.to_list(), dtype=float).ravel()
-    assert abs(flat.mean() - p) < tolerance
+    result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"].arr.explode()
+    mean = cast("float", result.mean())
+    assert abs(mean - p) < tolerance
 
 
 @pytest.mark.parametrize("bad_size", [0, -1])

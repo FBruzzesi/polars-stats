@@ -39,7 +39,6 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 def test_samples_within_bounds(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mn, mx = -3.0, 2.0
     series = frame(size=2_000).select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"].arr.explode()
-
     assert series.is_between(mn, mx).all()
 
 

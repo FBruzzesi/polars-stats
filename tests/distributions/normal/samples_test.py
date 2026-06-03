@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -39,12 +38,10 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_moments_close(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mean, std = 2.0, 1.5
-    flat = np.asarray(
-        frame(size=4_000).select(s=Normal(mean=mean, std_dev=std).samples(size=16, seed=seed))["s"].to_list(),
-        dtype=float,
-    ).ravel()
-    assert abs(flat.mean() - mean) < 0.05 * std
-    assert abs(flat.std() - std) < 0.05 * std
+    result = frame(size=4_000).select(s=Normal(mean=mean, std_dev=std).samples(size=16, seed=seed))["s"].arr.explode()
+    _mean, _std = cast("float", result.mean()), cast("float", result.std())
+    assert abs(_mean - mean) < 0.05 * std
+    assert abs(_std - std) < 0.05 * std
 
 
 @pytest.mark.parametrize("bad_size", [0, -1])
