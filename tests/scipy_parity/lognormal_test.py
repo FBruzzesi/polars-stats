@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
+from math import exp
+
 import polars as pl
 import pytest
 from scipy.stats import lognorm as scipy_lognorm
@@ -25,7 +26,7 @@ _TOL_ERF = 1e-9
 
 def _scipy_frozen(mu: float, sigma: float) -> object:
     """`scipy.stats.lognorm` frozen at the polars-stats `(mu, sigma)`: `s=sigma`, `scale=exp(mu)`."""
-    return scipy_lognorm(s=sigma, scale=np.exp(mu))
+    return scipy_lognorm(s=sigma, scale=exp(mu))
 
 
 _CASES: list[Case[LogNormal]] = [

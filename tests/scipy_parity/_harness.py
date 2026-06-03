@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
-import numpy as np
 import polars as pl
+
+from tests._polars_compat import assert_series_equal
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -64,11 +65,13 @@ def assert_case_matches_scipy(
     the calling test module because their support spans are distribution-specific.
     """
     if case.kind == "scalar":
-        result = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(dist, pl.lit(0.0)))["r"].to_numpy()
-        expected = np.asarray([getattr(scipy_frozen, case.scipy_attr)()], dtype=float)
+        result = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(dist, pl.lit(0.0)))["r"]
+        expected = [getattr(scipy_frozen, case.scipy_attr)()]
     else:
         xs = list(value_grid if case.kind == "value" else quantiles)
-        result = pl.DataFrame({"x": xs}).select(r=case.pl_fn(dist, pl.col("x")))["r"].to_numpy()
-        expected = np.asarray(getattr(scipy_frozen, case.scipy_attr)(xs), dtype=float)
+        result = pl.DataFrame({"x": xs}).select(r=case.pl_fn(dist, pl.col("x")))["r"]
+        expected = getattr(scipy_frozen, case.scipy_attr)(xs)
 
-    np.testing.assert_allclose(np.asarray(result, dtype=float), expected, atol=case.tol, rtol=0)
+    assert_series_equal(
+        result, pl.Series(values=expected), rel_tol=0.0, abs_tol=case.tol, check_names=False, check_dtypes=False
+    )

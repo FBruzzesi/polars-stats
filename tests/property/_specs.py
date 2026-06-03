@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import exp
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 from hypothesis import strategies as st
 
 from polars_stats import Bernoulli, LogNormal, Normal, Uniform
@@ -97,8 +97,8 @@ _LOGNORMAL = DistSpec(
     make=lambda p: LogNormal(mu=p[0], sigma=p[1]),
     density=lambda d, c: d.pdf(c),
     # Support is (0, inf); the grid stays on the positive side and out to a 4-sigma-in-log upper tail.
-    eval_range=lambda p: (0.0, float(np.exp(p[0] + 4.0 * p[1]))),
-    integration_bounds=lambda p: (0.0, float(np.exp(p[0] + 6.0 * p[1]))),
+    eval_range=lambda p: (0.0, exp(p[0] + 4.0 * p[1])),
+    integration_bounds=lambda p: (0.0, exp(p[0] + 6.0 * p[1])),
 )
 
 ALL_SPECS = [_BERNOULLI, _NORMAL, _UNIFORM, _LOGNORMAL]

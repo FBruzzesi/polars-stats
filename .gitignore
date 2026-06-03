@@ -1,13 +1,40 @@
-*.so
+# Byte-compiled / optimized / DLL files
+*__pycache__/
 *.pyc
-target
-venv
-.venv
+
+# Distribution / packaging
+dist/
+target/
 *.so
 *.dll
 *.pyd
 
-*__pycache__/
+# Virtual envs
+venv
+.venv
+
+# Testing
+.hypothesis/
 .benchmarks/
 benchmark.json
-.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+
+# Various tools caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.rumdl_cache/
+
+# Documentation
+site/
+
+# VSCode
+.vscode/
+
+# IntelliJ IDEA / PyCharm
+.idea/
+
+# MacOS
+.DS_Store

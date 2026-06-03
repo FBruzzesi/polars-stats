@@ -8,9 +8,12 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from tests._polars_compat import linear_space
 from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS, DISCRETE_SPECS
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from tests.property._specs import DistSpec
 
 _GRID_SIZE = 64
@@ -20,8 +23,8 @@ _INTEGRATION_GRID_SIZE = 4096
 _INTEGRATION_TOL = 1e-3
 
 
-def _eval(expr: pl.Expr, xs: list[float]) -> np.ndarray:
-    return pl.DataFrame({"x": xs}).select(r=expr)["r"].to_numpy()
+def _eval(expr: pl.Expr, xs: Iterable[float]) -> pl.Series:
+    return pl.DataFrame({"x": xs}).select(r=expr)["r"]
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
@@ -31,12 +34,12 @@ def test_density_non_negative(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
-    xs = np.linspace(lo, hi, _GRID_SIZE).tolist()
+    xs = linear_space(lo, hi, _GRID_SIZE)
 
     density = _eval(spec.density(dist, pl.col("x")), xs)
 
-    assert not np.isnan(density).any()
-    assert density.min() >= 0.0
+    assert not density.is_nan().any()
+    assert density.ge(0.0).all()
 
 
 @pytest.mark.parametrize("spec", CONTINUOUS_SPECS, ids=lambda s: s.name)
@@ -48,10 +51,10 @@ def test_pdf_integrates_to_one(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.integration_bounds(params)
-    xs = np.linspace(lo, hi, _INTEGRATION_GRID_SIZE)
+    xs = linear_space(lo, hi, _INTEGRATION_GRID_SIZE)
 
-    density = _eval(spec.density(dist, pl.col("x")), xs.tolist())
-    mass = float(np.trapezoid(density, xs))
+    density = _eval(spec.density(dist, pl.col("x")), xs)
+    mass = float(np.trapezoid(density.to_numpy(), xs.to_numpy()))
 
     assert mass == pytest.approx(1.0, abs=_INTEGRATION_TOL)
 
@@ -65,6 +68,6 @@ def test_pmf_sums_to_one(spec: DistSpec, data: st.DataObject) -> None:
     dist = spec.make(params)
     support = spec.support(params)
 
-    mass = float(_eval(spec.density(dist, pl.col("x")), support).sum())
+    mass = _eval(spec.density(dist, pl.col("x")), support).sum()
 
     assert mass == pytest.approx(1.0, abs=1e-12)

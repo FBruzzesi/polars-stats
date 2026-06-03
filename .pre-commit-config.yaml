@@ -46,6 +46,12 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: name-tests-test
+        exclude: |
+            (?x)^(
+                tests/_polars_compat.py|
+                tests/property/_specs.py|
+                tests/scipy_parity/_harness.py
+            )$
       - id: end-of-file-fixer
       - id: requirements-txt-fixer
       - id: no-commit-to-branch

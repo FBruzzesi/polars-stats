@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
-from polars.testing import assert_series_equal
 
 from polars_stats import LogNormal
+from tests._polars_compat import assert_series_equal
 
 
 def test_isf_equals_ppf_of_complement(params: tuple[float, float]) -> None:
     mu, sigma = params
     qs = [0.05, 0.25, 0.5, 0.75, 0.95]
     d = LogNormal(mu=mu, sigma=sigma)
-    isf = pl.DataFrame({"q": qs}).select(r=d.isf(pl.col("q")))["r"].to_numpy()
-    ppf_comp = pl.DataFrame({"q": [1 - q for q in qs]}).select(r=d.ppf(pl.col("q")))["r"].to_numpy()
-    np.testing.assert_allclose(isf, ppf_comp, atol=1e-12, rtol=0)
+    isf = pl.DataFrame({"q": qs}).select(r=d.isf(pl.col("q")))["r"]
+    ppf_comp = pl.DataFrame({"q": [1 - q for q in qs]}).select(r=d.ppf(pl.col("q")))["r"]
+    assert_series_equal(isf, ppf_comp, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_isf_endpoints_map_to_support_boundaries() -> None:
