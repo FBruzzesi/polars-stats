@@ -8,8 +8,7 @@ from polars.testing import assert_series_equal
 from scipy.stats import binom as scipy_binom
 
 from polars_stats import Binomial
-
-from .conftest import N_TRIALS
+from tests.distributions.binomial.conftest import N_TRIALS
 
 
 @pytest.mark.parametrize("p", [0.25, 0.5, 0.75])

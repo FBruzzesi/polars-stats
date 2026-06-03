@@ -8,8 +8,7 @@ import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
 from polars_stats import Binomial
-
-from .conftest import N_TRIALS
+from tests.distributions.binomial.conftest import N_TRIALS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
