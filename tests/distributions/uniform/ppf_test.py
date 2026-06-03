@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
-from polars.testing import assert_series_equal
 
 from polars_stats import Uniform
+from tests._polars_compat import assert_series_equal
 
 
 def test_ppf_is_cdf_inverse(bounds: tuple[float, float]) -> None:
     mn, mx = bounds
     interior = [0.1, 0.5, 0.9]
     u = Uniform(min=mn, max=mx)
-    out = pl.DataFrame({"q": interior}).select(r=u.cdf(u.ppf(pl.col("q"))))["r"]
-    np.testing.assert_allclose(out.to_numpy(), interior, atol=1e-12, rtol=0)
+    result = pl.DataFrame({"q": interior}).select(r=u.cdf(u.ppf(pl.col("q"))))["r"]
+    expected = pl.Series("r", interior, dtype=pl.Float64)
+    assert_series_equal(result, expected, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_ppf_out_of_range_is_null() -> None:

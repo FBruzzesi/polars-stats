@@ -48,6 +48,7 @@ repos:
       - id: name-tests-test
         exclude: |
             (?x)^(
+                tests/_polars_compat.py|
                 tests/property/_specs.py|
                 tests/scipy_parity/_harness.py
             )$

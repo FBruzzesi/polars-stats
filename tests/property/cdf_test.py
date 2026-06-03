@@ -8,6 +8,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from tests._polars_compat import assert_series_equal
 from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS
 
 if TYPE_CHECKING:
@@ -51,4 +52,4 @@ def test_cdf_ppf_round_trip(spec: DistSpec, q: float, data: st.DataObject) -> No
     dist = spec.make(params)
 
     recovered = _eval(dist.cdf(dist.ppf(pl.col("x"))), [q])
-    np.testing.assert_allclose(recovered, [q], atol=_ROUNDTRIP_TOL, rtol=0)
+    assert_series_equal(pl.Series(recovered), pl.Series([q]), rel_tol=0.0, abs_tol=_ROUNDTRIP_TOL)

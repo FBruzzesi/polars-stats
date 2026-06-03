@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import polars as pl
 import pytest
-from polars.testing import assert_series_equal
 
 from polars_stats import LogNormal
+from tests._polars_compat import assert_series_equal
 
 
 def test_ppf_at_half_is_median(params: tuple[float, float]) -> None:
@@ -20,8 +19,9 @@ def test_ppf_is_cdf_inverse(params: tuple[float, float]) -> None:
     mu, sigma = params
     interior = [0.05, 0.25, 0.5, 0.75, 0.95]
     d = LogNormal(mu=mu, sigma=sigma)
-    out = pl.DataFrame({"q": interior}).select(r=d.cdf(d.ppf(pl.col("q"))))["r"]
-    np.testing.assert_allclose(out.to_numpy(), interior, atol=1e-9, rtol=0)
+    result = pl.DataFrame({"q": interior}).select(r=d.cdf(d.ppf(pl.col("q"))))["r"]
+    expected = pl.Series("r", interior, dtype=pl.Float64)
+    assert_series_equal(result, expected, rel_tol=0.0, abs_tol=1e-9)
 
 
 def test_ppf_endpoints_map_to_support_boundaries() -> None:
