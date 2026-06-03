@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 import pytest
 from hypothesis import given
@@ -12,6 +11,8 @@ from tests._polars_compat import assert_series_equal
 from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from tests.property._specs import DistSpec
 
 _GRID_SIZE = 64
@@ -22,8 +23,8 @@ _ROUNDTRIP_TOL = 1e-6
 _MONOTONE_SLACK = 1e-12
 
 
-def _eval(expr: pl.Expr, xs: list[float]) -> np.ndarray:
-    return pl.DataFrame({"x": xs}).select(r=expr)["r"].to_numpy()
+def _eval(expr: pl.Expr, xs: Iterable[float]) -> pl.Series:
+    return pl.DataFrame({"x": xs}).select(r=expr)["r"]
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
@@ -33,15 +34,14 @@ def test_cdf_bounded_and_monotone(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
-    xs = np.linspace(lo, hi, _GRID_SIZE).tolist()
+    xs = pl.linear_space(lo, hi, _GRID_SIZE, eager=True)
 
     cdf = _eval(dist.cdf(pl.col("x")), xs)
 
-    assert not np.isnan(cdf).any()
-    assert cdf.min() >= 0.0
-    assert cdf.max() <= 1.0
+    assert not cdf.is_nan().any()
+    assert cdf.is_between(0.0, 1.0).all()
     # Allow only float noise against strict monotonicity, not a real decrease.
-    assert np.all(np.diff(cdf) >= -_MONOTONE_SLACK)
+    assert cdf.diff().ge(-_MONOTONE_SLACK).all()
 
 
 @pytest.mark.parametrize("spec", CONTINUOUS_SPECS, ids=lambda s: s.name)
@@ -52,4 +52,4 @@ def test_cdf_ppf_round_trip(spec: DistSpec, q: float, data: st.DataObject) -> No
     dist = spec.make(params)
 
     recovered = _eval(dist.cdf(dist.ppf(pl.col("x"))), [q])
-    assert_series_equal(pl.Series(recovered), pl.Series([q]), rel_tol=0.0, abs_tol=_ROUNDTRIP_TOL)
+    assert_series_equal(recovered, pl.Series([q]), rel_tol=0.0, abs_tol=_ROUNDTRIP_TOL, check_names=False)
