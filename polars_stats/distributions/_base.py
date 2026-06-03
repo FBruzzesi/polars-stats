@@ -72,13 +72,19 @@ def register_plugin(
     )
 
 
-def as_expr(value: float | pl.Expr) -> pl.Expr:
-    """Wrap a scalar method input as a literal; pass an existing `pl.Expr` through.
+def as_expr(value: float | IntoExprColumn) -> pl.Expr:
+    """Coerce a value-keyed method input (`value` / `quantile`) into a `pl.Expr`.
 
-    Used for method arguments such as `value` / `quantile`, which broadcast against the row-aligned
-    parameter expressions and so do not need the `pl.repeat` expansion that `coerce_param` applies.
+    A column name `str` becomes `pl.col(name)` (matching `coerce_param` and the wider Polars
+    convention of accepting bare column names); a `pl.Expr` passes through; a `float` or `pl.Series`
+    becomes a literal. These arguments broadcast against the row-aligned parameter expressions and so
+    do not need the `pl.repeat` expansion `coerce_param` applies.
     """
-    return value if isinstance(value, pl.Expr) else pl.lit(value)
+    if isinstance(value, pl.Expr):
+        return value
+    if isinstance(value, str):
+        return pl.col(value)
+    return pl.lit(value)
 
 
 def propagate_null(value: pl.Expr, result: pl.Expr) -> pl.Expr:
@@ -166,7 +172,7 @@ class _UnivariateDistribution(ABC):
 
         return pl.concat_arr(self.sample(seed=s) for s in seeds)
 
-    def cdf(self, value: float | pl.Expr) -> pl.Expr:
+    def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._cdf(v))
@@ -175,7 +181,7 @@ class _UnivariateDistribution(ABC):
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """Core cdf formula on a coerced expr; null handling is applied by `cdf`."""
 
-    def log_cdf(self, value: float | pl.Expr) -> pl.Expr:
+    def log_cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Natural logarithm of the cdf. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._log_cdf(v))
@@ -183,7 +189,7 @@ class _UnivariateDistribution(ABC):
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
         return self._cdf(value).log()
 
-    def sf(self, value: float | pl.Expr) -> pl.Expr:
+    def sf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Survival function, `P(X > value) = 1 - cdf(value)`. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._sf(v))
@@ -192,7 +198,7 @@ class _UnivariateDistribution(ABC):
         """Default `1 - cdf`; subclasses override when a closed form is more accurate in the upper tail."""
         return 1 - self._cdf(value)
 
-    def log_sf(self, value: float | pl.Expr) -> pl.Expr:
+    def log_sf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Natural logarithm of the survival function. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._log_sf(v))
@@ -200,7 +206,7 @@ class _UnivariateDistribution(ABC):
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         return self._sf(value).log()
 
-    def ppf(self, quantile: float | pl.Expr) -> pl.Expr:
+    def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
         `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range
@@ -214,7 +220,7 @@ class _UnivariateDistribution(ABC):
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """Core inverse-cdf formula on a coerced expr; null handling is applied by `ppf`."""
 
-    def isf(self, quantile: float | pl.Expr) -> pl.Expr:
+    def isf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Inverse survival function, `ppf(1 - quantile)`. Nulls in `quantile` are propagated."""
         q = as_expr(quantile)
         return propagate_null(q, self._isf(q))
@@ -246,7 +252,7 @@ class _UnivariateDistribution(ABC):
 class DiscreteDistribution(_UnivariateDistribution, ABC):
     """Abstract base class for discrete univariate distributions."""
 
-    def pmf(self, value: float | pl.Expr) -> pl.Expr:
+    def pmf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Probability mass function, `P(X = value)`. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._pmf(v))
@@ -255,7 +261,7 @@ class DiscreteDistribution(_UnivariateDistribution, ABC):
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Core pmf formula on a coerced expr; null handling is applied by `pmf`."""
 
-    def log_pmf(self, value: float | pl.Expr) -> pl.Expr:
+    def log_pmf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Natural logarithm of the pmf. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._log_pmf(v))
@@ -267,7 +273,7 @@ class DiscreteDistribution(_UnivariateDistribution, ABC):
 class ContinuousDistribution(_UnivariateDistribution, ABC):
     """Abstract base class for continuous univariate distributions."""
 
-    def pdf(self, value: float | pl.Expr) -> pl.Expr:
+    def pdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Probability density function evaluated at `value`. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._pdf(v))
@@ -276,7 +282,7 @@ class ContinuousDistribution(_UnivariateDistribution, ABC):
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Core pdf formula on a coerced expr; null handling is applied by `pdf`."""
 
-    def log_pdf(self, value: float | pl.Expr) -> pl.Expr:
+    def log_pdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Natural logarithm of the pdf. Nulls in `value` are propagated."""
         v = as_expr(value)
         return propagate_null(v, self._log_pdf(v))
