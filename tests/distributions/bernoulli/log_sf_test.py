@@ -35,8 +35,8 @@ def test_log_sf_scalar_p(
     expected_fn: Callable[[float], float],
     unit_frame: pl.DataFrame,
 ) -> None:
-    out = unit_frame.select(v=Bernoulli(p=p).log_sf(value)).item(0, "v")
-    assert out == pytest.approx(expected_fn(p))
+    result = unit_frame.select(v=Bernoulli(p=p).log_sf(value)).item(0, "v")
+    assert result == pytest.approx(expected_fn(p))
 
 
 def test_log_sf_propagates_null_in_value() -> None:
