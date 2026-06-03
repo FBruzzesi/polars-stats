@@ -76,15 +76,24 @@ def as_expr(value: float | IntoExprColumn) -> pl.Expr:
     """Coerce a value-keyed method input (`value` / `quantile`) into a `pl.Expr`.
 
     A column name `str` becomes `pl.col(name)` (matching `coerce_param` and the wider Polars
-    convention of accepting bare column names); a `pl.Expr` passes through; a `float` or `pl.Series`
-    becomes a literal. These arguments broadcast against the row-aligned parameter expressions and so
-    do not need the `pl.repeat` expansion `coerce_param` applies.
+    convention of accepting bare column names); a `pl.Expr` or `pl.Series` passes through as-is; a
+    Python scalar is expanded with `pl.repeat(value, n=pl.len())` so the plugin always receives a
+    row-aligned input, exactly like `coerce_param`.
+
+    The expansion is not cosmetic: the Rust plugins zip their inputs element-wise via
+    `try_*_elementwise`, which truncates to the shortest input rather than broadcasting a length-1
+    literal. With column-valued parameters, a scalar `pl.lit(value)` would therefore collapse the
+    result to length 1 and skip every row past the first (silently dropping out-of-range parameter
+    validation on those rows). Some Polars versions broadcast the literal upstream and hide this; not
+    all do, so the plugin contract must own row-alignment rather than rely on it.
     """
     if isinstance(value, pl.Expr):
         return value
     if isinstance(value, str):
         return pl.col(value)
-    return pl.lit(value)
+    if isinstance(value, pl.Series):
+        return pl.lit(value)
+    return pl.repeat(value, n=pl.len())
 
 
 def propagate_null(value: pl.Expr, result: pl.Expr) -> pl.Expr:
