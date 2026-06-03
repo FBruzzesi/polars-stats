@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tests._polars_compat import assert_series_equal
+from tests._polars_compat import assert_series_equal, linear_space
 from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ def test_cdf_bounded_and_monotone(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
-    xs = pl.linear_space(lo, hi, _GRID_SIZE, eager=True)
+    xs = linear_space(lo, hi, _GRID_SIZE)
 
     cdf = _eval(dist.cdf(pl.col("x")), xs)
 

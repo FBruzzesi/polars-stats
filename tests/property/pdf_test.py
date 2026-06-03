@@ -8,6 +8,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from tests._polars_compat import linear_space
 from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS, DISCRETE_SPECS
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ def test_density_non_negative(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
-    xs = pl.linear_space(lo, hi, _GRID_SIZE, eager=True)
+    xs = linear_space(lo, hi, _GRID_SIZE)
 
     density = _eval(spec.density(dist, pl.col("x")), xs)
 
@@ -50,7 +51,7 @@ def test_pdf_integrates_to_one(spec: DistSpec, data: st.DataObject) -> None:
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.integration_bounds(params)
-    xs = pl.linear_space(lo, hi, _INTEGRATION_GRID_SIZE, eager=True)
+    xs = linear_space(lo, hi, _INTEGRATION_GRID_SIZE)
 
     density = _eval(spec.density(dist, pl.col("x")), xs)
     mass = float(np.trapezoid(density.to_numpy(), xs.to_numpy()))

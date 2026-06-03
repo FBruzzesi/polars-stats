@@ -180,9 +180,12 @@ jobs:
       # comparison on heterogeneous GitHub runners is too noisy to gate on; a
       # deterministic instruction-count gate (CodSpeed) is the intended replacement
       # once the repo is public and CI minutes are unconstrained.
+      # `-o addopts=...` overrides the project's default `addopts` (which carries `--cov`); the
+      # benchmark group intentionally omits `pytest-cov`, so an inherited `--cov` would error out.
       - name: Run benchmarks
         run: >
           uv run --no-sync pytest benchmarks
+          -o "addopts=--import-mode=importlib"
           -o filterwarnings=default
           --benchmark-only
           --benchmark-json=benchmark.json
