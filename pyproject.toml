@@ -65,8 +65,7 @@ typing = [
 testpaths = ["tests"]
 addopts = [
   "--import-mode=importlib",
-  "--cov=polars_stats",
-  "--cov=tests",
+  "--cov",
 ]
 filterwarnings = [
   "error",
@@ -75,6 +74,16 @@ xfail_strict = true
 
 [tool.coverage.run]
 plugins = ["covdefaults"]
+# Measure `polars_stats` as an installed package, not as the `./polars_stats` directory.
+# In CI the package is imported from the built wheel in site-packages while the source tree sits in the checkout root;
+# a directory-based source spec (`--cov=polars_stats`) would measure the never-executed checkout copy and report 0%.
+# `source_pkgs` forces measurement of the imported location; `[coverage.paths]` below remaps it back onto the source
+# tree so the report reads as `polars_stats/...`.
+source_pkgs = ["polars_stats"]
+source = ["tests"]
+
+[tool.coverage.paths]
+polars_stats = ["polars_stats", "*/site-packages/polars_stats"]
 
 [tool.coverage.report]
 fail_under = 95
