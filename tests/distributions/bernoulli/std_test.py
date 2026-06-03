@@ -11,8 +11,8 @@ from polars_stats import Bernoulli
 
 @pytest.mark.parametrize("p", [0.0, 0.25, 0.5, 0.75, 1.0])
 def test_std_scalar(p: float, unit_frame: pl.DataFrame) -> None:
-    out = unit_frame.select(v=Bernoulli(p=p).std()).item(0, "v")
-    assert out == pytest.approx(math.sqrt(p * (1 - p)))
+    result = unit_frame.select(v=Bernoulli(p=p).std()).item(0, "v")
+    assert result == pytest.approx(math.sqrt(p * (1 - p)))
 
 
 def test_std_propagates_null_in_p(p_with_null: pl.DataFrame) -> None:
