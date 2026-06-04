@@ -49,10 +49,6 @@ testing = [
     "pytest-cov>=7.1.0",
     "scipy>=1.13.0",
 ]
-benchmark = [
-    "pytest>=8.3.5",
-    "pytest-benchmark>=5.1.0",
-]
 typing = [
     "mypy>=1.14.1",
     "pyrefly>=0.62.0",
@@ -64,6 +60,13 @@ docs = [
     "markdown-exec[ansi]>=1.12.1",
     "mkdocstrings-python>=2.0.3",
     "zensical>=0.0.43",
+]
+benchmarks = [
+    "cyclopts>=4.16.1",
+    "numpy>=2.2.6",
+    "psutil>=5.9",
+    "rich>=15.0.0",
+    "scipy>=1.15.3",
 ]
 
 [tool.pytest.ini_options]
