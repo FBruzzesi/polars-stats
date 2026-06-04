@@ -276,4 +276,4 @@ jobs:
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group docs
       - name: Zensical strict build
-        run: zensical build --strict
+        run: uv run --no-sync zensical build --strict
