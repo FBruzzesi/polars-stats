@@ -39,25 +39,27 @@ ignore_missing_imports = true
 [dependency-groups]
 dev = [
     "maturin>=1.13.1",
+    "numpy>=2.2.6",
+    "scipy>=1.15.3",
 ]
 testing = [
     "covdefaults>=2.3.0",
     "hypothesis>=6.100.0",
-    "numpy>=2.2.6",
     "packaging>=26.2",
     "pytest>=8.3.5",
     "pytest-cov>=7.1.0",
-    "scipy>=1.13.0",
 ]
-benchmark = [
-    "pytest>=8.3.5",
-    "pytest-benchmark>=5.1.0",
+benchmarks = [
+    "cyclopts>=4.16.1",
+    "psutil>=5.9",
+    "rich>=15.0.0",
 ]
 typing = [
     "mypy>=1.14.1",
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
     "scipy-stubs>=1.15.3.0",
+    {include-group = "benchmarks"},
     {include-group = "testing"},
 ]
 docs = [
@@ -65,6 +67,7 @@ docs = [
     "mkdocstrings-python>=2.0.3",
     "zensical>=0.0.43",
 ]
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,7 +9,7 @@ name: Cache warmup
 #
 # This is deliberately a separate workflow from `pull-request.yml`: merging to
 # `main` should only warm the cache, not re-run the entire lint / typing / test
-# / benchmark matrix. The build steps mirror the `build` job in
+# matrix. The build steps mirror the `build` job in
 # `pull-request.yml` exactly (toolchain, RUSTFLAGS, profile, python version) so
 # the cached artifacts are byte-for-byte reusable by that job.
 

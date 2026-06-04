@@ -119,7 +119,7 @@ polars-stats/
 ├── tests/
 │   ├── distributions/<name>/ # one folder per distribution, one file per method
 │   └── scipy_parity/         # scipy reference-oracle tests
-├── benchmarks/               # pytest-benchmark sampler hot-path guards
+├── benchmarks/               # manual polars_stats vs scipy comparison report
 └── docs/                     # this documentation
 ```
 

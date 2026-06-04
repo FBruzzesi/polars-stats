@@ -17,6 +17,8 @@ venv
 .hypothesis/
 .benchmarks/
 benchmark.json
+# Generated comparison reports (machine-specific timings); publish curated tables in the README/docs.
+benchmarks/results/
 .coverage
 .coverage.*
 coverage.xml
