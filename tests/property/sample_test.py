@@ -6,8 +6,10 @@ import polars as pl
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from packaging.version import Version
 from polars.testing import assert_series_equal
 
+from tests._polars_compat import PL_VERSION
 from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
@@ -39,6 +41,7 @@ def test_sample_seeded_is_reproducible(spec: DistSpec, data: st.DataObject) -> N
 @settings(max_examples=10)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
+@pytest.mark.skipif(Version("1.36.0") > PL_VERSION, reason="Arbitrary cut for when both engine's are available")
 def test_sample_seeded_matches_across_engines(spec: DistSpec, data: st.DataObject) -> None:
     """`sample(seed=N)` is invariant to the execution engine (in-memory vs streaming).
 
