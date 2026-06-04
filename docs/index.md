@@ -1,6 +1,6 @@
-<!-- rumdl-disable MD033 MD041 -->
-
-<img src="https://raw.githubusercontent.com/FBruzzesi/polars-stats/main/docs/assets/logo.svg" width=120 height=120 align="right">
+---
+icon: lucide/sigma
+---
 
 # polars-stats
 
@@ -41,7 +41,7 @@ This row-varying, vectorised, lazy-native case is what `polars-stats` targets.
 
 The flagship use case, per-row distribution parameters for anomaly scoring:
 
-```python
+```python exec="yes" source="above" session="index" result="python"
 import polars as pl
 import polars_stats as ps
 
@@ -63,26 +63,14 @@ anomalies = (
 print(anomalies)
 ```
 
-```terminal
-shape: (2, 4)
-┌───────┬───────┬───────┬────────────┐
-│ value ┆ mu    ┆ sigma ┆ upper_tail │
-│ ---   ┆ ---   ┆ ---   ┆ ---        │
-│ f64   ┆ f64   ┆ f64   ┆ f64        │
-╞═══════╪═══════╪═══════╪════════════╡
-│ 12.1  ┆ 10.0  ┆ 0.5   ┆ 0.000013   │
-│ 250.0 ┆ 100.0 ┆ 2.0   ┆ 0.0        │
-└───────┴───────┴───────┴────────────┘
-```
-
 Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, without leaving the lazy engine.
 
-## Documentation
+## Where to next
 
-Full docs at [fbruzzesi.github.io/polars-stats](https://fbruzzesi.github.io/polars-stats/): the
-[API reference](https://fbruzzesi.github.io/polars-stats/reference/) with the distribution catalogue and method
-surface, and the [architecture](https://fbruzzesi.github.io/polars-stats/architecture/) and
-[design notes](https://fbruzzesi.github.io/polars-stats/design/).
+* [Getting started](getting-started.md): the core usage patterns.
+* [API reference](reference/index.md): the catalogue, the method surface, and worked examples, with the generated
+  docstrings split into [Continuous](reference/continuous.md) and [Discrete](reference/discrete.md).
+* [Architecture](architecture.md) and [Design notes](design.md): how it is wired and why.
 
 ## License
 

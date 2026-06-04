@@ -15,9 +15,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import polars as pl
-import pytest
+import polars_stats as ps
 
-from polars_stats import Bernoulli
+import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,17 +40,17 @@ def frame() -> pl.DataFrame:
 
 def test_sample_scalar_p(benchmark: Callable[..., object], frame: pl.DataFrame) -> None:
     # Scalar p expands to pl.repeat(p, n=pl.len()); the common path.
-    expr = Bernoulli(p=0.3).sample(seed=SEED)
+    expr = ps.Bernoulli(p=0.3).sample(seed=SEED)
     benchmark(lambda: frame.with_columns(b=expr))
 
 
 def test_sample_column_p(benchmark: Callable[..., object], frame: pl.DataFrame) -> None:
     # Column p skips the repeat and feeds a real per-row probability series.
-    expr = Bernoulli(p=pl.col("p")).sample(seed=SEED)
+    expr = ps.Bernoulli(p=pl.col("p")).sample(seed=SEED)
     benchmark(lambda: frame.with_columns(b=expr))
 
 
 def test_samples_array(benchmark: Callable[..., object], frame: pl.DataFrame) -> None:
     # Array path: ARRAY_SIZE independent draws per row.
-    expr = Bernoulli(p=0.3).samples(ARRAY_SIZE, seed=SEED)
+    expr = ps.Bernoulli(p=0.3).samples(ARRAY_SIZE, seed=SEED)
     benchmark(lambda: frame.with_columns(b=expr))

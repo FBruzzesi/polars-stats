@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 __all__ = ("assert_frame_equal", "assert_series_equal", "linear_space")
 
-_NEEDS_RENAMING = Version(pl.__version__) < Version("1.32.3")
+PL_VERSION = Version(pl.__version__)
+_NEEDS_RENAMING = Version("1.32.3") > PL_VERSION
 _REL_NAME = "rtol" if _NEEDS_RENAMING else "rel_tol"
 _ABS_NAME = "atol" if _NEEDS_RENAMING else "abs_tol"
 

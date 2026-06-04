@@ -60,6 +60,11 @@ typing = [
     "scipy-stubs>=1.15.3.0",
     {include-group = "testing"},
 ]
+docs = [
+    "markdown-exec[ansi]>=1.12.1",
+    "mkdocstrings-python>=2.0.3",
+    "zensical>=0.0.43",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

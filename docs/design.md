@@ -1,0 +1,66 @@
+---
+icon: lucide/lightbulb
+---
+
+# Design notes
+
+The *why* behind the choices in [Architecture](architecture.md), and the questions still open. If you want to know what
+the code does, read [Architecture](architecture.md). If you want to know why it does it that way, read this.
+
+## Decisions taken
+
+### Column-valued parameters travel in `inputs`, not `kwargs`
+
+Polars plugins receive `inputs: &[Series]` (lazy, length-matched) and `kwargs` (static, JSON-serialised at planning
+time). Putting parameters in `kwargs` would block column-valued parameters, which is the whole differentiator. So every
+plugin call passes `(value, param_1, ..., param_k)` as `inputs`, and `kwargs` carries only static config (`seed`).
+
+### One Rust file per distribution, one plugin function per method that needs Rust
+
+Three options were considered:
+
+1. one function per `(distribution, method)`;
+2. one function per method with an internal `DistKind` enum dispatch and a row-level `match`;
+3. Rust only where a Polars expression cannot express the method, Python otherwise.
+
+The result is **1 & 3**. Closed-form methods sit happily in Python as `pl.Expr`; only methods that go through `statrs`
+get a Rust plugin function.
+
+### Sampling derives a fresh per-row RNG from `(root_seed, row_index)`
+
+Every sampler needs one property: a deterministic, independent stream per row that depends only on
+`(root_seed, row_index)`, never on position within a chunk. That makes output invariant to how Polars chunks or threads
+the input, so `sample` is genuinely elementwise.
+
+The generator is `Pcg64Mcg` (`rand_pcg`): cheap to construct (no key schedule), good statistical quality, and output
+stable across releases and platforms, so seeded results stay reproducible. The root seed is resolved once per call
+(`OsRng` when `seed=None`); each row then derives its own generator from `(root_seed, row_index)`.
+
+This replaced an earlier "single `ChaCha20Rng` advanced once per row in iteration order" design, which coupled rows
+across chunks (order-dependent, not streaming-safe). The naive fix, a `ChaCha20Rng` per row, regressed sampling 10 to
+20x. A one-shot hash-to-uniform would be cheaper still but only serves distributions needing a single uniform per draw,
+so it is deliberately not the foundation.
+
+### Invalid parameters raise, they never silently null
+
+An invalid parameter value, scalar or one bad column row (`std_dev <= 0`, `max <= min`, `p` outside `[0, 1]`, a
+non-finite bound), maps the `statrs` constructor error through a `ComputeError` and fails the whole evaluation.
+
+This reverses an earlier "produce null, keep the pipeline running" decision. Silently nulling hides a modelling error: a
+user who does not check for nulls gets wrong answers downstream, and an invalid-parameter null is indistinguishable from
+a legitimately-null input. Raising is loud, uniform across distributions, and uniform across scalar vs column inputs,
+because scalars are coerced to columns and validated per row exactly like columns. Construction rejects only wrong
+*types*. A closed-form distribution cannot raise from a bare `pl.Expr`, so it routes parameters through one small
+validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)).
+
+### Moments that are undefined
+
+Every distribution shipped today has finite moments on its valid parameter range, so this policy does not bite yet; it
+governs distributions on the roadmap. Two cases, handled differently on purpose:
+
+* **Permanently undefined** (e.g. a Cauchy mean): raise `NotImplementedError`. Silently returning null would hide a
+  modelling error from a user who chains `.mean().sum()`.
+* **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
+  return `null`. A user sweeping a parameter across the threshold should not get an exception that breaks the sweep.
+
+Inconsistent on its face, defensible per case, and to be documented in each class as it lands.
