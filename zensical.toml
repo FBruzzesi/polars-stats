@@ -8,9 +8,6 @@ site_url = "https://fbruzzesi.github.io/polars-stats/"
 repo_url = "https://github.com/FBruzzesi/polars-stats"
 repo_name = "FBruzzesi/polars-stats"
 edit_uri = "edit/main/docs/"
-copyright = """
-Copyright &copy; 2026 The authors
-"""
 
 # Read more: https://zensical.org/docs/setup/navigation/
 nav = [
@@ -60,8 +57,8 @@ nav = [
 # - https://zensical.org/docs/setup/logo-and-icons/#favicon
 # - https://developer.mozilla.org/en-US/docs/Glossary/Favicon
 #
-#favicon = "images/favicon.png"
-#logo = "assets/logo.png"
+favicon = "assets/logo.svg"
+logo = "assets/logo.svg"
 
 language = "en"
 

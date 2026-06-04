@@ -17,6 +17,7 @@ Shipped today:
 | `LogNormal(mu, sigma)` | continuous | `lognorm(s=sigma, scale=exp(mu))` |
 | `Uniform(min, max)` | continuous | `uniform(loc=min, scale=max - min)` |
 | `Bernoulli(p)` | discrete | `bernoulli(p)` |
+| `Binomial(n, p)` | discrete | `binom(n, p)` |
 
 Each class names its parameters after the distribution's conventional parameters; the `scipy equivalent` column gives
 the `scipy.stats` translation, and each class docstring states it too.
@@ -28,9 +29,9 @@ parameters:
 
 ```python exec="yes" source="above" session="reference" result="python"
 import polars as pl
-from polars_stats import LogNormal
+import polars_stats as ps
 
-dist = LogNormal(mu=0.0, sigma=1.0)
+dist = ps.LogNormal(mu=0.0, sigma=1.0)
 
 df = pl.DataFrame({"x": [0.5, 1.0, 2.0]})
 
@@ -51,7 +52,7 @@ distribution per row:
 ```python exec="yes" source="above" session="reference" result="python"
 params = pl.DataFrame({"mu": [0.0, 1.0], "sigma": [1.0, 0.5]})
 
-per_row = LogNormal(mu="mu", sigma="sigma")
+per_row = ps.LogNormal(mu="mu", sigma="sigma")
 
 print(
     params.with_columns(
@@ -65,13 +66,14 @@ print(
 
 ## A discrete distribution
 
-Discrete distributions expose `pmf` instead of `pdf`; everything else is the same surface. `Bernoulli` samples to a
-`Boolean` column:
+Discrete distributions expose `pmf` instead of `pdf`; everything else is the same surface.
+
+`Bernoulli` samples to a `Boolean` column:
 
 ```python exec="yes" source="above" session="reference" result="python"
-from polars_stats import Bernoulli
+import polars_stats as ps
 
-coin = Bernoulli(p=0.3)
+coin = ps.Bernoulli(p=0.3)
 
 outcomes = pl.DataFrame({"k": [0, 1]})
 print(outcomes.with_columns(mass=coin.pmf("k")))
@@ -88,13 +90,13 @@ name (`str`), or a `pl.Expr`; argument-free statistics take none. All return a `
 | Method | Continuous | Discrete | Meaning |
 |---|---|---|---|
 | `pdf(x)` | yes | no | probability density |
+| `log_pdf(x)` | yes | no | log density |
 | `pmf(x)` | no | yes | probability mass |
+| `log_pmf(x)` | no | yes | log mass |
 | `cdf(x)` | yes | yes | `P(X <= x)` |
 | `sf(x)` | yes | yes | survival, `P(X > x)`, accurate in the upper tail |
 | `ppf(q)` | yes | yes | inverse cdf, `q` in `[0, 1]` |
 | `isf(q)` | yes | yes | inverse survival, `ppf(1 - q)` |
-| `log_pdf(x)` | yes | no | native log density (avoids tail underflow) |
-| `log_pmf(x)` | no | yes | native log mass |
 | `log_cdf(x)` | yes | yes | log cdf |
 | `log_sf(x)` | yes | yes | log survival |
 | `mean()` | yes | yes | `E[X]` |

@@ -1,50 +1,87 @@
+<!-- rumdl-disable MD033 MD041 -->
+
+<img src="https://raw.githubusercontent.com/FBruzzesi/polars-stats/main/docs/assets/logo.svg" width=120 height=120 align="right">
+
 # polars-stats
 
-`scipy.stats`-style probability distributions as native [Polars](https://pola.rs) expressions, with **column-valued
-parameters**: any distribution parameter can be a scalar or a Polars expression, so a single instance describes a
-different distribution per row, fully lazy and vectorised.
+`polars-stats` is a [Polars](https://pola.rs) expression plugin that exposes
+[`scipy.stats`](https://docs.scipy.org/doc/scipy/reference/stats.html)-style probability distributions natively inside
+Polars expressions, with two properties that `scipy` and `numpy` do not give you:
 
-The math runs in Rust on top of [`statrs`](https://docs.rs/statrs); the Python layer is a thin, typed surface of
-distribution classes.
+* **Column-valued parameters**: any distribution parameter can be a scalar *or* a Polars expression. A single instance
+  describes a different distribution per row:
 
-> **Alpha.** The public API may change before `1.0`.
+    ```python
+    import polars as pl
+    import polars_stats as ps
 
-## Install
+    norm = ps.Normal(mean=pl.col("mu"), std_dev=pl.col("sigma"))
+    norm.cdf(pl.col("x"))
+    ```
 
-```bash
-pip install polars-stats
-```
+* **Lazy-compatible**: every method returns a `pl.Expr`, so it composes inside a `LazyFrame` query under the
+    optimiser, with no materialisation.
 
-Requires `polars >= 1.15` and Python `>= 3.10`. Wheels ship for Linux, macOS, and Windows; to build from source see the
-[contributing guide](https://fbruzzesi.github.io/polars-stats/contributing/).
+The math runs in Rust on top of the [`statrs`](https://docs.rs/statrs) crate; the Python layer is a thin, typed surface
+of distribution classes.
 
-## Example
+## Why
 
-Per-row parameters: each row is scored against its own `Normal`, in one vectorised pass without leaving the lazy engine.
+Statistical work in Polars today means falling back to `.to_pandas()` / `.to_numpy()`, then reaching for one of:
+
+* `scipy.stats`, which exits the lazy engine and materialises everything,
+* Python UDFs via `map_elements`, which are slow and hold the GIL,
+* hand-rolled per-distribution expressions, which are ad hoc and error-prone.
+
+None of them express *"the PDF of `x` under a Normal whose mean is column `mu` and standard deviation is column `sigma`"*.
+
+This row-varying, vectorised, lazy-native case is what `polars-stats` targets.
+
+## Quick example
+
+The flagship use case, per-row distribution parameters for anomaly scoring:
 
 ```python
 import polars as pl
-from polars_stats import Normal
+import polars_stats as ps
 
-df = pl.DataFrame({"mu": [0.0, 10.0], "sigma": [1.0, 2.0], "x": [0.5, 11.0]})
-
-norm = Normal(mean="mu", std_dev="sigma")
-
-df.with_columns(
-    density=norm.pdf("x"),
-    tail_prob=norm.sf(pl.col("x") * 2),
+readings = pl.LazyFrame(
+    {
+        "value": [9.8, 101.0, 12.1, 250.0],
+        "mu": [10.0, 100.0, 10.0, 100.0],
+        "sigma": [0.5, 2.0, 0.5, 2.0],
+    }
 )
+
+norm = ps.Normal(mean="mu", std_dev="sigma")
+
+anomalies = (
+    readings.with_columns(upper_tail=norm.sf("value"))
+    .filter(pl.col("upper_tail") < 0.01)
+    .collect()
+)
+print(anomalies)
 ```
 
-A method argument and a parameter both accept a scalar, a column name (`str`), or a `pl.Expr`, and every method returns
-a `pl.Expr`, so it composes inside any `LazyFrame` query.
+```terminal
+shape: (2, 4)
+┌───────┬───────┬───────┬────────────┐
+│ value ┆ mu    ┆ sigma ┆ upper_tail │
+│ ---   ┆ ---   ┆ ---   ┆ ---        │
+│ f64   ┆ f64   ┆ f64   ┆ f64        │
+╞═══════╪═══════╪═══════╪════════════╡
+│ 12.1  ┆ 10.0  ┆ 0.5   ┆ 0.000013   │
+│ 250.0 ┆ 100.0 ┆ 2.0   ┆ 0.0        │
+└───────┴───────┴───────┴────────────┘
+```
+
+Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, without leaving the lazy engine.
 
 ## Documentation
 
 Full docs at [fbruzzesi.github.io/polars-stats](https://fbruzzesi.github.io/polars-stats/): the
-[distribution catalogue and method surface](https://fbruzzesi.github.io/polars-stats/distributions/), the
-[API reference](https://fbruzzesi.github.io/polars-stats/reference/), and the
-[architecture](https://fbruzzesi.github.io/polars-stats/architecture/) and
+[API reference](https://fbruzzesi.github.io/polars-stats/reference/) with the distribution catalogue and method
+surface, and the [architecture](https://fbruzzesi.github.io/polars-stats/architecture/) and
 [design notes](https://fbruzzesi.github.io/polars-stats/design/).
 
 ## License

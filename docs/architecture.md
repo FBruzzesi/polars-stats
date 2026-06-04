@@ -40,8 +40,7 @@ binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails.
 
 ## Column-valued parameters
 
-The differentiating feature. Every distribution `__init__` coerces each parameter with a single shared helper,
-`coerce_param`:
+Every distribution `__init__` coerces each parameter with a single shared helper, `coerce_param`:
 
 | Input | Coercion |
 |---|---|
@@ -137,6 +136,3 @@ the deliberately-excluded crates are in [Contributing / Stack](contributing.md#s
 | OS | Wheels target Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64. |
 | Python | 3.10 to 3.14 (per `requires-python`), single abi3 wheel. |
 | Polars | `>=1.15` (the `pyo3-polars` ABI floor). |
-
-`pyo3-polars` breaks its ABI on most Polars minor releases, so a release is expected to follow each Polars minor
-closely. License: MIT OR Apache-2.0.

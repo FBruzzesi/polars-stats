@@ -12,11 +12,15 @@ Polars expressions, with two properties that `scipy` and `numpy` do not give you
   describes a different distribution per row:
 
     ```python
-    Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).cdf(pl.col("x"))
+    import polars as pl
+    import polars_stats as ps
+
+    norm = ps.Normal(mean=pl.col("mu"), std_dev=pl.col("sigma"))
+    norm.cdf(pl.col("x"))
     ```
 
 * **Lazy-compatible**: every method returns a `pl.Expr`, so it composes inside a `LazyFrame` query under the
-    optimiser, with no materialisation. Sampling has one caveat, covered in [Sampling](user-guide/sampling.md).
+    optimiser, with no materialisation.
 
 The math runs in Rust on top of the [`statrs`](https://docs.rs/statrs) crate; the Python layer is a thin, typed surface
 of distribution classes.
@@ -33,36 +37,23 @@ None of them express *"the PDF of `x` under a Normal whose mean is column `mu` a
 
 This row-varying, vectorised, lazy-native case is what `polars-stats` targets.
 
-## Install
-
-!!! warning "Pre-release"
-
-    `polars-stats` is alpha software. The public API may change.
-
-```bash
-pip install polars-stats
-```
-
-The only runtime dependency is `polars>=1.15`. Wheels ship for Linux, macOS, and Windows; see
-[Contributing](contributing.md) to build from source.
-
 ## Quick example
 
 The flagship use case, per-row distribution parameters for anomaly scoring:
 
 ```python exec="yes" source="above" session="index" result="python"
 import polars as pl
-from polars_stats import Normal
+import polars_stats as ps
 
 readings = pl.LazyFrame(
     {
         "value": [9.8, 101.0, 12.1, 250.0],
-        "baseline_mu": [10.0, 100.0, 10.0, 100.0],
-        "baseline_sigma": [0.5, 2.0, 0.5, 2.0],
+        "mu": [10.0, 100.0, 10.0, 100.0],
+        "sigma": [0.5, 2.0, 0.5, 2.0],
     }
 )
 
-norm = Normal(mean="baseline_mu", std_dev="baseline_sigma")
+norm = ps.Normal(mean="mu", std_dev="sigma")
 
 anomalies = (
     readings.with_columns(upper_tail=norm.sf("value"))
@@ -72,16 +63,15 @@ anomalies = (
 print(anomalies)
 ```
 
-Each row is scored against its own `Normal(baseline_mu, baseline_sigma)`, in one vectorised pass, without leaving the
-lazy engine.
+Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, without leaving the lazy engine.
 
 ## Where to next
 
-* [Getting started](getting-started.md): install, build, and the core usage patterns.
+* [Getting started](getting-started.md): the core usage patterns.
 * [API reference](reference/index.md): the catalogue, the method surface, and worked examples, with the generated
   docstrings split into [Continuous](reference/continuous.md) and [Discrete](reference/discrete.md).
 * [Architecture](architecture.md) and [Design notes](design.md): how it is wired and why.
 
 ## License
 
-MIT.
+This project is licensed under the MIT license.

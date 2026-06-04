@@ -17,14 +17,14 @@ plugin call passes `(value, param_1, ..., param_k)` as `inputs`, and `kwargs` ca
 
 ### One Rust file per distribution, one plugin function per method that needs Rust
 
-Three options were considered: (A) one function per `(distribution, method)`; (B) one function per method with an
-internal `DistKind` enum dispatch and a row-level `match`; (C) Rust only where a Polars expression cannot express the
-method, Python otherwise.
+Three options were considered:
 
-The result is **A + C**. Closed-form methods sit happily in Python as `pl.Expr`; only methods that go through `statrs`
-get a Rust plugin function. Option B was rejected: the enum dispatch and a code-generation macro add a build-time DSL
-and a row-level `match` cost for no clear win at 17 distributions. Hand-written per-distribution files stay clearer;
-revisit only past ~25 distributions.
+1. one function per `(distribution, method)`;
+2. one function per method with an internal `DistKind` enum dispatch and a row-level `match`;
+3. Rust only where a Polars expression cannot express the method, Python otherwise.
+
+The result is **1 & 3**. Closed-form methods sit happily in Python as `pl.Expr`; only methods that go through `statrs`
+get a Rust plugin function.
 
 ### Sampling derives a fresh per-row RNG from `(root_seed, row_index)`
 
@@ -32,9 +32,9 @@ Every sampler needs one property: a deterministic, independent stream per row th
 `(root_seed, row_index)`, never on position within a chunk. That makes output invariant to how Polars chunks or threads
 the input, so `sample` is genuinely elementwise.
 
-The generator is `Pcg64Mcg` (`rand_pcg`): cheap construction (no key schedule), passes TestU01 BigCrush, output stable
-across releases and platforms. The root seed is resolved once per call (`OsRng` when `seed=None`), then each row's
-128-bit state is mixed from `(root_seed, row_index)` with two splitmix64 draws.
+The generator is `Pcg64Mcg` (`rand_pcg`): cheap to construct (no key schedule), good statistical quality, and output
+stable across releases and platforms, so seeded results stay reproducible. The root seed is resolved once per call
+(`OsRng` when `seed=None`); each row then derives its own generator from `(root_seed, row_index)`.
 
 This replaced an earlier "single `ChaCha20Rng` advanced once per row in iteration order" design, which coupled rows
 across chunks (order-dependent, not streaming-safe). The naive fix, a `ChaCha20Rng` per row, regressed sampling 10 to
@@ -51,66 +51,16 @@ user who does not check for nulls gets wrong answers downstream, and an invalid-
 a legitimately-null input. Raising is loud, uniform across distributions, and uniform across scalar vs column inputs,
 because scalars are coerced to columns and validated per row exactly like columns. Construction rejects only wrong
 *types*. A closed-form distribution cannot raise from a bare `pl.Expr`, so it routes parameters through one small
-validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)). A `strict=False` opt-in
-that nulls instead of raising is deferred until a user asks.
+validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)).
 
 ### Moments that are undefined
 
 Every distribution shipped today has finite moments on its valid parameter range, so this policy does not bite yet; it
 governs distributions on the roadmap. Two cases, handled differently on purpose:
 
-- **Permanently undefined** (e.g. a Cauchy mean): raise `NotImplementedError`. Silently returning null would hide a
+* **Permanently undefined** (e.g. a Cauchy mean): raise `NotImplementedError`. Silently returning null would hide a
   modelling error from a user who chains `.mean().sum()`.
-- **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
+* **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
   return `null`. A user sweeping a parameter across the threshold should not get an exception that breaks the sweep.
 
 Inconsistent on its face, defensible per case, and to be documented in each class as it lands.
-
-## Open questions
-
-- **Parameter naming.** Classes name parameters after each distribution's conventional parameters
-  (`Normal(mean, std_dev)`, `Uniform(min, max)`, `Exp(rate)` rather than `Exp(scale)`), which avoids the `scipy`
-  `(loc, scale)` collision across location-scale families but breaks scipy-compat at the constructor. Each docstring
-  spells out the `scipy` reparameterisation. Whether to keep this or adopt `scipy`'s uniform `(loc, scale)` is not yet
-  settled.
-- **API namespace.** `polars_stats.Normal(...).pdf(x)` (scipy-style, current) versus
-  `pl.col("x").dist.normal_pdf(loc=..., scale=...)` (Polars namespace style, fits `.dt` / `.str` / `.list`). Picked
-  scipy-style without strong evidence; revisit after first external feedback.
-- **Sample output dtype.** Currently per distribution (`Boolean`, `UInt64`, `Float64`); `scipy` returns `f64`
-  uniformly. Revisit if it forces awkward casting in user code.
-- **Streaming-safe sampling.** Resolved. The per-row keying removed cross-chunk coupling, and a property test
-  (`tests/property/sample_test.py`) now asserts seeded draws are identical under the in-memory and streaming engines
-  on a multi-chunk source, so the earlier `.collect()`-first guidance was dropped. What remains is a performance note,
-  not a correctness one: the injected `pl.int_range(0, pl.len())` row index is a whole-frame quantity, so the sampling
-  step is not memory-bounded under streaming.
-- **GIL release inside plugin entry points.** Wrapping the hot loop in `py.allow_threads` is a hardening pass, not yet
-  audited.
-- **Pure-Rust consumption.** Publishing to crates.io works, but the `cdylib` + PyO3 stack makes Rust-only use awkward.
-  Splitting into `polars-stats-core` (no PyO3) + `polars-stats` (binding) is the planned fix.
-
-## Risks
-
-| Risk | Mitigation |
-|---|---|
-| `pyo3-polars` breaks its ABI on most Polars minor releases | Automated bump + CI on a weekly cadence; pin the upper bound to the next Polars minor |
-| `statrs` is a single-maintainer project | Track activity; vendor or fork the specific distributions we use if upstream archives |
-| `statrs` accuracy in the tails (binary-search `inverse_cdf` for Gamma / Poisson / NegBinom / ...) | Per-distribution tolerance documented in tests; candidate fix: native `ppf` via the `special` crate or Newton refinement |
-| `rand` 0.8 to 0.9 transition (`distributions` renamed to `distr`) | Pin 0.8 until `statrs` moves; follow in lockstep |
-| Reference values for tests come from `scipy.stats`, the library we partly replace | Acknowledged; freeze the SciPy version in dev deps |
-| abi3 compatibility across the Python range | Test on all supported versions in CI even though abi3 claims compatibility |
-
-## Blind spots
-
-- **Documentation drift.** Treat any change to plugin granularity, the null contract, or seeding as a doc-update change.
-- **Per-distribution Rust files scale linearly.** ~16 remaining distributions x ~5 Rust methods each. If that becomes a
-  build-time or binary-size problem, `DistKind` dispatch is the way back.
-- **Per-row RNG cost.** Constructing a fresh `Pcg64Mcg` per draw is more work than advancing one shared RNG. It is what
-  buys chunk- and thread-invariance; the benchmarks guard against a regression like the per-row-`ChaCha20` one, not
-  against this baseline cost itself.
-- **Raise-on-invalid-row is untested at scale.** A pipeline with a million bad rows raises on the first; the message
-  names the offending value but not the row index, which is hard to locate in a wide frame.
-- **`scipy` parity tests create a circular dev dependency** on the library being partly replaced.
-- **MSRV is not pinned.** `rust-toolchain.toml` pins a nightly (needed for the `rustfmt.toml` import-granularity
-  options). A stable N-2 floor is still to be decided.
-- **`statrs` lacks some `scipy` distributions** (GEV, Skew Normal, Truncated Normal, mixtures). If users need these we
-  either upstream to `statrs` or fork.

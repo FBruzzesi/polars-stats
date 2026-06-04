@@ -53,17 +53,18 @@ construction regressed sampling 10 to 20x, see [Design notes](design.md#sampling
 
 ### Python runtime
 
-Only `polars >= 1.15`. No other runtime dependencies.
+Only `polars>=1.15`. No other runtime dependencies.
 
 ### Dev and CI tooling
 
-Dev dependencies are grouped in `pyproject.toml` (`testing`, `benchmark`, `typing`, `docs`) and installed with
-`uv sync --group ...`. Tests run under `pytest` with `scipy` + `numpy` as the parity oracle (`tests/scipy_parity/`) and
-`hypothesis` for property tests; benchmarks use `pytest-benchmark`. Python is checked by `ruff` (lint + format) and
-three type checkers in CI (`mypy`, `pyright`, `pyrefly`); Rust by `cargo fmt` (nightly) and
-`cargo clippy --all-features --all-targets -- -D warnings`. Prose and config are linted by `rumdl` (Markdown), `ryl`
-(YAML), `codespell`, `typos`, and `blacken-docs`, wired through `.pre-commit-config.yaml`. Do not bypass the hooks with
-`--no-verify` unless asked.
+* Dev dependencies are grouped in `pyproject.toml` (`testing`, `benchmark`, `typing`, `docs`) and installed with
+    `uv sync --group ...`.
+* Tests run under `pytest` with `scipy` + `numpy` as the parity oracle (`tests/scipy_parity/`) and `hypothesis` for
+    property tests; benchmarks use `pytest-benchmark`.
+* Python is checked by `ruff` (lint + format) and three type checkers in CI (`mypy`, `pyright`, `pyrefly`);
+    Rust by `cargo fmt` (nightly) and `cargo clippy --all-features --all-targets -- -D warnings`.
+    Prose and config are linted by `rumdl` (Markdown), `ryl` (YAML), `codespell`, `typos`, and `blacken-docs`, wired
+    through `.pre-commit-config.yaml`. Do not bypass the hooks with `--no-verify` unless asked.
 
 ## Adding a distribution
 

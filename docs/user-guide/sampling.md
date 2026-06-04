@@ -4,21 +4,22 @@ icon: lucide/dices
 
 # Sampling
 
-`sample` draws one variate per row from that row's distribution; `samples(size)` draws a fixed-width `Array` per row.
+The `sample(seed)` method draws one variate per row from that row's distribution:
 
 ```python exec="yes" source="above" session="sampling" result="python"
 import polars as pl
-from polars_stats import Normal
+import polars_stats as ps
 
+dist = ps.Normal(mean="mu", std_dev="sigma")
 df = pl.DataFrame({"mu": [0.0, 10.0], "sigma": [1.0, 2.0]})
 
-print(df.with_columns(draw=Normal(mean="mu", std_dev="sigma").sample(seed=42)))
+print(df.with_columns(draw=dist.sample(seed=42)))
 ```
 
-`samples(size, seed)` returns an `Array(inner=..., shape=size)` per row, drawing `size` independent variates:
+The `samples(size, seed)` method returns an `Array(inner=..., shape=size)` per row, drawing `size` independent variates:
 
 ```python exec="yes" source="above" session="sampling" result="python"
-print(df.with_columns(draws=Normal(mean="mu", std_dev="sigma").samples(3, seed=42)))
+print(df.with_columns(draws=dist.samples(3, seed=42)))
 ```
 
 ## Output length and dtype
@@ -32,7 +33,7 @@ The sample element dtype is per distribution and is not normalised to `Float64`:
 |---|---|
 | `Bernoulli` | `Boolean` |
 | `Normal`, `LogNormal`, `Uniform` | `Float64` |
-| other discrete | `UInt64` |
+| `Binomial` (and other discrete) | `UInt64` |
 
 ## Seeding and reproducibility
 
