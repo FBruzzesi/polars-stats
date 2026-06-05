@@ -18,31 +18,87 @@ if TYPE_CHECKING:
 # TODO(FBruzzesi): Investigate better implementations for log_* methods over
 # the naive ones due to concerns on numerical stability
 
-_ROW_INDEX = "__polars_stats_row_index__"
+_ROW_INDEX_NAME = "__polars_stats_row_index__"
+ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
+"""Per-row position `0..len` used to derive per-row sub-seeds in samplers.
+
+Evaluated inside the surrounding context, so `pl.len()` is the frame length under
+`select` / `with_columns` and the partition length under `over` / `group_by`.
+"""
+
+
+def _coerce(
+    value: float | IntoExprColumn,
+    *,
+    name: str,
+    scalar_label: str,
+    scalar_types: type | tuple[type, ...],
+    dtype: PolarsDataType | None = None,
+) -> pl.Expr:
+    """Coerce a scalar-or-`IntoExprColumn` input into a row-aligned `pl.Expr`.
+
+    Every distribution input (constructor parameter or value-keyed method argument) is one of two things, handled
+    identically here so the contract lives in one place:
+
+    * An `IntoExprColumn`: a `pl.Expr` passes through; a column name `str` becomes `pl.col(name)`, a `pl.Series`
+        becomes `pl.lit(series)`.
+    * A Python scalar: expanded with `pl.repeat(value, n=pl.len())` rather than `pl.lit(value)`.
+
+    NOTE: The scalar expansion is required to keep the plugin calls `is_elementwise=True`, which is what makes
+    `over` / `group_by` invoke them once per partition rather than as an aggregation. It also guards correctness:
+    the Rust plugins zip their inputs element-wise via `try_*_elementwise`, which truncates to the shortest input rather
+    than broadcasting a length-1 literal. Mixed with a column-valued input, a scalar `pl.lit(value)` would collapse the
+    result to length 1 and silently drop every row past the first. Some Polars versions broadcast the literal upstream
+    and hide this; not all do, so the plugin contract must own row-alignment rather than rely on it.
+
+    Arguments:
+        value: A Python scalar of one of `scalar_types`, or an `IntoExprColumn`.
+        name: Input name, used only to build the error message.
+        scalar_label: Human description of the accepted scalar (e.g. `"a float"`), for the error.
+        scalar_types: Python scalar type(s) accepted for expansion. `bool` is always rejected
+            (it is an `int` subclass but never a valid numeric input, so `scalar_types=int` still excludes it).
+        dtype: Dtype for the expanded scalar; `None` lets Polars infer it from `value`.
+    """
+    if isinstance(value, pl.Expr):
+        return value
+    if isinstance(value, str):
+        return pl.col(value)
+    if isinstance(value, pl.Series):
+        return pl.lit(value)
+    if isinstance(value, scalar_types) and not isinstance(value, bool):
+        return pl.repeat(value, n=pl.len(), dtype=dtype)
+    msg = f"{name} should be {scalar_label} or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
+    raise TypeError(msg)
 
 
 def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
-    """Coerce a distribution parameter into a row-aligned `pl.Expr`.
+    """Coerce a float distribution parameter (e.g. `mean`, `sigma`, `p`) into a row-aligned `pl.Expr`.
 
-    A Python `float` is expanded to a length-N expression (not `pl.lit`) so the plugin always
-    receives a row-aligned input; this keeps plugin calls `is_elementwise=True`, which is what
-    makes `over` / `group_by` invoke them once per partition rather than as an aggregation.
-
-    Arguments:
-        value: Either a Python `float` or an `IntoExprColumn` (`pl.Expr`, `pl.Series` or column
-            name `str`).
-        name: Parameter name, used only to build the error message.
+    Accepts a strict Python `float` or an `IntoExprColumn`; an `int` or `bool` raises `TypeError`
+    (a probability or scale is a float, not a count). See `_coerce` for the row-alignment rationale.
     """
-    if isinstance(value, float):
-        return pl.repeat(value, n=pl.len(), dtype=pl.Float64())
-    if isinstance(value, pl.Expr):
-        return value
-    if isinstance(value, pl.Series):
-        return pl.lit(value)
-    if isinstance(value, str):
-        return pl.col(value)
-    msg = f"{name} should be a float or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
-    raise TypeError(msg)
+    return _coerce(value, name=name, scalar_label="a float", scalar_types=float, dtype=pl.Float64())
+
+
+def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
+    """Coerce an integer count parameter (e.g. binomial trial count `n`) into a row-aligned `pl.Expr`.
+
+    Accepts a Python `int` or an `IntoExprColumn`; a `bool` (an `int` subclass, but not a sensible count),
+    a `float`, or any other type raises `TypeError`. The expanded scalar is `Int64`.
+    The *value* (`>= 0`) is validated per row in Rust, not here. See `_coerce` for the rationale.
+    """
+    return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
+
+
+def as_expr(value: float | IntoExprColumn) -> pl.Expr:
+    """Coerce a value-keyed method input (`value` / `quantile`) into a row-aligned `pl.Expr`.
+
+    More permissive on scalars than `coerce_param`: a support point or quantile may be an `int` (`cdf(0)`, `pmf(1)`) or
+    a `float`, so both are accepted and the expanded dtype is left to Polars to infer.
+
+    A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the row-alignment rationale.
+    """
+    return _coerce(value, name="value", scalar_label="a number (int or float)", scalar_types=(int, float))
 
 
 def register_plugin(
@@ -72,51 +128,17 @@ def register_plugin(
     )
 
 
-def as_expr(value: float | IntoExprColumn) -> pl.Expr:
-    """Coerce a value-keyed method input (`value` / `quantile`) into a `pl.Expr`.
-
-    A column name `str` becomes `pl.col(name)` (matching `coerce_param` and the wider Polars
-    convention of accepting bare column names); a `pl.Expr` or `pl.Series` passes through as-is; a
-    Python scalar is expanded with `pl.repeat(value, n=pl.len())` so the plugin always receives a
-    row-aligned input, exactly like `coerce_param`.
-
-    The expansion is not cosmetic: the Rust plugins zip their inputs element-wise via
-    `try_*_elementwise`, which truncates to the shortest input rather than broadcasting a length-1
-    literal. With column-valued parameters, a scalar `pl.lit(value)` would therefore collapse the
-    result to length 1 and skip every row past the first (silently dropping out-of-range parameter
-    validation on those rows). Some Polars versions broadcast the literal upstream and hide this; not
-    all do, so the plugin contract must own row-alignment rather than rely on it.
-    """
-    if isinstance(value, pl.Expr):
-        return value
-    if isinstance(value, str):
-        return pl.col(value)
-    if isinstance(value, pl.Series):
-        return pl.lit(value)
-    return pl.repeat(value, n=pl.len())
-
-
 def propagate_null(value: pl.Expr, result: pl.Expr) -> pl.Expr:
     """Return `result`, overridden to null on rows where `value` is null.
 
-    A null predicate in `pl.when` collapses to the `otherwise` branch, so a method whose
-    `otherwise` is a non-null constant (e.g. `pdf` returning `0.0` outside the support) would
-    silently emit that constant for a null input. Guarding on `value.is_null()` first makes every
-    value-keyed method propagate input nulls uniformly.
+    A null predicate in `pl.when` collapses to the `otherwise` branch, so a method whose `otherwise` is a non-null
+    constant (e.g. `pdf` returning `0.0` outside the support) would silently emit that constant for a null input.
 
-    The null literal is untyped so the output dtype follows `result` (e.g. `Boolean` for a discrete
-    `ppf`, `Float64` for a density).
+    Guarding on `value.is_null()` first makes every value-keyed method propagate input nulls uniformly.
+
+    The null literal is untyped so the output dtype follows `result`.
     """
     return pl.when(value.is_null()).then(pl.lit(None)).otherwise(result)
-
-
-def row_index_expr() -> pl.Expr:
-    """Per-row position `0..len` used to derive per-row sub-seeds in samplers.
-
-    Evaluated inside the surrounding context, so `pl.len()` is the frame length under
-    `select` / `with_columns` and the partition length under `over` / `group_by`.
-    """
-    return pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX)
 
 
 class _UnivariateDistribution(ABC):
@@ -153,8 +175,7 @@ class _UnivariateDistribution(ABC):
         calls produce independent streams. Without this, every plugin call would re-seed the same RNG
         and yield `size` identical columns.
 
-        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of
-        null elements.
+        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
         """
         if size <= 0:
             msg = f"size must be a positive integer, got {size}"
@@ -218,9 +239,9 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range
-        quantiles is implementation-defined and should not be relied on; callers are responsible for
-        bounding `quantile` upstream when the source allows invalid values.
+        `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range quantiles is
+        implementation-defined and should not be relied on; callers are responsible for bounding `quantile` upstream
+        when the source allows invalid values.
         """
         q = as_expr(quantile)
         return propagate_null(q, self._ppf(q))

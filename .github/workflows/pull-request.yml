@@ -96,17 +96,11 @@ jobs:
           enable-cache: true
       - name: Install pinned Rust toolchain
         run: rustup show
-      # `shared-key` (not `key`) so this restores the cache populated by the
-      # `cache-warmup.yml` job on `main`; `key` would add a job-id component and
-      # never match across workflows. `save-if: false` makes PR runs read-only:
-      # only `main` writes the cache, keeping the 10 GB repo budget from filling
-      # with per-branch copies that other PRs cannot read anyway.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: build-wheel
-          save-if: false
+          key: build-wheel
       - name: Build abi3 wheel
-        run: uvx maturin build --release --out dist
+        run: uvx maturin build --out dist
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

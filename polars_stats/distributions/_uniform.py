@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, register_plugin, row_index_expr
+from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -53,13 +53,11 @@ class Uniform(ContinuousDistribution):
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one uniform sample per row, returning a ``Float64`` column.
 
-        Output length follows the surrounding context (frame length under ``select`` /
-        ``with_columns``, partition length under ``over`` / ``group_by``). Each row's draw is derived
-        from a per-row sub-seed mixed from ``seed`` and the row's position, so the result is
-        independent of Polars chunking and thread scheduling. Rows with ``max <= min`` or a null bound
-        yield null.
+        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
+        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
+        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
         """
-        return register_plugin("uniform_sample", (self._min, self._max, row_index_expr()), kwargs={"seed": seed})
+        return register_plugin("uniform_sample", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""

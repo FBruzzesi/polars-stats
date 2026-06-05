@@ -52,9 +52,3 @@ def value_grid() -> Callable[[float, float], list[float]]:
         return [mean - 3 * std, mean - std, mean - 0.25 * std, mean, mean + 0.25 * std, mean + std, mean + 3 * std]
 
     return _make
-
-
-@pytest.fixture
-def unit_frame() -> pl.DataFrame:
-    """Single-row frame for evaluating scalar-output expressions."""
-    return pl.DataFrame({"_": [0]})

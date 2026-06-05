@@ -39,7 +39,7 @@ def linear_space(start: float, end: float, num_samples: int) -> Series:
     `pl.linear_space(start, end, num_samples, eager=True)` but built from `pl.int_range` so it also
     works on polars versions that predate `linear_space`. ``num_samples`` must be at least 2.
     """
-    if num_samples < 2:  # noqa: PLR2004
+    if num_samples < 2:  # noqa: PLR2004  # pragma: no cover
         msg = f"num_samples must be >= 2, got {num_samples}"
         raise ValueError(msg)
     step = (end - start) / (num_samples - 1)

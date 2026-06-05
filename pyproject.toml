@@ -68,7 +68,6 @@ docs = [
     "zensical>=0.0.43",
 ]
 
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
