@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 # TODO(FBruzzesi): Investigate better implementations for log_* methods over
 # the naive ones due to concerns on numerical stability
 
-_ROW_INDEX = "__polars_stats_row_index__"
-ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX)
+_ROW_INDEX_NAME = "__polars_stats_row_index__"
+ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 """Per-row position `0..len` used to derive per-row sub-seeds in samplers.
 
 Evaluated inside the surrounding context, so `pl.len()` is the frame length under
@@ -131,13 +131,12 @@ def register_plugin(
 def propagate_null(value: pl.Expr, result: pl.Expr) -> pl.Expr:
     """Return `result`, overridden to null on rows where `value` is null.
 
-    A null predicate in `pl.when` collapses to the `otherwise` branch, so a method whose
-    `otherwise` is a non-null constant (e.g. `pdf` returning `0.0` outside the support) would
-    silently emit that constant for a null input. Guarding on `value.is_null()` first makes every
-    value-keyed method propagate input nulls uniformly.
+    A null predicate in `pl.when` collapses to the `otherwise` branch, so a method whose `otherwise` is a non-null
+    constant (e.g. `pdf` returning `0.0` outside the support) would silently emit that constant for a null input.
 
-    The null literal is untyped so the output dtype follows `result` (e.g. `Boolean` for a discrete
-    `ppf`, `Float64` for a density).
+    Guarding on `value.is_null()` first makes every value-keyed method propagate input nulls uniformly.
+
+    The null literal is untyped so the output dtype follows `result`.
     """
     return pl.when(value.is_null()).then(pl.lit(None)).otherwise(result)
 
@@ -176,8 +175,7 @@ class _UnivariateDistribution(ABC):
         calls produce independent streams. Without this, every plugin call would re-seed the same RNG
         and yield `size` identical columns.
 
-        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of
-        null elements.
+        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
         """
         if size <= 0:
             msg = f"size must be a positive integer, got {size}"
@@ -241,9 +239,9 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range
-        quantiles is implementation-defined and should not be relied on; callers are responsible for
-        bounding `quantile` upstream when the source allows invalid values.
+        `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range quantiles is
+        implementation-defined and should not be relied on; callers are responsible for bounding `quantile` upstream
+        when the source allows invalid values.
         """
         q = as_expr(quantile)
         return propagate_null(q, self._ppf(q))
