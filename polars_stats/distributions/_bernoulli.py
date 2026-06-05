@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import DiscreteDistribution, coerce_param, register_plugin, row_index_expr
+from polars_stats.distributions._base import ROW_INDEX_EXPR, DiscreteDistribution, coerce_param, register_plugin
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -38,18 +38,15 @@ class Bernoulli(DiscreteDistribution):
         return self._p.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one Bernoulli sample per row, returning a ``Boolean`` column.
+        """Draw one Binomial sample per row, returning a ``Boolean`` column.
 
-        Output length follows the surrounding context:
+        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
+        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
+        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
 
-        * frame length under ``with_columns`` / ``select``
-        * partition length under ``over`` / ``group_by``
-
-        The plugin is genuinely elementwise: each row's draw is derived from a per-row
-        sub-seed mixed from ``seed`` and the row's position in the surrounding context,
-        so the result is independent of Polars chunking and thread scheduling.
+        Rows with an invalid parameter raise; rows with a null parameter yield null.
         """
-        return register_plugin("bernoulli_sample", (self._p, row_index_expr()), kwargs={"seed": seed})
+        return register_plugin("bernoulli_sample", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""

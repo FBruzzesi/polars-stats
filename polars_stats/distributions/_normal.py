@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, register_plugin, row_index_expr
+from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -68,13 +68,13 @@ class Normal(ContinuousDistribution):
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one Normal sample per row, returning a ``Float64`` column.
 
-        Output length follows the surrounding context (frame length under ``select`` /
-        ``with_columns``, partition length under ``over`` / ``group_by``). Each row's draw is derived
-        from a per-row sub-seed mixed from ``seed`` and the row's position, so the result is
-        independent of Polars chunking and thread scheduling. Rows with an invalid ``std_dev`` raise;
-        rows with a null parameter yield null.
+        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
+        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
+        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
+
+        Rows with an invalid ``std_dev`` raise; rows with a null parameter yield null.
         """
-        return register_plugin("normal_sample", (self._mean, self._std_dev, row_index_expr()), kwargs={"seed": seed})
+        return register_plugin("normal_sample", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""

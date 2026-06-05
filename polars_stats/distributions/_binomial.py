@@ -4,35 +4,16 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import DiscreteDistribution, coerce_param, register_plugin, row_index_expr
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    DiscreteDistribution,
+    coerce_n,
+    coerce_param,
+    register_plugin,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
-
-
-def _coerce_n(value: int | IntoExprColumn) -> pl.Expr:
-    """Coerce the trial-count parameter ``n`` into a row-aligned integer ``pl.Expr``.
-
-    Mirrors ``coerce_param`` but for an integer parameter: a Python ``int`` expands to a length-N
-    ``Int64`` expression (keeping the plugin call elementwise under ``over`` / ``group_by``), while an
-    ``IntoExprColumn`` passes through for per-row ``n``. ``bool`` is rejected (an ``int`` subclass, but
-    not a sensible trial count); ``float`` and other types raise ``TypeError``. The *value* of ``n``
-    (``>= 0``) is validated per row in Rust, not here.
-    """
-    msg = f"n should be an int or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
-    if isinstance(value, bool):
-        raise TypeError(msg)
-    if isinstance(value, int):
-        return pl.repeat(value, n=pl.len(), dtype=pl.Int64())
-    if isinstance(value, pl.Expr):
-        return value
-    if isinstance(value, pl.Series):
-        return pl.lit(value)
-    # The `str` check is provably redundant to the type checker, but still guards runtime junk
-    # (list, dict, ...) that the declared type forbids; `construct_test` exercises that path.
-    if isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-        return pl.col(value)
-    raise TypeError(msg)
 
 
 class Binomial(DiscreteDistribution):
@@ -57,7 +38,7 @@ class Binomial(DiscreteDistribution):
     _sample_dtype: ClassVar[PolarsDataType] = pl.UInt64()
 
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
-        self._n = _coerce_n(n)
+        self._n = coerce_n(n, name="n")
         self._p = coerce_param(p, name="p")
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
@@ -97,13 +78,13 @@ class Binomial(DiscreteDistribution):
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one Binomial sample per row, returning a ``UInt64`` column.
 
-        Output length follows the surrounding context (frame length under ``select`` /
-        ``with_columns``, partition length under ``over`` / ``group_by``). Each row's draw is derived
-        from a per-row sub-seed mixed from ``seed`` and the row's position, so the result is
-        independent of Polars chunking and thread scheduling. Rows with an invalid parameter raise;
-        rows with a null parameter yield null.
+        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
+        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
+        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
+
+        Rows with an invalid parameter raise; rows with a null parameter yield null.
         """
-        return register_plugin("binomial_sample", (self._n, self._p, row_index_expr()), kwargs={"seed": seed})
+        return register_plugin("binomial_sample", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Mass via native ``Discrete::pmf``; zero off the integer support ``{0, ..., n}``."""
