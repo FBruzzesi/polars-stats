@@ -16,7 +16,7 @@ benchmark:
 	uv run --group benchmarks benchmarks/run.py
 
 typing:
-	uv run --group typing pyrefly check .
+	uv run --group typing pyrefly check . --min-severity info
 	uv run --group typing pyright .
 	uv run --group typing mypy .
 

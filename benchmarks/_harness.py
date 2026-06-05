@@ -1,16 +1,11 @@
 """Shared comparison harness for the ``polars_stats`` vs ``scipy.stats`` sampling benchmarks.
 
 Scope is deliberately narrow: the two sampling methods, `sample` (one variate per row) and `samples`
-(``n_samples`` variates per row), against ``scipy.rvs``. These are the calls where `polars_stats` does
-real per-row work, so they are the meaningful throughput and memory comparison.
+(``n_samples`` variates per row), against ``scipy.rvs``. These are the calls where `polars_stats` does real per-row
+work, so they are the meaningful throughput and memory comparison.
 
-`run.py` owns the `Comparison` registry (one entry per distribution) and the CLI; it calls
-`run_comparison` over a `Sweep` of sizes. This module is *not* runnable; run
-``uv run --group benchmarks benchmarks/run.py`` instead.
-
-The `polars_stats` side runs on the lazy **streaming** engine (``collect(engine="streaming")``), the
-chunked execution path users hit at scale, so the numbers reflect real-world behaviour rather than a
-one-shot eager materialisation.
+`run.py` owns the `Comparison` registry (one entry per distribution) and the CLI; it calls `run_comparison` over a
+`Sweep` of sizes. This module is *not* runnable; run ``uv run --group benchmarks benchmarks/run.py`` instead.
 
 For each method and each side we report:
 
@@ -47,9 +42,8 @@ if TYPE_CHECKING:
 
     from polars_stats.distributions._base import _UnivariateDistribution
 
-    # The frozen instance a spec passes (`norm(...)`, `binom(n, p)`, ...). Sampling-only, so we just
-    # call `rvs`; typing against scipy's own frozen types rather than a hand-rolled Protocol keeps it
-    # honest against scipy-stubs.
+    # The frozen instance a spec passes (`norm(...)`, `binom(n, p)`, ...). Sampling-only, so we just call `rvs`;
+    # typing against scipy's own frozen types rather than a hand-rolled Protocol keeps it honest against scipy-stubs.
     ScipyFrozen = rv_continuous_frozen | rv_discrete_frozen
 
     Distribution = _UnivariateDistribution
@@ -88,8 +82,7 @@ class Comparison:
 class RunConfig:
     """One cell of the sweep: the sizes a single `sample` / `samples` measurement uses.
 
-    Built only by `run_comparison` from an already-validated `Sweep`, so it carries no validation of its
-    own.
+    Built only by `run_comparison` from an already-validated `Sweep`, so it carries no validation of its own.
     """
 
     rows: int = 1_000_000
@@ -136,7 +129,8 @@ class Measurement:
 class Result:
     method: str
     rows: int
-    n_samples: int | None  # None for `sample`: one draw per row, so n_samples does not apply
+    n_samples: int | None
+    """None for `sample` method: one draw per row, so n_samples does not apply"""
     polars_stats: Measurement
     scipy: Measurement
     matches: bool
@@ -192,12 +186,12 @@ def _peak_memory(fn: Callable[[], object]) -> float:
         sampler.join()
     del result
     gc.collect()
-    return float(max(0.0, (peak - baseline) / _MIB))
+    return max(0.0, (peak - baseline) / _MIB)  # type: ignore[no-any-return]
 
 
-def _length_frame(rows: int) -> pl.DataFrame:
+def _length_frame(rows: int) -> pl.LazyFrame:
     """A `rows`-long frame; the sampler expressions key off `pl.len()`, not its contents."""
-    return pl.DataFrame({"_": np.zeros(rows, dtype=np.int8)})
+    return pl.LazyFrame({"_": pl.Boolean()}).clear(rows)
 
 
 def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -> Callable[[], object]:
@@ -207,26 +201,29 @@ def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -
     so frame construction is not part of what is timed or charged to peak memory.
     """
     rows, n, seed = config.rows, config.n_samples, config.seed
-    if side == "scipy":
-        frozen = comp.scipy_frozen
-        size: int | tuple[int, int] = rows if method == "sample" else (rows, n)
-        return lambda: frozen.rvs(size=size, random_state=seed)
-
-    dist, lazy = comp.dist, _length_frame(rows).lazy()
-    if method == "sample":
-        return lambda: lazy.select(s=dist.sample(seed=seed)).collect(engine="streaming").to_series()
-    return lambda: lazy.select(s=dist.samples(n, seed=seed)).collect(engine="streaming").to_series()
+    match side:
+        case "scipy":
+            frozen = comp.scipy_frozen
+            size: int | tuple[int, int] = rows if method == "sample" else (rows, n)
+            return lambda: frozen.rvs(size=size, random_state=seed)
+        case "polars_stats":
+            dist, lf = comp.dist, _length_frame(rows)
+            expr = dist.sample(seed=seed) if method == "sample" else dist.samples(n, seed=seed)
+            return lambda: lf.select(s=expr).collect(engine="streaming")
+        case _:
+            msg = "Unreachable path"
+            raise AssertionError(msg)
 
 
 def _shape_ok(method: Method, config: RunConfig, polars_out: object, scipy_out: object) -> bool:
     """Shape-only correctness gate: independent RNGs mean values cannot match, but shapes must."""
-    assert isinstance(polars_out, pl.Series)  # noqa: S101 - narrowing the _build_fn return for the checks below
-    assert isinstance(scipy_out, np.ndarray)  # noqa: S101
+    assert isinstance(polars_out, pl.DataFrame)  # noqa: S101  # help the type checker
+    assert isinstance(scipy_out, np.ndarray)  # noqa: S101  # help the type checker
     if method == "sample":
-        return polars_out.len() == config.rows and scipy_out.shape == (config.rows,)
-    dtype = polars_out.dtype
+        return polars_out.height == config.rows and scipy_out.shape == (config.rows,)
+    dtype = polars_out.to_series().dtype
     return (
-        polars_out.len() == config.rows
+        polars_out.height == config.rows
         and isinstance(dtype, pl.Array)
         and getattr(dtype, "size", None) == config.n_samples
         and scipy_out.shape == (config.rows, config.n_samples)
@@ -268,7 +265,7 @@ def _peak_memory_isolated(comp: Comparison, method: Method, config: RunConfig, s
 
 
 def _measure(comp: Comparison, method: Method, config: RunConfig) -> Result:
-    sides: tuple[Side, Side] = ("polars_stats", "scipy")
+    sides: tuple[Side, ...] = ("polars_stats", "scipy")
     fns = {side: _build_fn(comp, method, config, side) for side in sides}
     matches = _shape_ok(method, config, fns["polars_stats"](), fns["scipy"]())
     measurements = {
@@ -392,7 +389,7 @@ def _render_rich(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> N
     """Print a coloured table to the terminal (speedup green when polars_stats wins, red otherwise)."""
     env = _environment()
     table = Table(
-        title=f"{comp.name}: polars_stats vs scipy.stats (streaming)",
+        title=f"{comp.name}: polars_stats vs scipy.stats",
         caption=(
             f"{sweep.iterations} iters | time p50 +/- std (ms), peak RSS (MiB) "
             f"| polars {env['polars']}, scipy {env['scipy']}, numpy {env['numpy']}"
