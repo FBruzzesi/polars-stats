@@ -2,10 +2,11 @@
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution;
+use rand::distributions::{Distribution, Standard};
+use serde::Deserialize;
 use statrs::distribution::Uniform;
 
-use crate::rng::SampleKwargs;
+use crate::rng::{sample_by_index, SampleKwargs};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     Uniform::new(min, max).map_err(|e| {
@@ -47,9 +48,19 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
         |min_opt, max_opt, i_opt| -> PolarsResult<Option<f64>> {
             match (min_opt, max_opt, i_opt) {
                 (Some(lo), Some(hi), Some(i)) => {
-                    let dist = build_dist(lo, hi)?;
+                    // Validate the parameterisation (finite bounds, `max > min`) with the same
+                    // error contract as `uniform_range`; the built distribution is intentionally
+                    // unused for the draw.
+                    build_dist(lo, hi)?;
                     let mut rng = rngs.rng(i);
-                    Ok(Some(dist.sample(&mut rng)))
+                    // Half-open `[min, max)` draw via `min + (max - min) * U[0, 1)`, matching the
+                    // documented contract and scipy's `loc + scale * U[0, 1)`. This deliberately
+                    // bypasses `statrs`' `Distribution::sample`, which rebuilds a
+                    // `rand::distributions::Uniform` float sampler (scale/bias/rejection-zone
+                    // setup) on *every* call: that fixed per-draw cost dwarfs the single
+                    // multiply-add here and is what made the sampler slower than scipy.
+                    let u: f64 = Standard.sample(&mut rng);
+                    Ok(Some(lo + (hi - lo) * u))
                 },
                 _ => Ok(None),
             }
@@ -57,6 +68,45 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     )?;
 
     Ok(ca.with_name(name).into_series())
+}
+
+/// Static parameters for the constant-bounds sampler fast path.
+///
+/// When both bounds are Python scalars, the Python layer routes them here as kwargs instead of
+/// expanding each into a full-length column (`pl.repeat`) that crosses FFI and is re-validated on
+/// every row. The bounds are validated once, and only the per-row index travels as an input.
+#[derive(Deserialize)]
+struct UniformScalarKwargs {
+    seed: Option<u64>,
+    min: f64,
+    max: f64,
+}
+
+/// Constant-bounds Uniform sampler over `[min, max)`.
+///
+/// Semantically identical to [`uniform_sample`] for the common case of scalar bounds, but built
+/// for it: `inputs[0]` is the per-row index (never null, sole FFI input), and the bounds arrive in
+/// `kwargs`. Validation and the `max - min` width are computed once up front rather than per row.
+/// Seeding is the same `(root_seed, index)` derivation, so output matches `uniform_sample` for the
+/// same `(seed, index, min, max)`.
+#[polars_expr(output_type=Float64)]
+fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> PolarsResult<Series> {
+    // Validate the parameterisation once; same error contract as `uniform_range` / `uniform_sample`.
+    build_dist(kwargs.min, kwargs.max)?;
+    let lo = kwargs.min;
+    let width = kwargs.max - kwargs.min;
+    let name = inputs[0].name().clone();
+
+    sample_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
+        Float64Chunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().map(|i| {
+                let mut rng = rngs.rng(i);
+                let u: f64 = Standard.sample(&mut rng);
+                lo + width * u
+            }),
+        )
+    })
 }
 
 /// Element-wise support width `max - min`, validating the parameterisation.

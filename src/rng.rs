@@ -15,6 +15,7 @@
 //! single uniform per draw (e.g. Bernoulli) and cannot back the general case, so it is
 //! deliberately not the foundation here.
 
+use polars::prelude::*;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rand_pcg::Pcg64Mcg;
@@ -75,10 +76,51 @@ impl SampleKwargs {
     /// integer ops.
     #[inline]
     pub(crate) fn row_rngs(&self) -> RowRngs {
-        RowRngs {
-            root_seed: resolve_root_seed(self.seed),
-        }
+        row_rngs(self.seed)
     }
+}
+
+/// Resolve a root seed **once** and hand back a per-row RNG source.
+///
+/// The free-function counterpart to [`SampleKwargs::row_rngs`], for samplers whose static
+/// inputs do not deserialise into a bare [`SampleKwargs`] (e.g. the scalar-parameter fast
+/// paths, which carry the distribution's constant parameters alongside the seed). Both go
+/// through the same resolve-once-then-derive-per-row path, so seeded output is identical
+/// regardless of which entry point a distribution uses.
+#[inline]
+pub(crate) fn row_rngs(seed: Option<u64>) -> RowRngs {
+    RowRngs {
+        root_seed: resolve_root_seed(seed),
+    }
+}
+
+/// Shared driver for the constant-parameter sampler fast paths.
+///
+/// When every distribution parameter is a Python scalar, the parameters are validated **once** by
+/// the caller and passed as kwargs, so the only FFI input is the per-row index produced by
+/// `pl.int_range(0, len)`. That index is dense and non-null by construction, which lets this skip
+/// the per-row `Option`/validity bookkeeping the general `try_*_elementwise` paths must carry.
+///
+/// This factors out the boilerplate every fast path shares: cast the index to `UInt64`, resolve the
+/// root seed once, then build the typed output by mapping each row index through `build`. The
+/// builder owns the output element type (so float-, integer- and boolean-valued samplers all reuse
+/// this), and the per-row draw seeds from `(root_seed, index)` exactly as the general path does, so
+/// seeded output is identical between the two.
+#[inline]
+pub(crate) fn sample_by_index<T, F>(
+    index: &Series,
+    seed: Option<u64>,
+    build: F,
+) -> PolarsResult<Series>
+where
+    T: PolarsDataType,
+    ChunkedArray<T>: IntoSeries,
+    F: FnOnce(&UInt64Chunked, &RowRngs) -> ChunkedArray<T>,
+{
+    let index = index.cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let rngs = row_rngs(seed);
+    Ok(build(index_ca, &rngs).into_series())
 }
 
 /// Per-call source of per-row RNGs, all derived from one already-resolved root seed.

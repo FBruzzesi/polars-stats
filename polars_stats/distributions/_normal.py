@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    ContinuousDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -43,6 +49,9 @@ class Normal(ContinuousDistribution):
     ) -> None:
         self._mean = coerce_param(mean, name="mean")
         self._std_dev = coerce_param(std_dev, name="std_dev")
+        # Constant parameters (if any) enable the fast sampler path; `None` falls back to the per-row plugin.
+        self._mean_scalar = scalar_float(mean)
+        self._std_dev_scalar = scalar_float(std_dev)
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
         """Register a value-keyed Rust plugin call ``f(value, mean, std_dev)``.
@@ -74,6 +83,12 @@ class Normal(ContinuousDistribution):
 
         Rows with an invalid ``std_dev`` raise; rows with a null parameter yield null.
         """
+        if self._mean_scalar is not None and self._std_dev_scalar is not None:
+            return register_plugin(
+                "normal_sample_scalar",
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "mean": self._mean_scalar, "std_dev": self._std_dev_scalar},
+            )
         return register_plugin("normal_sample", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

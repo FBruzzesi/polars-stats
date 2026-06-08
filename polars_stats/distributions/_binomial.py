@@ -10,6 +10,8 @@ from polars_stats.distributions._base import (
     coerce_n,
     coerce_param,
     register_plugin,
+    scalar_float,
+    scalar_int,
 )
 
 if TYPE_CHECKING:
@@ -40,6 +42,9 @@ class Binomial(DiscreteDistribution):
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
         self._n = coerce_n(n, name="n")
         self._p = coerce_param(p, name="p")
+        # Constant `(n, p)` enables the fast sampler path; `None` falls back to the per-row plugin.
+        self._n_scalar = scalar_int(n)
+        self._p_scalar = scalar_float(p)
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
         """Register a value-keyed Rust plugin call ``f(value, n, p)``.
@@ -84,6 +89,12 @@ class Binomial(DiscreteDistribution):
 
         Rows with an invalid parameter raise; rows with a null parameter yield null.
         """
+        if self._n_scalar is not None and self._p_scalar is not None:
+            return register_plugin(
+                "binomial_sample_scalar",
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "n": self._n_scalar, "p": self._p_scalar},
+            )
         return register_plugin("binomial_sample", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:

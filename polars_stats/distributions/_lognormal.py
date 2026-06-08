@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    ContinuousDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -43,6 +49,9 @@ class LogNormal(ContinuousDistribution):
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")
         self._sigma = coerce_param(sigma, name="sigma")
+        # Constant parameters (if any) enable the fast sampler path; `None` falls back to the per-row plugin.
+        self._mu_scalar = scalar_float(mu)
+        self._sigma_scalar = scalar_float(sigma)
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
         """Register a value-keyed Rust plugin call ``f(value, mu, sigma)``.
@@ -74,6 +83,12 @@ class LogNormal(ContinuousDistribution):
 
         Rows with an invalid ``sigma`` raise; rows with a null parameter yield null.
         """
+        if self._mu_scalar is not None and self._sigma_scalar is not None:
+            return register_plugin(
+                "lognormal_sample_scalar",
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "mu": self._mu_scalar, "sigma": self._sigma_scalar},
+            )
         return register_plugin("lognormal_sample", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

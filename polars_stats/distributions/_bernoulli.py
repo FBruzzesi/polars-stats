@@ -4,7 +4,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, DiscreteDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    DiscreteDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -23,6 +29,8 @@ class Bernoulli(DiscreteDistribution):
 
     def __init__(self, p: float | IntoExprColumn) -> None:
         self._p = coerce_param(p, name="p")
+        # A constant `p` enables the fast sampler path; `None` falls back to the per-row plugin.
+        self._p_scalar = scalar_float(p)
 
     @property
     def _checked_p(self) -> pl.Expr:
@@ -46,6 +54,12 @@ class Bernoulli(DiscreteDistribution):
 
         Rows with an invalid parameter raise; rows with a null parameter yield null.
         """
+        if self._p_scalar is not None:
+            return register_plugin(
+                "bernoulli_sample_scalar",
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "p": self._p_scalar},
+            )
         return register_plugin("bernoulli_sample", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:

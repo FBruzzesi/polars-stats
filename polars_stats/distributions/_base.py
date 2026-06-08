@@ -90,6 +90,25 @@ def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
 
 
+def scalar_float(value: float | IntoExprColumn) -> float | None:
+    """Return `value` as a `float` if it is a plain numeric scalar, else `None`.
+
+    Used by samplers to detect a constant (non-`Expr`) parameter and route it through the
+    constant-parameter fast path, which passes it as a plugin kwarg validated once in Rust rather
+    than expanding it into a per-row `pl.repeat` column (see `_coerce`). `bool` is an `int` subclass
+    but never a valid parameter, so it is excluded and falls back to the per-row path.
+    """
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def scalar_int(value: int | IntoExprColumn) -> int | None:
+    """Return `value` as an `int` if it is a plain integer scalar (excluding `bool`), else `None`.
+
+    The integer-count counterpart to `scalar_float` (e.g. binomial `n`), for the same fast-path routing.
+    """
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def as_expr(value: float | IntoExprColumn) -> pl.Expr:
     """Coerce a value-keyed method input (`value` / `quantile`) into a row-aligned `pl.Expr`.
 
@@ -105,7 +124,7 @@ def register_plugin(
     function_name: str,
     args: IntoExprColumn | Iterable[IntoExprColumn],
     *,
-    kwargs: dict[str, int | None] | None = None,
+    kwargs: dict[str, float | int | None] | None = None,
 ) -> pl.Expr:
     """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
 
