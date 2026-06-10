@@ -49,7 +49,14 @@ testing = [
     "pytest>=8.3.5",
     "pytest-cov>=7.1.0",
 ]
-benchmarks = [
+# Routine 1: the CI regression guard (tests/benchmark/). pytest-codspeed measures instruction count under
+# the CodSpeed runner in CI and falls back to local walltime measurement without it (`make bench-guard`).
+# Always run alongside the `testing` group: the shared DistSpec registry needs hypothesis.
+bench-guard = [
+    "pytest-codspeed>=5.0.0",
+]
+# Routine 2 (manual scipy/numpy comparison report under benchmarks/): see `make bench-compare`.
+bench-compare = [
     "cyclopts>=4.16.1",
     "psutil>=5.9",
     "rich>=15.0.0",
@@ -59,7 +66,8 @@ typing = [
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
     "scipy-stubs>=1.15.3.0",
-    {include-group = "benchmarks"},
+    {include-group = "bench-compare"},
+    {include-group = "bench-guard"},
     {include-group = "testing"},
 ]
 docs = [
@@ -73,6 +81,15 @@ testpaths = ["tests"]
 addopts = [
   "--import-mode=importlib",
   "--cov",
+  # Deselect the regression-guard benchmarks by default. They are still collected (imported), so API
+  # drift in tests/benchmark/ fails any pytest run; `make bench-guard` overrides addopts to run them.
+  "-m",
+  "not benchmark",
+]
+# Registered here, not only by pytest-codspeed: the default test env does not install the plugin, and an
+# unregistered mark would escalate to an error under `filterwarnings = error`.
+markers = [
+  "benchmark: regression-guard benchmark (tests/benchmark/), run via `make bench-guard`",
 ]
 filterwarnings = [
   "error",
@@ -190,8 +207,8 @@ disable = [
 indent = 4
 start-indented = false
 
-[tool.ryl]
-yaml-files = ["*.yaml", "*.yml"]
+[tool.ryl.files]
+yaml = ["*.yaml", "*.yml"]
 
 [tool.ryl.rules.line-length]
 max = 120

@@ -15,12 +15,12 @@ There is one runnable entrypoint, [run.py](run.py). Run it with `uv` and the `be
 group, which provides the extra tooling (`cyclopts`, `rich`, `psutil`, plus `scipy` / `numpy`):
 
 ```bash
-uv run --group benchmarks benchmarks/run.py                                   # all distributions, rich table in the terminal
-uv run --group benchmarks benchmarks/run.py normal binomial                   # a subset
-uv run --group benchmarks benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20  # sweep a grid
-uv run --group benchmarks benchmarks/run.py --format markdown                 # write benchmarks/results/<dist>.md
-uv run --group benchmarks benchmarks/run.py --format json                     # write benchmarks/results/<dist>.json
-uv run --group benchmarks benchmarks/run.py --help
+uv run --group bench-compare benchmarks/run.py  # all distributions, rich table in the terminal
+uv run --group bench-compare benchmarks/run.py normal binomial  # a subset
+uv run --group bench-compare benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20  # sweep a grid
+uv run --group bench-compare benchmarks/run.py --format markdown  # write benchmarks/results/<dist>.md
+uv run --group bench-compare benchmarks/run.py --format json  # write benchmarks/results/<dist>.json
+uv run --group bench-compare benchmarks/run.py --help
 ```
 
 | argument | default | meaning |
@@ -50,7 +50,7 @@ README or a docs page, not the raw per-run output.
 
 ## Build mode (important for fair numbers)
 
-`uv run --group benchmarks` measures whatever `polars_stats` is installed in the project environment.
+`uv run --group bench-compare` measures whatever `polars_stats` is installed in the project environment.
 
 Build it in **release** mode first (`make install-release`, i.e. `maturin develop --release`). A debug
 `maturin develop` build runs the Rust extension unoptimised and would make `polars_stats` look far

@@ -3,10 +3,10 @@
 Compare the `sample` / `samples` methods against ``scipy.rvs`` on speed and peak memory, sweeping over
 one or more row counts and sample widths in a single report::
 
-    uv run --group benchmarks benchmarks/run.py                                   # all distributions, rich table
-    uv run --group benchmarks benchmarks/run.py normal binomial                   # a subset
-    uv run --group benchmarks benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20
-    uv run --group benchmarks benchmarks/run.py --format markdown                 # write benchmarks/results/<dist>.md
+    uv run --group bench-compare benchmarks/run.py  # all distributions, rich table
+    uv run --group bench-compare benchmarks/run.py normal binomial  # a subset
+    uv run --group bench-compare benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20
+    uv run --group bench-compare benchmarks/run.py --format markdown  # write benchmarks/results/<dist>.md
 
 The harness does the work; each distribution is just one `Comparison` in the registry below.
 """

@@ -100,7 +100,7 @@ jobs:
         with:
           key: build-wheel
       - name: Build abi3 wheel
-        run: uvx maturin build --out dist
+        run: uvx maturin build --release --out dist
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -167,6 +167,8 @@ jobs:
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group testing
       - name: Run tests
+        # tests/benchmark/ is still collected (imported), catching API drift, but its tests are deselected
+        # by the default `-m "not benchmark"` in addopts; the timed run is the `bench-guard` job.
         run: uv run --no-sync pytest tests
 
   test-oldest:
@@ -201,7 +203,44 @@ jobs:
       - name: Show resolved dependencies
         run: uv export --no-annotate --no-hashes --group testing
       - name: Run tests
+        # tests/benchmark/ is still collected (imported), catching API drift, but its tests are deselected
+        # by the default `-m "not benchmark"` in addopts; the timed run is the `bench-guard` job.
         run: uv run --no-sync pytest tests
+
+  bench-guard:
+    name: bench-guard
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON_VERSION }}
+          enable-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheel
+          path: dist
+      - name: Sync project dependencies
+        run: uv sync --group testing --group bench-guard --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      - name: Show resolved dependencies
+        run: uv export --no-annotate --no-hashes --group testing --group bench-guard
+      # `-o addopts=...` drops the project default `--cov` (untraced timing) and the `-m "not benchmark"`
+      # deselection. `--codspeed` puts pytest-codspeed into measurement mode.
+      - name: Run benchmarks under CodSpeed
+        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: >
+            uv run --no-sync pytest tests/benchmark
+            -o "addopts=--import-mode=importlib"
+            -o filterwarnings=default
+            --codspeed
 
   docs-strict-build:
     name: docs-strict-build

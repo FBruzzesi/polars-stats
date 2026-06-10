@@ -5,7 +5,7 @@ Scope is deliberately narrow: the two sampling methods, `sample` (one variate pe
 work, so they are the meaningful throughput and memory comparison.
 
 `run.py` owns the `Comparison` registry (one entry per distribution) and the CLI; it calls `run_comparison` over a
-`Sweep` of sizes. This module is *not* runnable; run ``uv run --group benchmarks benchmarks/run.py`` instead.
+`Sweep` of sizes. This module is *not* runnable; run ``uv run --group bench-compare benchmarks/run.py`` instead.
 
 For each method and each side we report:
 

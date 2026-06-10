@@ -18,10 +18,11 @@ make install-release   # uvx maturin develop --release (use for benchmarking)
 Prefer the `Makefile` targets so flags stay consistent with CI:
 
 ```bash
-make test       # POLARS_MAX_THREADS=4 uv run --group testing pytest tests
-make typing     # pyrefly + pyright + mypy (all three, as in CI)
-make lint       # ruff + rumdl + cargo fmt (nightly) + clippy
-make benchmark  # polars_stats vs scipy comparison report (benchmarks/)
+make test           # POLARS_MAX_THREADS=4 uv run --group testing pytest tests
+make typing         # pyrefly + pyright + mypy (all three, as in CI)
+make lint           # ruff + rumdl + cargo fmt (nightly) + clippy
+make bench-guard    # CI regression guard, our crate only (tests/benchmark/, pytest-codspeed)
+make bench-compare  # polars_stats vs scipy comparison report (benchmarks/)
 ```
 
 `make test` caps `POLARS_MAX_THREADS=4` on purpose: it forces multi-thread, multi-chunk execution so the chunk- and
@@ -57,8 +58,8 @@ Only `polars>=1.15`. No other runtime dependencies.
 
 ### Dev and CI tooling
 
-* Dev dependencies are grouped in `pyproject.toml` (`testing`, `benchmarks`, `typing`, `docs`) and installed with
-    `uv sync --group ...`.
+* Dev dependencies are grouped in `pyproject.toml` (`testing`, `bench-guard`, `bench-compare`, `typing`, `docs`) and
+    installed with `uv sync --group ...`.
 * Tests run under `pytest` with `scipy` + `numpy` as the parity oracle (`tests/scipy_parity/`) and `hypothesis` for
     property tests; the `benchmarks/` comparison report measures wall-clock time and peak memory against `scipy.stats`.
 * Python is checked by `ruff` (lint + format) and three type checkers in CI (`mypy`, `pyright`, `pyrefly`);

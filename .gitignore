@@ -15,8 +15,11 @@ venv
 
 # Testing
 .hypothesis/
-.benchmarks/
-benchmark.json
+# A broad `benchmark/` pattern in a user's global gitignore (core.excludesFile) would otherwise hide the
+# CI regression guard in tests/benchmark/. Re-include the directory so it stays tracked. Scoped to source
+# files: a bare `**` would also re-include `__pycache__/` (last match wins over the rule above).
+!tests/benchmark/
+!tests/benchmark/**/*.py
 # Generated comparison reports (machine-specific timings); publish curated tables in the README/docs.
 benchmarks/results/
 .coverage
