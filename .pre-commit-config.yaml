@@ -46,7 +46,8 @@ repos:
             (?x)^(
                 tests/_polars_compat.py|
                 tests/property/_specs.py|
-                tests/scipy_parity/_harness.py
+                tests/scipy_parity/_harness.py|
+                tests/benchmark/_bench.py
             )$
       - id: end-of-file-fixer
       - id: requirements-txt-fixer
