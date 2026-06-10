@@ -238,7 +238,7 @@ jobs:
       - name: Run benchmarks under CodSpeed
         uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
         with:
-          mode: simulation
+          mode: walltime
           run: >
             uv run --no-sync pytest tests/benchmark
             -o "addopts=--import-mode=importlib"
