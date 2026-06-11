@@ -11,6 +11,7 @@ from polars_stats.distributions._base import (
     coerce_param,
     register_plugin,
     scalar_float,
+    scalar_kwargs,
 )
 
 if TYPE_CHECKING:
@@ -49,9 +50,8 @@ class LogNormal(ContinuousDistribution):
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")
         self._sigma = coerce_param(sigma, name="sigma")
-        # Constant parameters (if any) enable the fast sampler path; `None` falls back to the per-row plugin.
-        self._mu_scalar = scalar_float(mu)
-        self._sigma_scalar = scalar_float(sigma)
+        # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
+        self._scalar_kwargs = scalar_kwargs(mu=scalar_float(mu), sigma=scalar_float(sigma))
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
         """Register a value-keyed Rust plugin call ``f(value, mu, sigma)``.
@@ -82,13 +82,14 @@ class LogNormal(ContinuousDistribution):
         and the row's position, so the result is independent of Polars chunking and thread scheduling.
 
         Rows with an invalid ``sigma`` raise; rows with a null parameter yield null.
+
+        The output column is named ``"sample"`` when both parameters are constants; column-valued
+        parameters keep polars root-name semantics (the name follows the first parameter expression).
         """
-        if self._mu_scalar is not None and self._sigma_scalar is not None:
+        if self._scalar_kwargs is not None:
             return register_plugin(
-                "lognormal_sample_scalar",
-                (ROW_INDEX_EXPR,),
-                kwargs={"seed": seed, "mu": self._mu_scalar, "sigma": self._sigma_scalar},
-            )
+                "lognormal_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
+            ).alias("sample")
         return register_plugin("lognormal_sample", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

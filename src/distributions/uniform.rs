@@ -9,11 +9,50 @@ use statrs::distribution::Uniform;
 use crate::rng::{sample_by_index, SampleKwargs};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
+    // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
+    // `min=-1e308, max=1e308`) makes `max - min` overflow to `inf`, and with it every derived
+    // quantity: `range`, the moments, and the draw itself would all silently emit `inf` instead
+    // of erroring. Reject it here so all uniform plugins report it as an invalid
+    // parameterisation.
+    if !(max - min).is_finite() {
+        // Scientific notation: this only fires for enormous bounds, whose plain `Display` is a
+        // 300-digit decimal expansion.
+        return Err(PolarsError::InvalidOperation(
+            format!("max - min must be finite, got min={min:e}, max={max:e}").into(),
+        ));
+    }
     Uniform::new(min, max).map_err(|e| {
         PolarsError::InvalidOperation(
             format!("max must be strictly greater than min, got min={min}, max={max}: {e}").into(),
         )
     })
+}
+
+/// One half-open `[lo, hi)` draw: `lo + (hi - lo) * U[0, 1)`, matching scipy's
+/// `loc + scale * U[0, 1)`.
+///
+/// Shared by [`uniform_sample`] and [`uniform_sample_scalar`] so the two paths cannot drift; the
+/// property test pinning their bit-equality only samples parameterisations, this makes it
+/// structural.
+///
+/// This deliberately bypasses `statrs`' `Distribution::sample`, which rebuilds a
+/// `rand::distributions::Uniform` float sampler (scale/bias/rejection-zone setup) on *every*
+/// call: that fixed per-draw cost dwarfs the single multiply-add here and is what made the
+/// sampler slower than scipy.
+///
+/// `u < 1` does not survive the multiply-add's rounding: `lo + (hi - lo) * u` can land exactly on
+/// `hi` (or one ulp above) when `u` is close to 1, so the result is nudged back to the largest
+/// float below `hi` to keep the documented half-open contract. `lo < hi` guarantees
+/// `hi.next_down() >= lo`.
+#[inline]
+fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
+    let u: f64 = Standard.sample(rng);
+    let x = lo + (hi - lo) * u;
+    if x < hi {
+        x
+    } else {
+        hi.next_down()
+    }
 }
 
 /// Element-wise continuous Uniform sampler over `[min, max)`.
@@ -25,7 +64,8 @@ fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
 ///
 /// Per-row validation:
 ///   * `null` (in any input) propagates;
-///   * `max <= min` or non-finite bounds raise `InvalidOperation` (surfaces as a `ComputeError`),
+///   * `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
+///     (surfaces as a `ComputeError`),
 ///     consistent with how every distribution reports an invalid parameterisation.
 ///
 /// Returns a `Float64` series.
@@ -48,19 +88,12 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
         |min_opt, max_opt, i_opt| -> PolarsResult<Option<f64>> {
             match (min_opt, max_opt, i_opt) {
                 (Some(lo), Some(hi), Some(i)) => {
-                    // Validate the parameterisation (finite bounds, `max > min`) with the same
-                    // error contract as `uniform_range`; the built distribution is intentionally
-                    // unused for the draw.
+                    // Validate the parameterisation (finite bounds and width, `max > min`) with
+                    // the same error contract as `uniform_range`; the built distribution is
+                    // intentionally unused for the draw (see `draw_half_open`).
                     build_dist(lo, hi)?;
                     let mut rng = rngs.rng(i);
-                    // Half-open `[min, max)` draw via `min + (max - min) * U[0, 1)`, matching the
-                    // documented contract and scipy's `loc + scale * U[0, 1)`. This deliberately
-                    // bypasses `statrs`' `Distribution::sample`, which rebuilds a
-                    // `rand::distributions::Uniform` float sampler (scale/bias/rejection-zone
-                    // setup) on *every* call: that fixed per-draw cost dwarfs the single
-                    // multiply-add here and is what made the sampler slower than scipy.
-                    let u: f64 = Standard.sample(&mut rng);
-                    Ok(Some(lo + (hi - lo) * u))
+                    Ok(Some(draw_half_open(lo, hi, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -86,15 +119,14 @@ struct UniformScalarKwargs {
 ///
 /// Semantically identical to [`uniform_sample`] for the common case of scalar bounds, but built
 /// for it: `inputs[0]` is the per-row index (never null, sole FFI input), and the bounds arrive in
-/// `kwargs`. Validation and the `max - min` width are computed once up front rather than per row.
-/// Seeding is the same `(root_seed, index)` derivation, so output matches `uniform_sample` for the
-/// same `(seed, index, min, max)`.
+/// `kwargs`. Validation happens once up front rather than per row, and the draw is the shared
+/// [`draw_half_open`]. Seeding is the same `(root_seed, index)` derivation, so output matches
+/// `uniform_sample` for the same `(seed, index, min, max)`.
 #[polars_expr(output_type=Float64)]
 fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> PolarsResult<Series> {
     // Validate the parameterisation once; same error contract as `uniform_range` / `uniform_sample`.
     build_dist(kwargs.min, kwargs.max)?;
-    let lo = kwargs.min;
-    let width = kwargs.max - kwargs.min;
+    let (lo, hi) = (kwargs.min, kwargs.max);
     let name = inputs[0].name().clone();
 
     sample_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
@@ -102,8 +134,7 @@ fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> Pola
             name,
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
-                let u: f64 = Standard.sample(&mut rng);
-                lo + width * u
+                draw_half_open(lo, hi, &mut rng)
             }),
         )
     })
@@ -112,7 +143,8 @@ fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> Pola
 /// Element-wise support width `max - min`, validating the parameterisation.
 ///
 /// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
-/// `max <= min` or non-finite bounds raise `InvalidOperation` (surfaces as a `ComputeError`).
+/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
+/// (surfaces as a `ComputeError`).
 ///
 /// Every closed-form Python method derives from this width, so routing it through Rust is what lets
 /// them report an invalid parameterisation consistently with `uniform_sample`, instead of silently
