@@ -51,7 +51,13 @@ class Binomial(DiscreteDistribution):
 
         Validation of ``(n, p)`` happens inside the plugin, so every value-keyed method reports an
         invalid parameterisation consistently; null inputs propagate per row.
+
+        Constant parameters route to the ``<function_name>_scalar`` twin (validated once, passed as
+        kwargs, only ``value`` crosses FFI), the same fast path as ``sample``; its output is
+        bit-identical to the per-row plugin.
         """
+        if self._scalar_kwargs is not None:
+            return register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)
         return register_plugin(function_name, (value, self._n, self._p))
 
     @property

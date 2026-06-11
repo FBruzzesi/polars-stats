@@ -7,6 +7,7 @@ use serde::Deserialize;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
+use crate::distributions::value_keyed_scalar;
 use crate::rng::{sample_by_index, SampleKwargs};
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
@@ -186,48 +187,60 @@ fn binomial_sample_scalar(inputs: &[Series], kwargs: BinomialScalarKwargs) -> Po
     })
 }
 
+// Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
+// share one definition each and cannot drift (the property test pinning their bit-equality only
+// samples parameterisations; sharing the body makes it structural).
+
+fn pmf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    Some(support_point(v).map_or(0.0, |k| dist.pmf(k)))
+}
+
+fn ln_pmf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    Some(support_point(v).map_or(f64::NEG_INFINITY, |k| dist.ln_pmf(k)))
+}
+
+fn cdf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    if v < 0.0 {
+        Some(0.0)
+    } else {
+        Some(dist.cdf(v.floor() as u64))
+    }
+}
+
+fn sf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    if v < 0.0 {
+        Some(1.0)
+    } else {
+        Some(dist.sf(v.floor() as u64))
+    }
+}
+
 /// Element-wise pmf via `statrs` `Discrete::pmf`; zero off the integer support (`value < 0`,
 /// non-integer, or `value > n`). See [`value_keyed`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn binomial_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| {
-        Some(support_point(v).map_or(0.0, |k| dist.pmf(k)))
-    })
+    value_keyed(inputs, pmf_value)
 }
 
 /// Element-wise log-pmf via native `Discrete::ln_pmf` (more accurate than `pmf().ln()`);
 /// `-inf` off the integer support.
 #[polars_expr(output_type=Float64)]
 fn binomial_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| {
-        Some(support_point(v).map_or(f64::NEG_INFINITY, |k| dist.ln_pmf(k)))
-    })
+    value_keyed(inputs, ln_pmf_value)
 }
 
 /// Element-wise cdf `P(X <= floor(value))` via `statrs` `DiscreteCDF::cdf`; `0` for `value < 0`,
 /// `1` for `value >= n`.
 #[polars_expr(output_type=Float64)]
 fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| {
-        if v < 0.0 {
-            Some(0.0)
-        } else {
-            Some(dist.cdf(v.floor() as u64))
-        }
-    })
+    value_keyed(inputs, cdf_value)
 }
 
 /// Element-wise survival function `P(X > floor(value))` via native `DiscreteCDF::sf` (accurate in
 /// the upper tail); `1` for `value < 0`, `0` for `value >= n`.
 #[polars_expr(output_type=Float64)]
 fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| {
-        if v < 0.0 {
-            Some(1.0)
-        } else {
-            Some(dist.sf(v.floor() as u64))
-        }
-    })
+    value_keyed(inputs, sf_value)
 }
 
 /// Slack absorbing the rounding error in `statrs`' regularized-incomplete-beta cdf when comparing
@@ -259,20 +272,69 @@ fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
     lo
 }
 
-/// Element-wise ppf (inverse cdf), returning the integer support point as `f64`.
-///
 /// A quantile outside `[0, 1]` yields `null`. At the endpoints this returns the support bounds
 /// (`ppf(0) = 0`, `ppf(1) = n`); scipy's below-support sentinel `ppf(0) = -1` is not reproduced, so
 /// parity comparisons restrict to interior quantiles.
+fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
+    if !(0.0..=1.0).contains(&q) {
+        None
+    } else {
+        Some(inverse_cdf(dist, q) as f64)
+    }
+}
+
+/// Element-wise ppf (inverse cdf), returning the integer support point as `f64`.
+/// See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, q| {
-        if !(0.0..=1.0).contains(&q) {
-            None
-        } else {
-            Some(inverse_cdf(dist, q) as f64)
-        }
-    })
+    value_keyed(inputs, ppf_value)
+}
+
+/// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
+///
+/// Like [`BinomialScalarKwargs`] minus the sampler `seed`: when both parameters are Python
+/// scalars, the Python layer routes them here as kwargs instead of expanding each into a
+/// full-length column re-validated on every row. The distribution is validated and built once;
+/// only the evaluation-point column travels as an input.
+#[derive(Deserialize)]
+struct BinomialParamsKwargs {
+    n: i64,
+    p: f64,
+}
+
+/// Constant-parameter pmf; same body as [`binomial_pmf`] via [`pmf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.n, kwargs.p)?;
+    value_keyed_scalar(&inputs[0], |v| pmf_value(&dist, v))
+}
+
+/// Constant-parameter log-pmf; same body as [`binomial_ln_pmf`] via [`ln_pmf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.n, kwargs.p)?;
+    value_keyed_scalar(&inputs[0], |v| ln_pmf_value(&dist, v))
+}
+
+/// Constant-parameter cdf; same body as [`binomial_cdf`] via [`cdf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.n, kwargs.p)?;
+    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
+}
+
+/// Constant-parameter sf; same body as [`binomial_sf`] via [`sf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.n, kwargs.p)?;
+    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
+}
+
+/// Constant-parameter ppf; same body as [`binomial_ppf`] via [`ppf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.n, kwargs.p)?;
+    value_keyed_scalar(&inputs[0], |q| ppf_value(&dist, q))
 }
 
 /// Validate the `(n, p)` parameterisation and return the validated `p`.

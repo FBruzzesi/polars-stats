@@ -11,7 +11,7 @@ from polars.plugins import register_plugin_function
 from polars_stats._lib import LIB
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from polars_stats._typing import IntoExprColumn, PolarsDataType
 
@@ -137,25 +137,27 @@ def register_plugin(
     function_name: str,
     args: IntoExprColumn | Iterable[IntoExprColumn],
     *,
-    kwargs: dict[str, float | int | None] | None = None,
+    kwargs: Mapping[str, float | int | None] | None = None,
 ) -> pl.Expr:
     """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
 
     Wraps `register_plugin_function` so each call site spells only what varies (the function name, its input exprs,
-    and an optional sampler `seed`). `plugin_path=LIB`, `is_elementwise` is fixed to `True`: every distribution plugin
-    is per-row by contract (see `coerce_param`), and an aggregating plugin would break `over` / `group_by`, so this is a
-    guard rather than a default.
+    and an optional sampler `seed` or constant-parameter kwargs). `plugin_path=LIB`, `is_elementwise` is fixed to
+    `True`: every distribution plugin is per-row by contract (see `coerce_param`), and an aggregating plugin would
+    break `over` / `group_by`, so this is a guard rather than a default.
 
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
         args: One expr or an iterable of exprs forming the plugin's positional inputs.
-        kwargs: Static keyword arguments serialised to Rust (only a sampler `seed` today).
+        kwargs: Static keyword arguments serialised to Rust (a sampler `seed` and/or the constant parameters of a
+            `*_scalar` fast-path plugin). Accepted as a `Mapping` so the narrower `_scalar_kwargs` dicts pass without
+            an invariance fight; `register_plugin_function` wants a `dict`, hence the copy.
     """
     return register_plugin_function(
         plugin_path=LIB,
         function_name=function_name,
         args=args,
-        kwargs=kwargs,
+        kwargs=None if kwargs is None else dict(kwargs),
         is_elementwise=True,
     )
 
