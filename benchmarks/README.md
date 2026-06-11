@@ -1,13 +1,17 @@
 # Benchmarks: `polars_stats` vs `scipy.stats`
 
-Manual comparison of the **sampling** methods against `scipy.stats`, on speed and peak memory.
+Manual comparison against `scipy.stats`, on speed and peak memory.
 
 This is the routine whose output backs the comparison numbers in the project README/documentation benchmarks.
 
 It is **not** the CI regression guard.
 
-Scope is deliberately narrow: `sample` (one variate per row) and `samples` (`n_samples` per row) against
-`scipy.rvs`.
+Two method families are compared:
+
+* **sampling**: `sample` (one variate per row) and `samples` (`n_samples` per row) against `scipy.rvs`;
+* **value-keyed**: `density` (`pdf` / `pmf` by family), `cdf`, `sf` and `ppf` against the matching
+  frozen-scipy methods, both sides evaluating the same deterministic inputs (the distribution's own
+  seeded draws; uniform quantiles for `ppf`).
 
 ## Running
 
@@ -15,27 +19,29 @@ There is one runnable entrypoint, [run.py](run.py). Run it with `uv` and the `be
 group, which provides the extra tooling (`cyclopts`, `rich`, `psutil`, plus `scipy` / `numpy`):
 
 ```bash
-uv run --group benchmarks benchmarks/run.py                                   # all distributions, rich table in the terminal
-uv run --group benchmarks benchmarks/run.py normal binomial                   # a subset
+uv run --group benchmarks benchmarks/run.py  # all distributions, rich table in the terminal
+uv run --group benchmarks benchmarks/run.py normal binomial  # a subset of distributions
+uv run --group benchmarks benchmarks/run.py --methods sample density ppf  # a subset of methods
 uv run --group benchmarks benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20  # sweep a grid
-uv run --group benchmarks benchmarks/run.py --format markdown                 # write benchmarks/results/<dist>.md
-uv run --group benchmarks benchmarks/run.py --format json                     # write benchmarks/results/<dist>.json
+uv run --group benchmarks benchmarks/run.py --format markdown  # write benchmarks/results/<dist>.md
+uv run --group benchmarks benchmarks/run.py --format json  # write benchmarks/results/<dist>.json
 uv run --group benchmarks benchmarks/run.py --help
 ```
 
 | argument | default | meaning |
 | --- | --- | --- |
 | `distributions` (positional) | all | which distributions to compare, e.g. `normal binomial` |
-| `--rows` | `1_000_000` | one or more row counts to sweep; rows for `sample`/`samples`/`scipy.rvs` |
+| `--methods` | all | which methods to compare: `sample`, `samples`, `density` (= `pdf`/`pmf`), `cdf`, `sf`, `ppf` |
+| `--rows` | `1_000_000` | one or more row counts to sweep; rows for every method |
 | `--n-samples` | `10` | one or more draws-per-row widths to sweep for `samples` |
 | `--iterations` | `50` | timed runs per cell; runtime reported as `p50 ± std` |
-| `--seed` | `0` | seed for the samplers (reproducible) |
+| `--seed` | `0` | seed for the samplers and the value-keyed evaluation inputs (reproducible) |
 | `--format` | `rich` | `rich` (coloured terminal table), `markdown`, or `json` |
 | `--output-dir` | `benchmarks/results/` | where `markdown` / `json` files are written |
 
-`--rows` and `--n-samples` accept multiple values and are swept as a grid in one report: `sample` is
-benchmarked once per `rows` value (`n_samples` does not apply, shown as `-`); `samples` over the full
-`rows` x `n_samples` product.
+`--rows` and `--n-samples` accept multiple values and are swept as a grid in one report: every method
+except `samples` is benchmarked once per `rows` value (`n_samples` does not apply, shown as `-`);
+`samples` over the full `rows` x `n_samples` product.
 
 Output formats:
 
@@ -76,8 +82,10 @@ Adding a distribution is one entry in `REGISTRY`.
   Isolation is required: an in-process measurement after the timing loop is meaningless because each library's
   allocator retains freed pages differently (scipy would read ~0 while `polars_stats` re-allocates).
   RSS (not `tracemalloc`) so the native Rust/Arrow and NumPy allocations are counted.
-* **Correctness gate:** values cannot match across independent RNGs, so the gate is a shape check
-  (column length and array width vs scipy's output shape), flagged `MISMATCH` if it diverges. Warn-only.
+* **Correctness gate:** for the samplers, values cannot match across independent RNGs, so the gate is a
+  shape check (column length and array width vs scipy's output shape). The value-keyed methods evaluate
+  the same inputs on both sides, so their gate is `np.allclose` to loose tolerances (the scipy-parity
+  test suite owns the tight per-method bounds). Flagged `MISMATCH` if it diverges. Warn-only.
 
 Caveats on the memory numbers (read before quoting them):
 
@@ -89,5 +97,5 @@ Caveats on the memory numbers (read before quoting them):
 * One measurement per call (not a distribution); allocation sizes are deterministic, but the sampled
   peak can miss a very short transient.
 
-Out of scope (this routine is sampling-only): pointwise methods (`pdf`/`cdf`/`ppf`/...), summary
-statistics, and the column-parameter regime.
+Out of scope: summary statistics (`mean`/`variance`/`entropy`/...; cheap closed forms, nothing to
+compare at scale) and the column-parameter regime (no scipy equivalent to compare against).

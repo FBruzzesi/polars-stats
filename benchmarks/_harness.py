@@ -1,8 +1,14 @@
-"""Shared comparison harness for the ``polars_stats`` vs ``scipy.stats`` sampling benchmarks.
+"""Shared comparison harness for the ``polars_stats`` vs ``scipy.stats`` benchmarks.
 
-Scope is deliberately narrow: the two sampling methods, `sample` (one variate per row) and `samples`
-(``n_samples`` variates per row), against ``scipy.rvs``. These are the calls where `polars_stats` does real per-row
-work, so they are the meaningful throughput and memory comparison.
+Two method families are compared:
+
+* **sampling**: `sample` (one variate per row) and `samples` (``n_samples`` variates per row),
+  against ``scipy.rvs``. Independent RNGs mean values cannot match, so correctness is a shape-only
+  gate.
+* **value-keyed**: `density` (`pdf` / `pmf` by family), `cdf`, `sf` and `ppf`, against the matching
+  frozen-scipy method. Both sides evaluate the *same* deterministic inputs (the distribution's own
+  seeded draws; open-interval quantiles for `ppf`), so here the `match` column is a real
+  ``np.allclose`` value check, not just a shape check.
 
 `run.py` owns the `Comparison` registry (one entry per distribution) and the CLI; it calls `run_comparison` over a
 `Sweep` of sizes. This module is *not* runnable; run ``uv run --group benchmarks benchmarks/run.py`` instead.
@@ -34,6 +40,8 @@ import scipy
 from rich.console import Console
 from rich.table import Table
 
+from polars_stats.distributions._base import ContinuousDistribution
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
@@ -42,19 +50,31 @@ if TYPE_CHECKING:
 
     from polars_stats.distributions._base import _UnivariateDistribution
 
-    # The frozen instance a spec passes (`norm(...)`, `binom(n, p)`, ...). Sampling-only, so we just call `rvs`;
-    # typing against scipy's own frozen types rather than a hand-rolled Protocol keeps it honest against scipy-stubs.
+    # The frozen instance a spec passes (`norm(...)`, `binom(n, p)`, ...). Typing against scipy's own frozen
+    # types rather than a hand-rolled Protocol keeps it honest against scipy-stubs.
     ScipyFrozen = rv_continuous_frozen | rv_discrete_frozen
 
     Distribution = _UnivariateDistribution
     """Any `polars_stats` distribution"""
 
-    Method = Literal["sample", "samples"]
     Side = Literal["polars_stats", "scipy"]
 
 
+Method = Literal["sample", "samples", "density", "cdf", "sf", "ppf"]
+"""A benchmarkable method. `density` resolves to `pdf` (continuous) or `pmf` (discrete) per distribution."""
+
+ALL_METHODS: tuple[Method, ...] = ("sample", "samples", "density", "cdf", "sf", "ppf")
+
+_VALUE_METHODS: frozenset[Method] = frozenset({"density", "cdf", "sf", "ppf"})
+
 OutputFormat = Literal["markdown", "json", "rich"]
 """How a report is emitted: a markdown file, a JSON file, or a rich table printed to the terminal."""
+
+# Value-keyed match tolerances: statrs and scipy implement the same special functions with
+# different algorithms, so agreement is to high relative precision, not bit-equality. The
+# scipy-parity test suite owns the tight per-method bounds; this is a sanity gate.
+_MATCH_RTOL = 1e-5
+_MATCH_ATOL = 1e-12
 
 _MIB = 1024.0 * 1024.0
 # Background memory sampler poll interval. Short enough to catch the transient peak of `samples`
@@ -95,8 +115,9 @@ class RunConfig:
 class Sweep:
     """A grid of sizes to benchmark in one report: each `rows`, crossed with each `n_samples` for `samples`.
 
-    `sample` (one draw per row) ignores `n_samples`, so it is benchmarked once per `rows` value; `samples`
-    is benchmarked over the full `rows` x `n_samples` product.
+    Every method except `samples` works one value per row and ignores `n_samples`, so it is
+    benchmarked once per `rows` value; `samples` is benchmarked over the full `rows` x `n_samples`
+    product.
     """
 
     rows: tuple[int, ...] = (1_000_000,)
@@ -194,40 +215,96 @@ def _length_frame(rows: int) -> pl.LazyFrame:
     return pl.LazyFrame({"_": pl.Boolean()}).clear(rows)
 
 
-def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -> Callable[[], object]:
-    """The single source of the timed/measured call, so timing, memory, and the shape check never drift.
+def _density_name(dist: Distribution) -> Literal["pdf", "pmf"]:
+    """The family-specific density method `density` resolves to (both as report label and call)."""
+    return "pdf" if isinstance(dist, ContinuousDistribution) else "pmf"
 
-    Returns a zero-arg closure. The polars side builds its length frame up front (outside the closure)
-    so frame construction is not part of what is timed or charged to peak memory.
+
+def _eval_inputs(comp: Comparison, config: RunConfig, method: Method) -> np.ndarray:
+    """Deterministic evaluation inputs for a value-keyed method, shared by both sides.
+
+    Derived only from `(comp, config)` so the two sides (and the isolated memory subprocesses)
+    regenerate the identical array. `ppf` gets uniform quantiles from `[0, 1)`; the other methods
+    get the distribution's own seeded draws, which cover the support with realistic density.
+    """
+    if method == "ppf":
+        return np.random.default_rng(config.seed).uniform(0.0, 1.0, size=config.rows)
+    return np.asarray(comp.scipy_frozen.rvs(size=config.rows, random_state=config.seed), dtype=np.float64)
+
+
+def _value_expr(dist: Distribution, method: Method) -> pl.Expr:
+    """The `polars_stats` expression for a value-keyed method, evaluated on the shared `x` column."""
+    x = pl.col("x")
+    match method:
+        case "density":
+            return dist.pdf(x) if isinstance(dist, ContinuousDistribution) else dist.pmf(x)  # type: ignore[attr-defined]
+        case "cdf":
+            return dist.cdf(x)
+        case "sf":
+            return dist.sf(x)
+        case "ppf":
+            return dist.ppf(x)
+        case _:
+            msg = f"not a value-keyed method: {method}"
+            raise AssertionError(msg)
+
+
+def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -> Callable[[], object]:
+    """The single source of the timed/measured call, so timing, memory, and the match check never drift.
+
+    Returns a zero-arg closure. Input construction (the length frame for samplers, the shared
+    evaluation column for value-keyed methods) happens up front, outside the closure, so it is not
+    part of what is timed or charged to peak memory.
     """
     rows, n, seed = config.rows, config.n_samples, config.seed
     match side:
         case "scipy":
             frozen = comp.scipy_frozen
+            if method in _VALUE_METHODS:
+                values = _eval_inputs(comp, config, method)
+                scipy_method = _density_name(comp.dist) if method == "density" else method
+                fn = getattr(frozen, scipy_method)
+                return lambda: fn(values)
             size: int | tuple[int, int] = rows if method == "sample" else (rows, n)
             return lambda: frozen.rvs(size=size, random_state=seed)
         case "polars_stats":
-            dist, lf = comp.dist, _length_frame(rows)
-            expr = dist.sample(seed=seed) if method == "sample" else dist.samples(n, seed=seed)
+            dist = comp.dist
+            if method in _VALUE_METHODS:
+                lf = pl.LazyFrame({"x": _eval_inputs(comp, config, method)})
+                expr = _value_expr(dist, method)
+            else:
+                lf = _length_frame(rows)
+                expr = dist.sample(seed=seed) if method == "sample" else dist.samples(n, seed=seed)
             return lambda: lf.select(s=expr).collect(engine="streaming")
         case _:
             msg = "Unreachable path"
             raise AssertionError(msg)
 
 
-def _shape_ok(method: Method, config: RunConfig, polars_out: object, scipy_out: object) -> bool:
-    """Shape-only correctness gate: independent RNGs mean values cannot match, but shapes must."""
+def _matches(method: Method, config: RunConfig, polars_out: object, scipy_out: object) -> bool:
+    """Correctness gate.
+
+    * Samplers: shape-only (independent RNGs cannot match values).
+    * Value-keyed methods evaluate the same inputs on both sides, so values must agree to `np.allclose` within
+        the loose `_MATCH_RTOL`/`_MATCH_ATOL` (the scipy-parity suite owns the tight bounds).
+    """
     assert isinstance(polars_out, pl.DataFrame)  # noqa: S101  # help the type checker
     assert isinstance(scipy_out, np.ndarray)  # noqa: S101  # help the type checker
+    if method == "samples":
+        dtype = polars_out.to_series().dtype
+        return (
+            polars_out.height == config.rows
+            and isinstance(dtype, pl.Array)
+            and getattr(dtype, "size", None) == config.n_samples
+            and scipy_out.shape == (config.rows, config.n_samples)
+        )
+    if polars_out.height != config.rows or scipy_out.shape != (config.rows,):
+        return False
     if method == "sample":
-        return polars_out.height == config.rows and scipy_out.shape == (config.rows,)
-    dtype = polars_out.to_series().dtype
-    return (
-        polars_out.height == config.rows
-        and isinstance(dtype, pl.Array)
-        and getattr(dtype, "size", None) == config.n_samples
-        and scipy_out.shape == (config.rows, config.n_samples)
-    )
+        return True
+    ours = polars_out.to_series().cast(pl.Float64).to_numpy()
+    theirs = np.asarray(scipy_out, dtype=np.float64)
+    return np.allclose(ours, theirs, rtol=_MATCH_RTOL, atol=_MATCH_ATOL, equal_nan=True)
 
 
 def _mem_entry(queue: object, comp: Comparison, method: Method, config: RunConfig, side: Side) -> None:
@@ -267,7 +344,7 @@ def _peak_memory_isolated(comp: Comparison, method: Method, config: RunConfig, s
 def _measure(comp: Comparison, method: Method, config: RunConfig) -> Result:
     sides: tuple[Side, ...] = ("polars_stats", "scipy")
     fns = {side: _build_fn(comp, method, config, side) for side in sides}
-    matches = _shape_ok(method, config, fns["polars_stats"](), fns["scipy"]())
+    matches = _matches(method, config, fns["polars_stats"](), fns["scipy"]())
     measurements = {
         side: Measurement(
             *_time(fns[side], iterations=config.iterations),
@@ -276,7 +353,8 @@ def _measure(comp: Comparison, method: Method, config: RunConfig) -> Result:
         for side in sides
     }
     return Result(
-        method=method,
+        # `density` is the sweep token; the report shows the method actually called.
+        method=_density_name(comp.dist) if method == "density" else method,
         rows=config.rows,
         n_samples=config.n_samples if method == "samples" else None,
         polars_stats=measurements["polars_stats"],
@@ -285,17 +363,20 @@ def _measure(comp: Comparison, method: Method, config: RunConfig) -> Result:
     )
 
 
-def run_comparison(comp: Comparison, sweep: Sweep) -> list[Result]:
-    """Benchmark `sample` (per `rows`) and `samples` (per `rows` x `n_samples`) across the sweep grid."""
-    results = [
-        _measure(comp, "sample", RunConfig(rows=rows, n_samples=1, iterations=sweep.iterations, seed=sweep.seed))
-        for rows in sweep.rows
-    ]
-    results.extend(
-        _measure(comp, "samples", RunConfig(rows=rows, n_samples=n, iterations=sweep.iterations, seed=sweep.seed))
-        for rows in sweep.rows
-        for n in sweep.n_samples
-    )
+def run_comparison(comp: Comparison, sweep: Sweep, methods: Sequence[Method] = ALL_METHODS) -> list[Result]:
+    """Benchmark each requested method across the sweep grid.
+
+    Every method is measured once per `rows` value; `samples` additionally crosses `rows` with each
+    `n_samples` width.
+    """
+    results: list[Result] = []
+    for method in methods:
+        widths = sweep.n_samples if method == "samples" else (1,)
+        results.extend(
+            _measure(comp, method, RunConfig(rows=rows, n_samples=n, iterations=sweep.iterations, seed=sweep.seed))
+            for rows in sweep.rows
+            for n in widths
+        )
     return results
 
 
