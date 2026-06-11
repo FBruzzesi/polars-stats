@@ -6,6 +6,7 @@ use rand::distributions::Distribution as RandDistribution;
 use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
+use crate::distributions::value_keyed_scalar;
 use crate::rng::{sample_by_index, SampleKwargs};
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
@@ -173,45 +174,114 @@ fn normal_sample_scalar(inputs: &[Series], kwargs: NormalScalarKwargs) -> Polars
     })
 }
 
+// Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
+// share one definition each and cannot drift (the property test pinning their bit-equality only
+// samples parameterisations; sharing the body makes it structural).
+
+fn pdf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(dist.pdf(v))
+}
+
+fn ln_pdf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(dist.ln_pdf(v))
+}
+
+fn cdf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(dist.cdf(v))
+}
+
+fn sf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(dist.sf(v))
+}
+
+/// A quantile outside `[0, 1]` yields `null`; the closed endpoints map to the infinite tails
+/// (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
+fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
+    if !(0.0..=1.0).contains(&q) {
+        None
+    } else if q == 0.0 {
+        Some(f64::NEG_INFINITY)
+    } else if q == 1.0 {
+        Some(f64::INFINITY)
+    } else {
+        Some(dist.inverse_cdf(q))
+    }
+}
+
 /// Element-wise pdf via `statrs` `Continuous::pdf`. See [`value_keyed`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn normal_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| Some(dist.pdf(v)))
+    value_keyed(inputs, pdf_value)
 }
 
 /// Element-wise log-pdf via native `Continuous::ln_pdf` (more accurate than `pdf().ln()`).
 #[polars_expr(output_type=Float64)]
 fn normal_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| Some(dist.ln_pdf(v)))
+    value_keyed(inputs, ln_pdf_value)
 }
 
 /// Element-wise cdf via `statrs` `ContinuousCDF::cdf`.
 #[polars_expr(output_type=Float64)]
 fn normal_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| Some(dist.cdf(v)))
+    value_keyed(inputs, cdf_value)
 }
 
 /// Element-wise survival function via native `ContinuousCDF::sf` (accurate in the upper tail).
 #[polars_expr(output_type=Float64)]
 fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, v| Some(dist.sf(v)))
+    value_keyed(inputs, sf_value)
 }
 
 /// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
-///
-/// A quantile outside `[0, 1]` yields `null`; the closed endpoints map to the infinite tails
-/// (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
+/// See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, |dist, q| {
-        if !(0.0..=1.0).contains(&q) {
-            None
-        } else if q == 0.0 {
-            Some(f64::NEG_INFINITY)
-        } else if q == 1.0 {
-            Some(f64::INFINITY)
-        } else {
-            Some(dist.inverse_cdf(q))
-        }
-    })
+    value_keyed(inputs, ppf_value)
+}
+
+/// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
+///
+/// Like [`NormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python scalars,
+/// the Python layer routes them here as kwargs instead of expanding each into a full-length
+/// column re-validated on every row. The distribution is validated and built once; only the
+/// evaluation-point column travels as an input.
+#[derive(Deserialize)]
+struct NormalParamsKwargs {
+    mean: f64,
+    std_dev: f64,
+}
+
+/// Constant-parameter pdf; same body as [`normal_pdf`] via [`pdf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    value_keyed_scalar(&inputs[0], |v| pdf_value(&dist, v))
+}
+
+/// Constant-parameter log-pdf; same body as [`normal_ln_pdf`] via [`ln_pdf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    value_keyed_scalar(&inputs[0], |v| ln_pdf_value(&dist, v))
+}
+
+/// Constant-parameter cdf; same body as [`normal_cdf`] via [`cdf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
+}
+
+/// Constant-parameter sf; same body as [`normal_sf`] via [`sf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
+}
+
+/// Constant-parameter ppf; same body as [`normal_ppf`] via [`ppf_value`], dist built once.
+#[polars_expr(output_type=Float64)]
+fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    value_keyed_scalar(&inputs[0], |q| ppf_value(&dist, q))
 }
