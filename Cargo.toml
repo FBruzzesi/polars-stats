@@ -22,4 +22,8 @@ polars = { version = "0.52.0", default-features = false, features = ["dtype-u8"]
 polars-arrow = { version = "0.52.0", default-features = false }
 statrs = "0.18.0"
 rand = "0.8"
+# The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE) and its
+# per-draw uniform consumption: a bump can change it. The committed Cargo.lock pins the exact build
+# version; treat any update as a deliberate, changelog-recorded seeded-output change.
+rand_distr = "0.4"
 rand_pcg = "0.3"

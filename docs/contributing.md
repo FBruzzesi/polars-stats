@@ -42,12 +42,13 @@ uv run --group docs zensical serve
 | `polars` / `polars-arrow` | Series and expression types in Rust (pinned transitively by `pyo3-polars`) |
 | `pyo3-polars` | the `#[polars_expr]` macro and FFI glue (source of ABI churn) |
 | `pyo3` | Python FFI, abi3 for forward compatibility |
-| `statrs` 0.18 | distribution math and sampling, the single upstream for v1 |
+| `statrs` 0.18 | distribution math, and sampling except the binomial draw |
+| `rand_distr` 0.4 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](design.md#binomial-sampling-uses-rand_distr-not-statrs) |
 | `rand` 0.8 | `RngCore` / `OsRng` for the unseeded root seed |
 | `rand_pcg` 0.3 | `Pcg64Mcg` per-row RNG for deterministic seeded sampling |
 | `serde` | deserialise the static `seed` kwarg |
 
-Deliberately excluded: `rand_distr` (overlaps with `statrs`), `rand_chacha` (replaced by `rand_pcg`; per-row `ChaCha20`
+Deliberately excluded: `rand_chacha` (replaced by `rand_pcg`; per-row `ChaCha20`
 construction regressed sampling 10 to 20x, see [Design notes](design.md#sampling-derives-a-fresh-per-row-rng-from-root_seed-row_index)),
 `ndarray` (Polars is Arrow-native), `rayon` (Polars parallelises at the planner), `scirs2-stats` (pre-1.0).
 

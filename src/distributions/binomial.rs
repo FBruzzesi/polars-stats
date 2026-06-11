@@ -3,6 +3,7 @@ use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
+use rand_distr::Binomial as BinomialSampler;
 use serde::Deserialize;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
@@ -23,6 +24,24 @@ fn build_dist(n: i64, p: f64) -> PolarsResult<Binomial> {
         PolarsError::InvalidOperation(format!("n must be a non-negative integer, got {n}").into())
     })?;
     Binomial::new(p, trials).map_err(|e| {
+        PolarsError::InvalidOperation(format!("p must be in [0, 1], got {p}: {e}").into())
+    })
+}
+
+/// Construct a `rand_distr::Binomial` for sampling, mirroring [`build_dist`]'s validation contract.
+///
+/// `statrs`' `Distribution<u64>` draw for `Binomial` is `(0..n).fold(...)`: one uniform per trial, so
+/// `O(n)` draws per sampled row. `rand_distr`'s sampler is `O(1)`-amortised (inversion for small
+/// `n*p`, BTPE otherwise), so the sampler builds *this* distribution rather than the `statrs` one.
+/// The accepted/rejected parameter set is identical to [`build_dist`] (`n >= 0`, `p` finite in
+/// `[0, 1]`; `rand_distr` rejects `NaN` via `!(p >= 0.0)`), and the error messages share the same
+/// prefixes, so validation behaviour is unchanged from the value-keyed methods. The value-keyed
+/// methods keep building the `statrs` distribution; only the sampler uses this.
+fn build_sampler(n: i64, p: f64) -> PolarsResult<BinomialSampler> {
+    let trials = u64::try_from(n).map_err(|_| {
+        PolarsError::InvalidOperation(format!("n must be a non-negative integer, got {n}").into())
+    })?;
+    BinomialSampler::new(trials, p).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {p}: {e}").into())
     })
 }
@@ -137,11 +156,9 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
         |n_opt, p_opt, i_opt| -> PolarsResult<Option<u64>> {
             match (n_opt, p_opt, i_opt) {
                 (Some(n), Some(p), Some(i)) => {
-                    let dist = build_dist(n, p)?;
+                    let dist = build_sampler(n, p)?;
                     let mut rng = rngs.rng(i);
-                    Ok(Some(<Binomial as RandDistribution<u64>>::sample(
-                        &dist, &mut rng,
-                    )))
+                    Ok(Some(dist.sample(&mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -173,7 +190,7 @@ struct BinomialScalarKwargs {
 /// `(seed, index, n, p)`.
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample_scalar(inputs: &[Series], kwargs: BinomialScalarKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
+    let dist = build_sampler(kwargs.n, kwargs.p)?;
     let name = inputs[0].name().clone();
 
     sample_by_index::<UInt64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
@@ -181,7 +198,7 @@ fn binomial_sample_scalar(inputs: &[Series], kwargs: BinomialScalarKwargs) -> Po
             name,
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
-                <Binomial as RandDistribution<u64>>::sample(&dist, &mut rng)
+                dist.sample(&mut rng)
             }),
         )
     })

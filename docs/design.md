@@ -63,6 +63,14 @@ path is selected only when the parameters are known scalars, so nothing column-v
 `sample_iter` was rejected for the loop body: it advances a single stream in row order, which couples rows across chunks
 and breaks the invariance guarantee the per-row seeding exists to provide.
 
+### Binomial sampling uses `rand_distr`, not `statrs`
+
+`statrs` 0.18 implements `Distribution<u64> for Binomial` as `(0..n).fold(...)`, one uniform draw per trial, so a sampled
+row costs `n` RNG draws. At `n = 10_000` that is 10,000 uniforms per row, turning the sampler `O(n)`; the constant-factor
+wins over scipy held only for small `n`. The binomial sampler therefore draws from `rand_distr::Binomial` (inversion for
+small `n*p`, BTPE otherwise, both `O(1)`-amortised), keeping sampling time flat in `n`. This is the one place sampling
+does not go through `statrs`; every value-keyed method (`pmf`, `cdf`, `ppf`, ...) still builds the `statrs` distribution.
+
 ### Invalid parameters raise, they never silently null
 
 An invalid parameter value, scalar or one bad column row (`std_dev <= 0`, `max <= min`, `p` outside `[0, 1]`, a
