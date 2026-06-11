@@ -4,7 +4,14 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, DiscreteDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    DiscreteDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -23,6 +30,8 @@ class Bernoulli(DiscreteDistribution):
 
     def __init__(self, p: float | IntoExprColumn) -> None:
         self._p = coerce_param(p, name="p")
+        # A constant `p` enables the fast sampler path; `None` falls back to the per-row plugin.
+        self._scalar_kwargs = scalar_kwargs(p=scalar_float(p))
 
     @property
     def _checked_p(self) -> pl.Expr:
@@ -38,14 +47,21 @@ class Bernoulli(DiscreteDistribution):
         return self._p.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one Binomial sample per row, returning a ``Boolean`` column.
+        """Draw one Bernoulli sample per row, returning a ``Boolean`` column.
 
         Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
         partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
         ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
 
         Rows with an invalid parameter raise; rows with a null parameter yield null.
+
+        The output column is named ``"sample"`` when ``p`` is a constant; a column-valued ``p``
+        keeps polars root-name semantics (the name follows the parameter expression).
         """
+        if self._scalar_kwargs is not None:
+            return register_plugin(
+                "bernoulli_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
+            ).alias("sample")
         return register_plugin("bernoulli_sample", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:

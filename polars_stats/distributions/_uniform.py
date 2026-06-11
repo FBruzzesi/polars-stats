@@ -4,7 +4,14 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    ContinuousDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -23,9 +30,10 @@ class Uniform(ContinuousDistribution):
             ``pl.Series`` or column name ``str``) carrying one bound per row.
         max: Upper bound, with ``max > min``. Same accepted types as ``min``.
 
-    An invalid parameterisation (``max <= min`` or a non-finite bound) is not checked at construction;
-    matching every other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any
-    method is evaluated. Null bounds propagate to null.
+    An invalid parameterisation (``max <= min``, a non-finite bound, or a width ``max - min``
+    overflowing ``float64``) is not checked at construction; matching every other distribution, it
+    raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Null bounds
+    propagate to null.
     """
 
     _min: pl.Expr
@@ -35,14 +43,18 @@ class Uniform(ContinuousDistribution):
     def __init__(self, min: float | IntoExprColumn, max: float | IntoExprColumn) -> None:  # noqa: A002
         self._min = coerce_param(min, name="min")
         self._max = coerce_param(max, name="max")
+        # Constant bounds enable the constant-bounds sampler fast path; `None` falls back to the
+        # per-row plugin.
+        self._scalar_kwargs = scalar_kwargs(min=scalar_float(min), max=scalar_float(max))
 
     @property
     def range(self) -> pl.Expr:
         """Width of the support, ``max - min``.
 
-        Computed in Rust so an invalid parameterisation (``max <= min`` or a non-finite bound) raises
-        rather than silently yielding a non-positive width. Every closed-form method derives from this,
-        so they all validate consistently. Null bounds propagate.
+        Computed in Rust so an invalid parameterisation (``max <= min``, a non-finite bound, or a
+        width overflowing ``float64``) raises rather than silently yielding a non-positive or
+        infinite width. Every closed-form method derives from this, so they all validate
+        consistently. Null bounds propagate.
         """
         return register_plugin("uniform_range", (self._min, self._max))
 
@@ -56,7 +68,17 @@ class Uniform(ContinuousDistribution):
         Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
         partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
         ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
+
+        The output column is named ``"sample"`` when both bounds are constants; column-valued
+        bounds keep polars root-name semantics (the name follows the first parameter expression).
         """
+        if self._scalar_kwargs is not None:
+            # Constant bounds: pass them as kwargs and validate once in Rust, instead of expanding
+            # each into a full-length `pl.repeat` column re-validated per row. Only the row index
+            # crosses FFI, so seeding (and thus output) is identical to the per-row path.
+            return register_plugin(
+                "uniform_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
+            ).alias("sample")
         return register_plugin("uniform_sample", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

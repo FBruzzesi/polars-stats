@@ -55,7 +55,9 @@ input, so it stays elementwise and `over` / `group_by` invoke it once per partit
 
 On the Rust side, a plugin function receives `inputs: &[Series]` of `(value, param_1, ..., param_k)`, casts each to
 `Float64Chunked`, iterates per chunk, propagates nulls, and constructs the `statrs` distribution per row. `kwargs`
-carries only static config that cannot be column-valued, namely the sampler `seed`.
+carries only static config that cannot be column-valued: the sampler `seed`, plus the constant parameters in the
+sampler fast path below (the one place a parameter rides in `kwargs`, valid precisely because there it is known to be a
+scalar).
 
 ## Plugin granularity
 
@@ -85,6 +87,15 @@ elementwise and invariant to chunking and thread count. `Pcg64Mcg` is cheap to c
 key schedule), passes TestU01 BigCrush, and is stable across `rand_pcg` releases and platforms, so seeded results are
 reproducible across OS and architecture.
 
+**Constant-parameter fast path**: when every distribution parameter is a Python scalar (the common case), the sampler
+takes a dedicated plugin, `<name>_sample_scalar`. The parameters travel in `kwargs` and are validated once; only the row
+index crosses FFI, instead of one full-length `pl.repeat` column per parameter that the general plugin would marshal and
+re-validate on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
+non-null index straight into the typed output. It reuses the same `(root_seed, row_index)` seeding and the same draw as
+the per-row path, so output is byte-identical for the same seed (a property test pins that equality); column-valued
+parameters still take the general per-row plugin. This is what moves the sampler from slower than scipy at small frames
+to faster from roughly 100k rows up, where the per-element draw dominates the fixed `int_range` row-index cost.
+
 !!! info "Earlier `ChaCha20` design (removed)"
 
     A previous design advanced a single `ChaCha20Rng` once per row in iteration order, which coupled rows across chunks
@@ -108,7 +119,7 @@ polars-stats/
 ├── rust-toolchain.toml
 ├── src/
 │   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs)
+│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_by_index fast path)
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports

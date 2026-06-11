@@ -3,9 +3,10 @@ use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
+use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
-use crate::rng::SampleKwargs;
+use crate::rng::{sample_by_index, SampleKwargs};
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
@@ -133,6 +134,43 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
     )?;
 
     Ok(ca.with_name(name).into_series())
+}
+
+/// Static parameters for the constant-parameter sampler fast path.
+///
+/// When both `mean` and `std_dev` are Python scalars, the Python layer routes them here as kwargs
+/// instead of expanding each into a full-length column (`pl.repeat`) that crosses FFI and is
+/// re-validated on every row. The distribution is validated and built once, and only the per-row
+/// index travels as an input.
+#[derive(Deserialize)]
+struct NormalScalarKwargs {
+    seed: Option<u64>,
+    mean: f64,
+    std_dev: f64,
+}
+
+/// Constant-parameter Normal sampler.
+///
+/// Semantically identical to [`normal_sample`] for the common case of scalar parameters, but built
+/// for it: `inputs[0]` is the per-row index (never null, sole FFI input), and the parameters arrive
+/// in `kwargs`. The distribution is validated and constructed once up front, then reused for every
+/// row. Seeding is the same `(root_seed, index)` derivation and the draw is the same
+/// `RandDistribution::sample`, so output matches `normal_sample` for the same `(seed, index, mean,
+/// std_dev)`.
+#[polars_expr(output_type=Float64)]
+fn normal_sample_scalar(inputs: &[Series], kwargs: NormalScalarKwargs) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    let name = inputs[0].name().clone();
+
+    sample_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
+        Float64Chunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().map(|i| {
+                let mut rng = rngs.rng(i);
+                RandDistribution::sample(&dist, &mut rng)
+            }),
+        )
+    })
 }
 
 /// Element-wise pdf via `statrs` `Continuous::pdf`. See [`value_keyed`] for the null/error contract.

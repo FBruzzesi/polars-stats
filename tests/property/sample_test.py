@@ -38,6 +38,26 @@ def test_sample_seeded_is_reproducible(spec: DistSpec, data: st.DataObject) -> N
     assert_series_equal(first, second)
 
 
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@given(data=st.data())
+def test_sample_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataObject) -> None:
+    """Constant scalar parameters and the equivalent per-row columns draw identically.
+
+    Constant parameters route through a dedicated plugin that validates once and passes them as
+    kwargs, with only the row index crossing FFI; column parameters take the general per-row plugin.
+    Both share the `(seed, row_index)` seeding and the same underlying draw, so for one seed the two
+    paths must agree bit for bit. This is the correctness contract that lets the fast path exist, so a
+    divergence (e.g. a parameter order or off-by-one in the fast path) must fail here.
+    """
+    params = data.draw(spec.params)
+    frame = pl.DataFrame({"_": range(_N_ROWS)})
+
+    fast = frame.select(s=spec.make(params).sample(seed=_SEED))["s"]
+    per_row = frame.select(s=spec.make_columns(params).sample(seed=_SEED))["s"]
+
+    assert_series_equal(fast, per_row)
+
+
 @settings(max_examples=10)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())

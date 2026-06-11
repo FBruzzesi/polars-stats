@@ -5,7 +5,14 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import ROW_INDEX_EXPR, ContinuousDistribution, coerce_param, register_plugin
+from polars_stats.distributions._base import (
+    ROW_INDEX_EXPR,
+    ContinuousDistribution,
+    coerce_param,
+    register_plugin,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn, PolarsDataType
@@ -43,6 +50,8 @@ class Normal(ContinuousDistribution):
     ) -> None:
         self._mean = coerce_param(mean, name="mean")
         self._std_dev = coerce_param(std_dev, name="std_dev")
+        # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
+        self._scalar_kwargs = scalar_kwargs(mean=scalar_float(mean), std_dev=scalar_float(std_dev))
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
         """Register a value-keyed Rust plugin call ``f(value, mean, std_dev)``.
@@ -73,7 +82,14 @@ class Normal(ContinuousDistribution):
         ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
 
         Rows with an invalid ``std_dev`` raise; rows with a null parameter yield null.
+
+        The output column is named ``"sample"`` when both parameters are constants; column-valued
+        parameters keep polars root-name semantics (the name follows the first parameter expression).
         """
+        if self._scalar_kwargs is not None:
+            return register_plugin(
+                "normal_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
+            ).alias("sample")
         return register_plugin("normal_sample", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

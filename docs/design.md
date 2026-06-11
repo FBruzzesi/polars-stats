@@ -13,7 +13,9 @@ the code does, read [Architecture](architecture.md). If you want to know why it 
 
 Polars plugins receive `inputs: &[Series]` (lazy, length-matched) and `kwargs` (static, JSON-serialised at planning
 time). Putting parameters in `kwargs` would block column-valued parameters, which is the whole differentiator. So every
-plugin call passes `(value, param_1, ..., param_k)` as `inputs`, and `kwargs` carries only static config (`seed`).
+plugin call passes `(value, param_1, ..., param_k)` as `inputs`, and `kwargs` carries only static config (`seed`). The
+one exception is the constant-parameter sampler fast path below, which passes scalars in `kwargs` precisely because they
+are known not to be column-valued there.
 
 ### One Rust file per distribution, one plugin function per method that needs Rust
 
@@ -40,6 +42,26 @@ This replaced an earlier "single `ChaCha20Rng` advanced once per row in iteratio
 across chunks (order-dependent, not streaming-safe). The naive fix, a `ChaCha20Rng` per row, regressed sampling 10 to
 20x. A one-shot hash-to-uniform would be cheaper still but only serves distributions needing a single uniform per draw,
 so it is deliberately not the foundation.
+
+### Constant parameters take a sampler fast path
+
+`sample` ships a second plugin, `<name>_sample_scalar`, used when every parameter is a Python scalar. The general
+sampler is built for the differentiator (column-valued parameters), but it makes the common constant-parameter case pay
+for machinery it does not use: each scalar is expanded to a full-length `pl.repeat` column, marshalled across FFI, and
+re-validated on every row, and the distribution is rebuilt per row. For a cheap draw (uniform is one multiply-add) that
+fixed overhead dominates, leaving the sampler slower than scipy until well past 100k rows.
+
+The fast path passes the constant parameters in `kwargs`, validates and builds the distribution once, and sends only the
+row index as an input. It keeps the exact `(root_seed, row_index)` seeding and the same draw, so its output is
+byte-identical to the per-row path for any seed; that equality is the contract, pinned by a property test
+(`test_sample_scalar_fast_path_matches_per_row`) rather than left implicit. The result is a 2 to 9x speedup over scipy
+at 100k+ rows across distributions, and lower peak memory (no constant columns), with reproducibility and the chunk- and
+thread-invariance guarantees untouched.
+
+It is the one deliberate exception to "parameters travel in `inputs`, not `kwargs`": admissible precisely because the
+path is selected only when the parameters are known scalars, so nothing column-valued is ever forced into `kwargs`.
+`sample_iter` was rejected for the loop body: it advances a single stream in row order, which couples rows across chunks
+and breaks the invariance guarantee the per-row seeding exists to provide.
 
 ### Invalid parameters raise, they never silently null
 

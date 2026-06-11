@@ -27,6 +27,20 @@ def test_sample_within_bounds(mn: float, mx: float, frame: Callable[..., pl.Data
     assert s.max() <= mx
 
 
+def test_sample_strictly_below_max_under_rounding(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    # Pins the half-open `[min, max)` boundary clamp in `draw_half_open`. At this magnitude
+    # consecutive floats are 2.0 apart, so `min + (max - min) * u` rounds to exactly `max` for
+    # roughly half of all `u` values; without the clamp this test fails immediately. Covers both
+    # the constant-bounds fast path and the per-row path.
+    mn, mx = 1e16, 1e16 + 2.0
+    fast = frame(size=2_000).select(u=Uniform(min=mn, max=mx).sample(seed=seed))
+    per_row = frame(size=2_000).select(
+        u=Uniform(min=pl.repeat(mn, pl.len()), max=pl.repeat(mx, pl.len())).sample(seed=seed)
+    )
+    for dframe in (fast, per_row):
+        assert dframe.get_column("u").is_between(mn, mx, closed="left").all()
+
+
 def test_sample_seed_reproducible(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     dframe = frame()
     s1 = dframe.with_columns(u=Uniform(min=0.0, max=1.0).sample(seed=seed))["u"]

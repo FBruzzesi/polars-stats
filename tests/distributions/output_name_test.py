@@ -1,0 +1,59 @@
+"""Output-name contract of `sample` / `samples`.
+
+With all-constant parameters there is no input column to inherit a name from, so the samplers get
+the deliberate default names `"sample"` / `"samples"` (rather than leaking an internal expression
+name). With column-valued parameters the output keeps polars root-name semantics: it is named after
+the first parameter expression, which is what lets multi-column parameters (`pl.col("p1", "p2")`)
+and `.name.*` modifiers work.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import polars as pl
+import pytest
+
+from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+
+if TYPE_CHECKING:
+    from polars_stats.distributions._base import _UnivariateDistribution
+
+_FRAME = pl.DataFrame({"p": [0.5, 0.5], "mu": [0.0, 0.0], "n": [5, 5]})
+
+_SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
+    "bernoulli": Bernoulli(p=0.5),
+    "binomial": Binomial(n=5, p=0.5),
+    "normal": Normal(mean=0.0, std_dev=1.0),
+    "lognormal": LogNormal(mu=0.0, sigma=1.0),
+    "uniform": Uniform(min=0.0, max=1.0),
+}
+
+# Distribution with a column-valued first parameter, paired with the root name the output inherits.
+_COLUMN_PARAMS: dict[str, tuple[_UnivariateDistribution, str]] = {
+    "bernoulli": (Bernoulli(p=pl.col("p")), "p"),
+    "binomial": (Binomial(n=pl.col("n"), p=0.5), "n"),
+    "normal": (Normal(mean=pl.col("mu"), std_dev=1.0), "mu"),
+    "lognormal": (LogNormal(mu=pl.col("mu"), sigma=1.0), "mu"),
+    "uniform": (Uniform(min=pl.col("mu"), max=1.0), "mu"),
+}
+
+
+@pytest.mark.parametrize("dist", _SCALAR_PARAMS.values(), ids=list(_SCALAR_PARAMS))
+def test_sample_with_scalar_params_is_named_sample(dist: _UnivariateDistribution) -> None:
+    assert _FRAME.select(dist.sample(seed=0)).columns == ["sample"]
+
+
+@pytest.mark.parametrize("dist", _SCALAR_PARAMS.values(), ids=list(_SCALAR_PARAMS))
+def test_samples_with_scalar_params_is_named_samples(dist: _UnivariateDistribution) -> None:
+    assert _FRAME.select(dist.samples(size=3, seed=0)).columns == ["samples"]
+
+
+@pytest.mark.parametrize(("dist", "root"), _COLUMN_PARAMS.values(), ids=list(_COLUMN_PARAMS))
+def test_sample_with_column_params_keeps_root_name(dist: _UnivariateDistribution, root: str) -> None:
+    assert _FRAME.select(dist.sample(seed=0)).columns == [root]
+
+
+@pytest.mark.parametrize(("dist", "root"), _COLUMN_PARAMS.values(), ids=list(_COLUMN_PARAMS))
+def test_samples_with_column_params_keeps_root_name(dist: _UnivariateDistribution, root: str) -> None:
+    assert _FRAME.select(dist.samples(size=3, seed=0)).columns == [root]

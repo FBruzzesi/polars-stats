@@ -47,3 +47,22 @@ def test_method_raises_on_max_le_min_scalar(expr_fn: Callable[[Uniform], pl.Expr
     u = Uniform(min=5.0, max=2.0)
     with pytest.raises(pl.exceptions.ComputeError, match="max must be strictly greater than min"):
         df.select(r=expr_fn(u))
+
+
+# Bounds that are individually finite (so `statrs` accepts them) but whose width `max - min`
+# overflows f64. Without an explicit guard every derived quantity (range, moments, draws) would
+# silently be `inf` instead of raising.
+@pytest.mark.parametrize("expr_fn", _METHODS.values(), ids=list(_METHODS))
+def test_method_raises_on_width_overflow_column(expr_fn: Callable[[Uniform], pl.Expr]) -> None:
+    df = pl.DataFrame({"lo": [0.0, -1e308], "hi": [1.0, 1e308], "x": [0.5, 0.5], "q": [0.5, 0.5]})
+    u = Uniform(min=pl.col("lo"), max=pl.col("hi"))  # row 1: hi - lo overflows to inf
+    with pytest.raises(pl.exceptions.ComputeError, match="max - min must be finite"):
+        df.select(r=expr_fn(u))
+
+
+@pytest.mark.parametrize("expr_fn", _METHODS.values(), ids=list(_METHODS))
+def test_method_raises_on_width_overflow_scalar(expr_fn: Callable[[Uniform], pl.Expr]) -> None:
+    df = pl.DataFrame({"x": [0.5], "q": [0.5]})
+    u = Uniform(min=-1e308, max=1e308)
+    with pytest.raises(pl.exceptions.ComputeError, match="max - min must be finite"):
+        df.select(r=expr_fn(u))

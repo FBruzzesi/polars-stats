@@ -90,6 +90,38 @@ def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
 
 
+def scalar_float(value: float | IntoExprColumn) -> float | None:
+    """Return `value` as a `float` if it is a plain numeric scalar, else `None`.
+
+    Used by samplers to detect a constant (non-`Expr`) parameter and route it through the
+    constant-parameter fast path, which passes it as a plugin kwarg validated once in Rust rather
+    than expanding it into a per-row `pl.repeat` column (see `_coerce`). `bool` is an `int` subclass
+    but never a valid parameter, so it is excluded and falls back to the per-row path.
+    """
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def scalar_int(value: int | IntoExprColumn) -> int | None:
+    """Return `value` as an `int` if it is a plain integer scalar (excluding `bool`), else `None`.
+
+    The integer-count counterpart to `scalar_float` (e.g. binomial `n`), for the same fast-path routing.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def scalar_kwargs(**params: float | None) -> dict[str, float | int] | None:
+    """Bundle the constant-parameter fast-path kwargs: a dict when every parameter is a scalar, else `None`.
+
+    Each keyword is a parameter already passed through `scalar_float` / `scalar_int`, so a `None`
+    value marks a column-valued parameter. All-scalar parameters route `sample` through the
+    `<name>_sample_scalar` plugin (validated once, passed as kwargs); a single column-valued one
+    falls back to the general per-row plugin, so the whole bundle collapses to `None`.
+    """
+    return (
+        None if any(value is None for value in params.values()) else {k: v for k, v in params.items() if v is not None}
+    )
+
+
 def as_expr(value: float | IntoExprColumn) -> pl.Expr:
     """Coerce a value-keyed method input (`value` / `quantile`) into a row-aligned `pl.Expr`.
 
@@ -105,7 +137,7 @@ def register_plugin(
     function_name: str,
     args: IntoExprColumn | Iterable[IntoExprColumn],
     *,
-    kwargs: dict[str, int | None] | None = None,
+    kwargs: dict[str, float | int | None] | None = None,
 ) -> pl.Expr:
     """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
 
@@ -154,6 +186,14 @@ class _UnivariateDistribution(ABC):
     _sample_dtype: ClassVar[PolarsDataType]
     """Element dtype produced `sample` (e.g. `Boolean`, `Float64`, `UInt64`). Set by each subclass."""
 
+    _scalar_kwargs: dict[str, float | int] | None
+    """Constant parameters for the `<name>_sample_scalar` fast path, `None` when any parameter is column-valued.
+
+    Set by each subclass at construction via `scalar_kwargs`. Doubles as the naming switch: with no
+    input column to inherit a name from, the sampler outputs get the deliberate default names
+    `"sample"` / `"samples"`; column-valued parameters keep polars root-name semantics instead.
+    """
+
     @abstractmethod
     def _valid_mask(self) -> pl.Expr:
         """Boolean expr, `True` on rows whose parameters yield a well-defined draw.
@@ -165,7 +205,10 @@ class _UnivariateDistribution(ABC):
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one random variate per row.
 
-        Returns a polars Expr evaluating to a column with one variate per input row.
+        Returns a polars Expr evaluating to a column with one variate per input row. With
+        all-constant parameters the column is named `"sample"`; with column-valued parameters the
+        name follows the first parameter expression, as for any polars expression (so multi-column
+        parameters and `.name.*` modifiers keep working).
         """
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
@@ -176,15 +219,19 @@ class _UnivariateDistribution(ABC):
         and yield `size` identical columns.
 
         A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
+
+        Naming follows `sample`: `"samples"` with all-constant parameters, the first parameter
+        expression's root name otherwise.
         """
         if size <= 0:
             msg = f"size must be a positive integer, got {size}"
             raise ValueError(msg)
-        return (
+        out = (
             pl.when(self._valid_mask())
             .then(self._samples(size=size, seed=seed))
             .otherwise(pl.lit(None, dtype=pl.Array(self._sample_dtype, shape=size)))
         )
+        return out.alias("samples") if self._scalar_kwargs is not None else out
 
     def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
         """Draw `size` random variates per row.

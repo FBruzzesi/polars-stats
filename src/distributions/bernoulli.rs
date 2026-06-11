@@ -3,9 +3,10 @@ use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
+use serde::Deserialize;
 use statrs::distribution::Bernoulli;
 
-use crate::rng::SampleKwargs;
+use crate::rng::{sample_by_index, SampleKwargs};
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
@@ -73,4 +74,40 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     )?;
 
     Ok(ca.with_name(name).into_series())
+}
+
+/// Static parameters for the constant-parameter sampler fast path.
+///
+/// When `p` is a Python scalar, the Python layer routes it here as a kwarg instead of expanding it
+/// into a full-length column (`pl.repeat`) that crosses FFI and is re-validated on every row. The
+/// distribution is validated and built once, and only the per-row index travels as an input.
+#[derive(Deserialize)]
+struct BernoulliScalarKwargs {
+    seed: Option<u64>,
+    p: f64,
+}
+
+/// Constant-probability Bernoulli sampler.
+///
+/// Semantically identical to [`bernoulli_sample`] for the common case of a scalar `p`, but built for
+/// it: `inputs[0]` is the per-row index (never null, sole FFI input), and `p` arrives in `kwargs`.
+/// The distribution is validated and constructed once up front, then reused for every row. Seeding
+/// and the draw are unchanged, so output matches `bernoulli_sample` for the same `(seed, index, p)`.
+#[polars_expr(output_type=Boolean)]
+fn bernoulli_sample_scalar(
+    inputs: &[Series],
+    kwargs: BernoulliScalarKwargs,
+) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.p)?;
+    let name = inputs[0].name().clone();
+
+    sample_by_index::<BooleanType, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
+        BooleanChunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().map(|i| {
+                let mut rng = rngs.rng(i);
+                <Bernoulli as Distribution<bool>>::sample(&dist, &mut rng)
+            }),
+        )
+    })
 }
