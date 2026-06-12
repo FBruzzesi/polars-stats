@@ -9,7 +9,7 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_by_index, samples_by_index, samples_u64_output, SampleKwargs};
+use crate::rng::{sample_scalar_plugin, samples_by_index, samples_u64_output, SampleKwargs};
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
 ///
@@ -168,40 +168,19 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
     Ok(ca.with_name(name).into_series())
 }
 
-/// Static parameters for the constant-parameter sampler fast path.
-///
-/// When both `n` and `p` are Python scalars, the Python layer routes them here as kwargs instead of
-/// expanding each into a full-length column (`pl.repeat`) that crosses FFI and is re-validated on
-/// every row. The distribution is validated and built once, and only the per-row index travels as an
-/// input.
-#[derive(Deserialize)]
-struct BinomialScalarKwargs {
-    seed: Option<u64>,
-    n: i64,
-    p: f64,
-}
+sample_scalar_plugin! {
+    /// Static parameters for the constant-parameter sampler fast path: when both `n` and `p` are
+    /// Python scalars, they travel here as kwargs instead of as two full-length `pl.repeat`
+    /// columns re-validated on every row.
+    struct BinomialScalarKwargs { n: i64, p: f64 }
 
-/// Constant-parameter Binomial sampler.
-///
-/// Semantically identical to [`binomial_sample`] for the common case of scalar parameters, but built
-/// for it: `inputs[0]` is the per-row index (never null, sole FFI input), and the parameters arrive
-/// in `kwargs`. The distribution is validated and constructed once up front, then reused for every
-/// row. Seeding and the draw are unchanged, so output matches `binomial_sample` for the same
-/// `(seed, index, n, p)`.
-#[polars_expr(output_type=UInt64)]
-fn binomial_sample_scalar(inputs: &[Series], kwargs: BinomialScalarKwargs) -> PolarsResult<Series> {
-    let dist = build_sampler(kwargs.n, kwargs.p)?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index::<UInt64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
-        UInt64Chunked::from_iter_values(
-            name,
-            index_ca.into_no_null_iter().map(|i| {
-                let mut rng = rngs.rng(i);
-                dist.sample(&mut rng)
-            }),
-        )
-    })
+    /// Constant-parameter Binomial sampler: [`binomial_sample`] for the all-scalar case. The
+    /// `rand_distr` sampler is validated and built once (via [`build_sampler`], like the per-row
+    /// path), and only the per-row index travels as an input; seeding and the draw are unchanged,
+    /// so output matches `binomial_sample` for the same `(seed, index, n, p)`.
+    fn binomial_sample_scalar(output_type = UInt64, physical = UInt64Type);
+    build = |kw| build_sampler(kw.n, kw.p)?;
+    draw = |dist, rng| dist.sample(rng);
 }
 
 /// Static parameters for the constant-parameter multi-draw fast path.

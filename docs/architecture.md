@@ -91,10 +91,13 @@ reproducible across OS and architecture.
 takes a dedicated plugin, `<name>_sample_scalar`. The parameters travel in `kwargs` and are validated once; only the row
 index crosses FFI, instead of one full-length `pl.repeat` column per parameter that the general plugin would marshal and
 re-validate on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
-non-null index straight into the typed output. It reuses the same `(root_seed, row_index)` seeding and the same draw as
-the per-row path, so output is byte-identical for the same seed (a property test pins that equality); column-valued
-parameters still take the general per-row plugin. This is what moves the sampler from slower than scipy at small frames
-to faster from roughly 100k rows up, where the per-element draw dominates the fixed `int_range` row-index cost.
+non-null index straight into the typed output. Each distribution declares its fast path through the
+`sample_scalar_plugin!` macro in `rng.rs` (kwargs struct, output dtype, one-time `build`, per-row `draw`), which
+generates the kwargs struct and the plugin function, so a new distribution cannot drift from the pattern. It reuses
+the same `(root_seed, row_index)` seeding and the same draw as the per-row path, so output is byte-identical for the
+same seed (a property test pins that equality); column-valued parameters still take the general per-row plugin. This
+is what moves the sampler from slower than scipy at small frames to faster from roughly 100k rows up, where the
+per-element draw dominates the fixed `int_range` row-index cost.
 
 !!! info "Earlier `ChaCha20` design (removed)"
 
@@ -119,7 +122,7 @@ polars-stats/
 ├── rust-toolchain.toml
 ├── src/
 │   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_by_index fast path)
+│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_scalar_plugin! fast path)
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports

@@ -6,7 +6,7 @@ use rand::distributions::{Distribution, Standard};
 use serde::Deserialize;
 use statrs::distribution::Uniform;
 
-use crate::rng::{sample_by_index, samples_by_index, samples_f64_output, SampleKwargs};
+use crate::rng::{sample_scalar_plugin, samples_by_index, samples_f64_output, SampleKwargs};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
@@ -103,41 +103,20 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     Ok(ca.with_name(name).into_series())
 }
 
-/// Static parameters for the constant-bounds sampler fast path.
-///
-/// When both bounds are Python scalars, the Python layer routes them here as kwargs instead of
-/// expanding each into a full-length column (`pl.repeat`) that crosses FFI and is re-validated on
-/// every row. The bounds are validated once, and only the per-row index travels as an input.
-#[derive(Deserialize)]
-struct UniformScalarKwargs {
-    seed: Option<u64>,
-    min: f64,
-    max: f64,
-}
+sample_scalar_plugin! {
+    /// Static parameters for the constant-bounds sampler fast path: when both bounds are Python
+    /// scalars, they travel here as kwargs instead of as two full-length `pl.repeat` columns
+    /// re-validated on every row.
+    struct UniformScalarKwargs { min: f64, max: f64 }
 
-/// Constant-bounds Uniform sampler over `[min, max)`.
-///
-/// Semantically identical to [`uniform_sample`] for the common case of scalar bounds, but built
-/// for it: `inputs[0]` is the per-row index (never null, sole FFI input), and the bounds arrive in
-/// `kwargs`. Validation happens once up front rather than per row, and the draw is the shared
-/// [`draw_half_open`]. Seeding is the same `(root_seed, index)` derivation, so output matches
-/// `uniform_sample` for the same `(seed, index, min, max)`.
-#[polars_expr(output_type=Float64)]
-fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> PolarsResult<Series> {
-    // Validate the parameterisation once; same error contract as `uniform_range` / `uniform_sample`.
-    build_dist(kwargs.min, kwargs.max)?;
-    let (lo, hi) = (kwargs.min, kwargs.max);
-    let name = inputs[0].name().clone();
-
-    sample_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
-        Float64Chunked::from_iter_values(
-            name,
-            index_ca.into_no_null_iter().map(|i| {
-                let mut rng = rngs.rng(i);
-                draw_half_open(lo, hi, &mut rng)
-            }),
-        )
-    })
+    /// Constant-bounds Uniform sampler over `[min, max)`: [`uniform_sample`] for the all-scalar
+    /// case. The bounds are validated once (same error contract as `uniform_range`; the built
+    /// distribution is intentionally unused, see [`draw_half_open`]) and only the per-row index
+    /// travels as an input; seeding and the draw are unchanged, so output matches
+    /// `uniform_sample` for the same `(seed, index, min, max)`.
+    fn uniform_sample_scalar(output_type = Float64, physical = Float64Type);
+    build = |kw| { build_dist(kw.min, kw.max)?; (kw.min, kw.max) };
+    draw = |(lo, hi), rng| draw_half_open(lo, hi, rng);
 }
 
 /// Static parameters for the constant-bounds multi-draw fast path.
