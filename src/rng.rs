@@ -123,6 +123,65 @@ where
     Ok(build(index_ca, &rngs).into_series())
 }
 
+/// Generates a distribution's constant-parameter sampler fast path: the kwargs struct
+/// (the scalar parameters next to the optional root `seed`) and the `#[polars_expr]`
+/// plugin that drives [`sample_by_index`].
+///
+/// The four things that vary between distributions are the macro's inputs:
+///
+/// * the kwargs fields (parameter names and types);
+/// * the output dtype, as the `(logical, physical)` pair `output_type = Float64,
+///   physical = Float64Type` (the two must agree; the logical name feeds
+///   `#[polars_expr]`, the physical one the output `ChunkedArray`);
+/// * `build`: validates the parameters and returns the per-call sampler state, built
+///   **once** (`?` is available). Usually the built distribution; Uniform validates and
+///   keeps the raw bounds instead;
+/// * `draw`: one draw from that state, given a `&mut` per-row RNG already seeded from
+///   `(root_seed, index)`.
+///
+/// `draw` must be the *same* draw the general per-row plugin performs, so the two paths
+/// stay byte-identical for the same `(seed, index, params)`; that contract is pinned by
+/// `test_sample_scalar_fast_path_matches_per_row`. Call sites are the distribution
+/// modules, which all have `polars::prelude::*` in scope (the expansion relies on it).
+macro_rules! sample_scalar_plugin {
+    (
+        $(#[$kwargs_meta:meta])*
+        struct $kwargs:ident { $($param:ident: $param_ty:ty),+ $(,)? }
+
+        $(#[$fn_meta:meta])*
+        fn $fn_name:ident(output_type = $logical:ident, physical = $physical:ty);
+        build = |$kw:ident| $build:expr;
+        draw = |$state:pat_param, $rng:ident| $draw:expr;
+    ) => {
+        $(#[$kwargs_meta])*
+        #[derive(serde::Deserialize)]
+        struct $kwargs {
+            seed: Option<u64>,
+            $($param: $param_ty,)+
+        }
+
+        $(#[$fn_meta])*
+        #[pyo3_polars::derive::polars_expr(output_type=$logical)]
+        fn $fn_name(inputs: &[Series], kwargs: $kwargs) -> PolarsResult<Series> {
+            let $kw = &kwargs;
+            let $state = $build;
+            let name = inputs[0].name().clone();
+
+            $crate::rng::sample_by_index::<$physical, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
+                ChunkedArray::<$physical>::from_iter_values(
+                    name,
+                    index_ca.into_no_null_iter().map(|i| {
+                        let mut rng = rngs.rng(i);
+                        let $rng = &mut rng;
+                        $draw
+                    }),
+                )
+            })
+        }
+    };
+}
+pub(crate) use sample_scalar_plugin;
+
 /// Per-call source of per-row RNGs, all derived from one already-resolved root seed.
 ///
 /// The resolve-once step happens when this is constructed (via [`SampleKwargs::row_rngs`]),
