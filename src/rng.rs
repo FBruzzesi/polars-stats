@@ -16,7 +16,10 @@
 //! deliberately not the foundation here.
 
 use polars::prelude::*;
+use polars_arrow::bitmap::Bitmap;
 use polars_arrow::datatypes::reshape::ReshapeDimension;
+use polars_core::utils::rayon::prelude::*;
+use polars_core::POOL;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rand_pcg::Pcg64Mcg;
@@ -124,6 +127,35 @@ where
     Ok(build(index_ca, &rngs).into_series())
 }
 
+/// Total draw count below which the multi-draw row fill runs serially: a fork-join dispatch
+/// costs more than drawing this few values, and elementwise plugins run once per
+/// `group_by` / `over` partition, so tiny calls are common.
+const PARALLEL_FILL_MIN_DRAWS: usize = 4096;
+
+/// Fill the row-major multi-draw buffer: `fill_row(i, slot)` writes row `i`'s `size` draws into
+/// its own disjoint `size`-wide slice.
+///
+/// Rows fill in parallel on the polars thread pool when the total work justifies it. That is
+/// deterministic because a row's draws depend only on `(root_seed, row_index)`, never on other
+/// rows or on visit order, so the parallel fill is bit-identical to the serial one.
+fn fill_rows<V, F>(flat: &mut [V], size: usize, fill_row: F)
+where
+    V: Send,
+    F: Fn(usize, &mut [V]) + Sync,
+{
+    if flat.len() >= PARALLEL_FILL_MIN_DRAWS {
+        POOL.install(|| {
+            flat.par_chunks_mut(size)
+                .enumerate()
+                .for_each(|(row, slot)| fill_row(row, slot));
+        });
+    } else {
+        for (row, slot) in flat.chunks_mut(size).enumerate() {
+            fill_row(row, slot);
+        }
+    }
+}
+
 /// Shared driver for the constant-parameter multi-draw (`samples`) fast paths.
 ///
 /// The multi-draw counterpart of [`sample_by_index`]: one plugin call returns the
@@ -135,19 +167,22 @@ where
 /// is bit-identical to `sample` for the same seed, and growing `size` extends each row's array
 /// without changing the existing draws. The root seed resolves once per call (fresh OS entropy
 /// when `None`); a row's stream depends only on `(root_seed, i)`, never on other rows, so
-/// chunk/thread invariance is untouched. `build` produces the flat row-major buffer (row `i`'s
-/// `size` draws adjacent, stream order).
+/// chunk/thread invariance is untouched and rows can fill in parallel (see [`fill_rows`]).
+/// `draw` is one draw from a `&mut` per-row RNG already seeded `(root_seed, i)`, the same draw
+/// the distribution's `sample` plugin performs.
 #[inline]
-pub(crate) fn samples_by_index<T, F>(
+pub(crate) fn samples_by_index<T, V, F>(
+    name: PlSmallStr,
     index: &Series,
     seed: Option<u64>,
     size: usize,
-    build: F,
+    draw: F,
 ) -> PolarsResult<Series>
 where
     T: PolarsDataType,
-    ChunkedArray<T>: IntoSeries,
-    F: FnOnce(&UInt64Chunked, &RowRngs) -> ChunkedArray<T>,
+    ChunkedArray<T>: NewChunkedArray<T, V> + IntoSeries,
+    V: Default + Clone + Send,
+    F: Fn(&mut Pcg64Mcg) -> V + Sync,
 {
     // The Python layer rejects `size <= 0` before registering the plugin; this guards the
     // zero-width `Array` reshape against any other caller.
@@ -157,10 +192,20 @@ where
         ));
     }
     let index = index.cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
+    let indices: Vec<u64> = index.u64()?.into_no_null_iter().collect();
     let rngs = row_rngs(seed);
-    let flat = build(index_ca, &rngs).into_series();
-    flat.reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
+
+    let mut flat = vec![V::default(); indices.len() * size];
+    fill_rows(&mut flat, size, |row, slot| {
+        let mut rng = rngs.rng(indices[row]);
+        for value in slot {
+            *value = draw(&mut rng);
+        }
+    });
+
+    ChunkedArray::<T>::from_iter_values(name, flat.into_iter())
+        .into_series()
+        .reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
 }
 
 /// Shared driver for the column-parameter multi-draw (`samples`) per-row paths.
@@ -168,49 +213,71 @@ where
 /// The column-parameter counterpart of [`samples_by_index`]. The caller iterates its parameter
 /// columns and yields, per row, the index and a ready-to-draw state (typically the built
 /// distribution, so it is constructed once per row rather than once per draw). A `None` row (any
-/// null input) becomes an array of `size` null elements (the Python layer masks it to a null
-/// array); an invalid parameterisation `?`-raises out of the row iterator.
+/// null input) becomes a null `Array` element directly, with its inner slots also null (the same
+/// two-layer shape as `pl.lit(None, dtype=Array(...))`); an invalid parameterisation `?`-raises
+/// out of the row iterator.
 ///
 /// Seeding is identical to [`samples_by_index`]: row `i`'s draws are consecutive values from one
 /// stream keyed `(root_seed, i)`, a function of position only, never of the parameters. So the
-/// scalar and column paths stay bit-identical for the same parameters and equal-parameter rows
-/// still draw independently. Note the per-draw *consumption* of that stream does depend on the
-/// row's parameters (rejection samplers draw a variable number of words), which is fine: the
-/// stream is private to the row.
+/// scalar and column paths stay bit-identical for the same parameters, equal-parameter rows
+/// still draw independently, and rows can fill in parallel (see [`fill_rows`]). Note the
+/// per-draw *consumption* of that stream does depend on the row's parameters (rejection
+/// samplers draw a variable number of words), which is fine: the stream is private to the row.
 #[inline]
 pub(crate) fn samples_per_row<T, V, S, I, F>(
     name: PlSmallStr,
     seed: Option<u64>,
     size: usize,
-    len: usize,
     rows: I,
     draw: F,
 ) -> PolarsResult<Series>
 where
     T: PolarsDataType,
     ChunkedArray<T>: NewChunkedArray<T, V> + IntoSeries,
+    V: Default + Clone + Send,
+    S: Sync,
     I: Iterator<Item = PolarsResult<Option<(u64, S)>>>,
-    F: Fn(&S, &mut Pcg64Mcg) -> V,
+    F: Fn(&S, &mut Pcg64Mcg) -> V + Sync,
 {
     if size == 0 {
         return Err(PolarsError::InvalidOperation(
             "samples requires a positive size".into(),
         ));
     }
+    // Materialising the states up front separates the sequential part (parameter validation,
+    // which can raise) from the draw loop, whose rows then fill independently. A null row keeps
+    // its `V::default()` slice; it is masked by the validity bitmaps below, never read.
+    let states: Vec<Option<(u64, S)>> = rows.collect::<PolarsResult<_>>()?;
     let rngs = row_rngs(seed);
-    let mut flat: Vec<Option<V>> = Vec::with_capacity(len * size);
-    for row in rows {
-        match row? {
-            Some((index, state)) => {
-                let mut rng = rngs.rng(index);
-                flat.extend((0..size).map(|_| Some(draw(&state, &mut rng))));
-            },
-            None => flat.extend(std::iter::repeat_with(|| None).take(size)),
+
+    let mut flat = vec![V::default(); states.len() * size];
+    fill_rows(&mut flat, size, |row, slot| {
+        if let Some((index, state)) = &states[row] {
+            let mut rng = rngs.rng(*index);
+            for value in slot {
+                *value = draw(state, &mut rng);
+            }
         }
+    });
+
+    let flat = ChunkedArray::<T>::from_iter_values(name.clone(), flat.into_iter()).into_series();
+    let shape = [ReshapeDimension::Infer, ReshapeDimension::new(size as i64)];
+
+    let outer_validity: Bitmap = states.iter().map(Option::is_some).collect();
+    if outer_validity.unset_bits() == 0 {
+        return flat.reshape_array(&shape);
     }
-    let ca = ChunkedArray::<T>::from_iter_options(name, flat.into_iter());
-    ca.into_series()
-        .reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
+    // A null row nulls both layers, matching `pl.lit(None, dtype=Array(...))`: the outer bit makes
+    // the element null, and the inner bits keep value-level reads (`arr.first`, `explode`, ...)
+    // from leaking the placeholder defaults behind it.
+    let inner_validity: Bitmap = states
+        .iter()
+        .flat_map(|state| std::iter::repeat_n(state.is_some(), size))
+        .collect();
+    let inner = flat.rechunk().chunks()[0].with_validity(Some(inner_validity));
+    let out = Series::from_arrow(name.clone(), inner)?.reshape_array(&shape)?;
+    let masked = out.rechunk().chunks()[0].with_validity(Some(outer_validity));
+    Series::from_arrow(name, masked)
 }
 
 /// Kwargs shared by every column-parameter multi-draw plugin, and the slice the shared

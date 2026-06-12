@@ -14,7 +14,7 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn, PolarsDataType
+    from polars_stats._typing import IntoExprColumn
 
 
 class Uniform(ContinuousDistribution):
@@ -38,7 +38,6 @@ class Uniform(ContinuousDistribution):
 
     _min: pl.Expr
     _max: pl.Expr
-    _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
     _samples_scalar_plugin: ClassVar[str] = "uniform_samples_scalar"
 
     def __init__(self, min: float | IntoExprColumn, max: float | IntoExprColumn) -> None:  # noqa: A002
@@ -58,10 +57,6 @@ class Uniform(ContinuousDistribution):
         consistently. Null bounds propagate.
         """
         return register_plugin("uniform_range", (self._min, self._max))
-
-    def _valid_mask(self) -> pl.Expr:
-        # Only null bounds are masked to a null array here; `max <= min` raises via `range`.
-        return self._min.is_not_null() & self._max.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one uniform sample per row, returning a ``Float64`` column.

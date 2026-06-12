@@ -210,17 +210,10 @@ fn binomial_samples_scalar(
     kwargs: BinomialSamplesScalarKwargs,
 ) -> PolarsResult<Series> {
     let dist = build_sampler(kwargs.n, kwargs.p)?;
-    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<UInt64Type, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
-        UInt64Chunked::from_iter_values(
-            name,
-            index_ca.into_no_null_iter().flat_map(|i| {
-                let mut rng = rngs.rng(i);
-                std::iter::repeat_with(move || dist.sample(&mut rng)).take(size)
-            }),
-        )
+    samples_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        dist.sample(rng)
     })
 }
 
@@ -232,8 +225,8 @@ fn binomial_samples_scalar(
 /// Row `i`'s draws come from the one stream seeded `(seed, i)`, so output is bit-identical to
 /// the scalar path for the same parameters (the seeding is positional, parameters never enter
 /// it, so equal-parameter rows still draw independently). Null/error contract follows
-/// [`binomial_sample`] per row; a null row yields an array of null elements (the Python layer
-/// masks it to a null array). Returns `Array(UInt64, size)`.
+/// [`binomial_sample`] per row; a null row yields a null array element. Returns
+/// `Array(UInt64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
@@ -253,14 +246,9 @@ fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Se
             _ => Ok(None),
         });
 
-    samples_per_row::<UInt64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        index_ca.len(),
-        rows,
-        |dist, rng| dist.sample(rng),
-    )
+    samples_per_row::<UInt64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, |dist, rng| {
+        dist.sample(rng)
+    })
 }
 
 // Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins

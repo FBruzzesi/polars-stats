@@ -184,9 +184,6 @@ class _UnivariateDistribution(ABC):
     The interface mirrors `scipy.stats.rv_continuous` / `rv_discrete` but returns `pl.Expr` instead of NumPy arrays.
     """
 
-    _sample_dtype: ClassVar[PolarsDataType]
-    """Element dtype produced `sample` (e.g. `Boolean`, `Float64`, `UInt64`). Set by each subclass."""
-
     _samples_scalar_plugin: ClassVar[str]
     """Name of the `<name>_samples_scalar` multi-draw plugin backing the constant-parameter `samples` fast path.
 
@@ -202,13 +199,6 @@ class _UnivariateDistribution(ABC):
     """
 
     @abstractmethod
-    def _valid_mask(self) -> pl.Expr:
-        """Boolean expr, `True` on rows whose parameters yield a well-defined draw.
-
-        Rows that are `False` (null or out-of-domain parameters) get a null array from `samples`.
-        """
-
-    @abstractmethod
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one random variate per row.
 
@@ -219,14 +209,15 @@ class _UnivariateDistribution(ABC):
         """
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
-        """Draw `size` random variates per row, returning `Array(inner=_sample_dtype, shape=size)`.
+        """Draw `size` random variates per row, returning `Array(inner=<element dtype>, shape=size)`.
 
         Each row's `size` draws are consecutive values from one per-row random stream keyed by `seed` and the
         row's position, so the result is reproducible for a fixed `seed` and independent of Polars chunking and
         thread scheduling. `samples(size=1)` matches `sample` for the same seed, and growing `size` extends each
         row's array without changing the existing draws.
 
-        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
+        A row with a null parameter yields a null array (not an array of null elements), produced natively by
+        the plugin via the output's outer validity; an invalid parameterisation raises.
 
         Naming follows `sample`: `"samples"` with all-constant parameters, the first parameter
         expression's root name otherwise.
@@ -234,11 +225,7 @@ class _UnivariateDistribution(ABC):
         if size <= 0:
             msg = f"size must be a positive integer, got {size}"
             raise ValueError(msg)
-        out = (
-            pl.when(self._valid_mask())
-            .then(self._samples(size=size, seed=seed))
-            .otherwise(pl.lit(None, dtype=pl.Array(self._sample_dtype, shape=size)))
-        )
+        out = self._samples(size=size, seed=seed)
         return out.alias("samples") if self._scalar_kwargs is not None else out
 
     def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
@@ -270,8 +257,8 @@ class _UnivariateDistribution(ABC):
         """Register the `<name>_samples` multi-draw plugin call for column-valued parameters.
 
         Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
-        `seed` and draw count `size` as kwargs. Called by `_samples`; null masking and naming are applied by
-        `samples`.
+        `seed` and draw count `size` as kwargs. Called by `_samples`; naming is applied by `samples`, and a
+        null-parameter row becomes a null array element inside the plugin.
         """
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:

@@ -16,7 +16,7 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn, PolarsDataType
+    from polars_stats._typing import IntoExprColumn
 
 
 class Binomial(DiscreteDistribution):
@@ -38,7 +38,6 @@ class Binomial(DiscreteDistribution):
 
     _n: pl.Expr
     _p: pl.Expr
-    _sample_dtype: ClassVar[PolarsDataType] = pl.UInt64()
     _samples_scalar_plugin: ClassVar[str] = "binomial_samples_scalar"
 
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
@@ -72,10 +71,6 @@ class Binomial(DiscreteDistribution):
         Null in either parameter propagates to null.
         """
         return register_plugin("binomial_params", (self._n, self._p))
-
-    def _valid_mask(self) -> pl.Expr:
-        # Only null parameters are masked to a null array here; an invalid n/p raises in the plugin.
-        return self._n.is_not_null() & self._p.is_not_null()
 
     def _moment(self, value: pl.Expr) -> pl.Expr:
         """Gate a closed-form moment on a non-null, valid ``(n, p)`` parameterisation.

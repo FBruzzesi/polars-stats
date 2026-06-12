@@ -15,7 +15,7 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn, PolarsDataType
+    from polars_stats._typing import IntoExprColumn
 
 
 _TWO_PI_E = math.tau * math.e
@@ -41,7 +41,6 @@ class Normal(ContinuousDistribution):
 
     _mean: pl.Expr
     _std_dev: pl.Expr
-    _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
     _samples_scalar_plugin: ClassVar[str] = "normal_samples_scalar"
 
     def __init__(
@@ -76,10 +75,6 @@ class Normal(ContinuousDistribution):
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
         return register_plugin("normal_std_dev", (self._mean, self._std_dev))
-
-    def _valid_mask(self) -> pl.Expr:
-        # Only null parameters are masked to a null array here; an invalid `std_dev` raises in the plugin.
-        return self._mean.is_not_null() & self._std_dev.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one Normal sample per row, returning a ``Float64`` column.

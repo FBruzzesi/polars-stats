@@ -14,7 +14,7 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn, PolarsDataType
+    from polars_stats._typing import IntoExprColumn
 
 
 class Bernoulli(DiscreteDistribution):
@@ -26,7 +26,6 @@ class Bernoulli(DiscreteDistribution):
     """
 
     _p: pl.Expr
-    _sample_dtype: ClassVar[PolarsDataType] = pl.Boolean()
     _samples_scalar_plugin: ClassVar[str] = "bernoulli_samples_scalar"
 
     def __init__(self, p: float | IntoExprColumn) -> None:
@@ -42,10 +41,6 @@ class Bernoulli(DiscreteDistribution):
         ``sample`` rather than silently computing a negative probability. Null propagates.
         """
         return register_plugin("bernoulli_proba", self._p)
-
-    def _valid_mask(self) -> pl.Expr:
-        # Only null p is masked to a null array here; an out-of-range p raises via `_checked_p`.
-        return self._p.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one Bernoulli sample per row, returning a ``Boolean`` column.

@@ -15,7 +15,7 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn, PolarsDataType
+    from polars_stats._typing import IntoExprColumn
 
 
 _TWO_PI_E = math.tau * math.e
@@ -45,7 +45,6 @@ class LogNormal(ContinuousDistribution):
 
     _mu: pl.Expr
     _sigma: pl.Expr
-    _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
     _samples_scalar_plugin: ClassVar[str] = "lognormal_samples_scalar"
 
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
@@ -76,10 +75,6 @@ class LogNormal(ContinuousDistribution):
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
         return register_plugin("lognormal_sigma", (self._mu, self._sigma))
-
-    def _valid_mask(self) -> pl.Expr:
-        # Only null parameters are masked to a null array here; an invalid `sigma` raises in the plugin.
-        return self._mu.is_not_null() & self._sigma.is_not_null()
 
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one LogNormal sample per row, returning a ``Float64`` column.

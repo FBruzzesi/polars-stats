@@ -88,10 +88,11 @@ is canonical if it conflicts with this section.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
    `DiscreteDistribution`. Coerce each parameter with `coerce_param(value, name=...)`. **Do not validate parameter
    *values* at construction**, coerce types only and let invalid values raise in Rust. Implement the private formula
-   hooks (`_pdf` / `_pmf`, `_cdf`, `_ppf`, and any `_log_*` / `_sf` closed form), plus `_valid_mask` and the
-   `_sample_dtype` class var. So closed-form methods raise on invalid params too, route them through a small validating
-   plugin that returns a reused quantity (e.g. `uniform_range`). **Never override the public `pdf` / `cdf` / ...
-   methods**: the base owns them. Export the class from `polars_stats/__init__.py`.
+   hooks (`_pdf` / `_pmf`, `_cdf`, `_ppf`, and any `_log_*` / `_sf` closed form), plus the
+   `_samples_scalar_plugin` class var and `_samples_columns`. So closed-form methods raise on invalid params too,
+   route them through a small validating plugin that returns a reused quantity (e.g. `uniform_range`).
+   **Never override the public `pdf` / `cdf` / ... methods**: the base owns them. Export the class from
+   `polars_stats/__init__.py`.
 3. **Tests.** Two homes: `tests/distributions/<name>/`, one file per method (including a `validation_test.py` asserting
    an invalid parameter raises `ComputeError` for both scalar and column inputs); and `tests/scipy_parity/<name>_test.py`
    against `scipy.stats.<name>` to within `1e-10` (closed-form) or `1e-6` (binary-search `ppf`), compared with

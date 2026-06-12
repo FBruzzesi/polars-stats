@@ -123,6 +123,94 @@ def test_samples_prefix_is_stable_in_size(spec: DistSpec, data: st.DataObject) -
         assert_series_equal(small.arr.get(j), large.arr.get(j))
 
 
+# Enough rows that `rows * _SAMPLES_SIZE` clears the Rust-side `PARALLEL_FILL_MIN_DRAWS`
+# threshold (4096 total draws), pushing the multi-draw fill onto its parallel branch, while
+# `_N_ROWS * _SAMPLES_SIZE` stays on the serial one. Keep in sync with `src/rng.rs`.
+_PARALLEL_ROWS = 2048
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@pytest.mark.parametrize("builder", ["make", "make_columns"])
+@given(data=st.data())
+def test_samples_prefix_is_stable_in_length(spec: DistSpec, builder: str, data: st.DataObject) -> None:
+    """Row `i`'s array depends only on `(seed, i)`: growing the frame leaves existing rows unchanged.
+
+    Doubles as the serial/parallel equivalence pin for both plugin paths: the small frame's total
+    draw count keeps the Rust fill on its serial branch, the large frame's puts it on the parallel
+    branch, so the two implementations of the fill must agree bit for bit or this fails. A fill
+    that depended on chunk-local position, buffer offset, or visit order would also fail here.
+    """
+    params = data.draw(spec.params)
+    dist = getattr(spec, builder)(params)
+    expr = dist.samples(size=_SAMPLES_SIZE, seed=_SEED)
+
+    small = pl.DataFrame({"_": range(_N_ROWS)}).select(s=expr)["s"]
+    large = pl.DataFrame({"_": range(_PARALLEL_ROWS)}).select(s=expr)["s"]
+
+    assert_series_equal(small, large.head(_N_ROWS))
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@pytest.mark.parametrize("size", [1, _SAMPLES_SIZE])
+@given(data=st.data())
+def test_samples_null_rows_null_both_layers_and_do_not_perturb_valid_rows(
+    spec: DistSpec, size: int, data: st.DataObject
+) -> None:
+    """A null-parameter row yields a null array, null at the value level too, without shifting other rows.
+
+    Three contracts in one sweep, with nulls placed on the first row, the last row, and a
+    scattering in between. The two sizes land on different fill branches (`size=1` stays under
+    `PARALLEL_FILL_MIN_DRAWS`, `_SAMPLES_SIZE` clears it), so nulls are exercised on both:
+
+    * the null mask of the output equals the null mask of the parameters (outer validity);
+    * `arr.get` reads behind a null array are null, never the buffer's placeholder values
+      (inner validity, the regression a value-leak would hit);
+    * every valid row draws exactly what it draws without any nulls present: a row's stream is
+      keyed `(seed, row_index)`, so null neighbours cannot shift or consume its draws.
+    """
+    params = data.draw(spec.params)
+    frame = pl.DataFrame({"i": range(_PARALLEL_ROWS)})
+    mask = (pl.col("i") % 5 == 0) | (pl.col("i") == _PARALLEL_ROWS - 1)
+
+    out = frame.select(s=spec.make_masked(params, mask).samples(size=size, seed=_SEED), m=mask)
+    unmasked = frame.select(s=spec.make_columns(params).samples(size=size, seed=_SEED))["s"]
+
+    assert_series_equal(out["s"].is_null(), out["m"], check_names=False)
+    for j in range(size):
+        assert_series_equal(out["s"].arr.get(j).is_null(), out["m"], check_names=False)
+    assert_series_equal(out.filter(~pl.col("m"))["s"], unmasked.filter(~out["m"]))
+
+
+@settings(max_examples=10)
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@given(data=st.data())
+def test_samples_all_null_and_empty_frames(spec: DistSpec, data: st.DataObject) -> None:
+    """The degenerate inputs hold the shape contract: every-row-null and zero-row frames.
+
+    All-null parameters must yield a column of null arrays (not raise, and not a null column of a
+    different dtype); an empty frame must yield an empty `Array` column of the right width for
+    both plugin paths (the multi-draw reshape divides by `size`, so zero rows is its edge).
+    """
+    params = data.draw(spec.params)
+
+    all_null = pl.DataFrame({"i": range(8)}).select(
+        s=spec.make_masked(params, pl.lit(value=True)).samples(size=_SAMPLES_SIZE, seed=_SEED)
+    )["s"]
+    assert isinstance(all_null.dtype, pl.Array)
+    assert all_null.dtype.size == _SAMPLES_SIZE
+    assert all_null.is_null().all()
+    assert all_null.arr.first().is_null().all()
+
+    empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
+    for builder in ("make", "make_columns"):
+        dist = getattr(spec, builder)(params)
+        out = empty.select(s=dist.samples(size=_SAMPLES_SIZE, seed=_SEED))
+        assert out.height == 0
+        dtype = out.schema["s"]
+        assert isinstance(dtype, pl.Array)
+        assert dtype.size == _SAMPLES_SIZE
+
+
 @settings(max_examples=10)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())

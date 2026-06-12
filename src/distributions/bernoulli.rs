@@ -117,20 +117,10 @@ fn bernoulli_samples_scalar(
     kwargs: BernoulliSamplesScalarKwargs,
 ) -> PolarsResult<Series> {
     let dist = build_dist(kwargs.p)?;
-    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<BooleanType, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
-        BooleanChunked::from_iter_values(
-            name,
-            index_ca.into_no_null_iter().flat_map(|i| {
-                let mut rng = rngs.rng(i);
-                std::iter::repeat_with(move || {
-                    <Bernoulli as Distribution<bool>>::sample(&dist, &mut rng)
-                })
-                .take(size)
-            }),
-        )
+    samples_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        <Bernoulli as Distribution<bool>>::sample(&dist, rng)
     })
 }
 
@@ -141,8 +131,8 @@ fn bernoulli_samples_scalar(
 /// built once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
 /// `(seed, i)`, so output is bit-identical to the scalar path for the same `p` (the seeding is
 /// positional, parameters never enter it, so equal-`p` rows still draw independently).
-/// Null/error contract follows [`bernoulli_sample`] per row; a null row yields an array of null
-/// elements (the Python layer masks it to a null array). Returns `Array(Boolean, size)`.
+/// Null/error contract follows [`bernoulli_sample`] per row; a null row yields a null array
+/// element. Returns `Array(Boolean, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
@@ -163,7 +153,6 @@ fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
         name,
         kwargs.seed,
         kwargs.size,
-        index_ca.len(),
         rows,
         <Bernoulli as Distribution<bool>>::sample,
     )

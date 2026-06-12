@@ -179,17 +179,10 @@ fn lognormal_samples_scalar(
     kwargs: LogNormalSamplesScalarKwargs,
 ) -> PolarsResult<Series> {
     let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
-        Float64Chunked::from_iter_values(
-            name,
-            index_ca.into_no_null_iter().flat_map(|i| {
-                let mut rng = rngs.rng(i);
-                std::iter::repeat_with(move || RandDistribution::sample(&dist, &mut rng)).take(size)
-            }),
-        )
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        RandDistribution::sample(&dist, rng)
     })
 }
 
@@ -201,8 +194,7 @@ fn lognormal_samples_scalar(
 /// `(seed, i)`, so output is bit-identical to the scalar path for the same parameters (the
 /// seeding is positional, parameters never enter it, so equal-parameter rows still draw
 /// independently). Null/error contract follows [`lognormal_sample`] per row; a null row yields
-/// an array of null elements (the Python layer masks it to a null array). Returns
-/// `Array(Float64, size)`.
+/// a null array element. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -224,7 +216,6 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
         name,
         kwargs.seed,
         kwargs.size,
-        index_ca.len(),
         rows,
         RandDistribution::sample,
     )

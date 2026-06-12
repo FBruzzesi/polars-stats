@@ -50,6 +50,9 @@ class DistSpec:
         make: Builds an instance from a parameter tuple (scalar parameters: the constant-parameter fast path).
         make_columns: Builds the same instance with each parameter wrapped as a full-length column expr,
             forcing the general per-row sampler path. Lets a test assert the fast path matches it draw-for-draw.
+        make_masked: Like `make_columns`, but the first parameter is null on rows where the given boolean
+            mask expr is true (null in any one parameter is enough to null a sampler row). Lets a test
+            assert the per-row path's null contract without knowing the distribution's parameter names.
         density: `pdf` or `pmf` as `(dist, expr) -> expr`. Typed loosely because the method differs by family;
             the concrete distribution is fixed per spec.
         eval_range: `(lo, hi)` finite window for evaluating cdf / density on a grid.
@@ -63,6 +66,7 @@ class DistSpec:
     params: SearchStrategy[tuple[float, ...]]
     make: Callable[[tuple[float, ...]], _UnivariateDistribution]
     make_columns: Callable[[tuple[float, ...]], _UnivariateDistribution]
+    make_masked: Callable[[tuple[float, ...], pl.Expr], _UnivariateDistribution]
     density: Callable[[Any, pl.Expr], pl.Expr]
     eval_range: Callable[[tuple[float, ...]], tuple[float, float]]
     integration_bounds: Callable[[tuple[float, ...]], tuple[float, float]] | None = None
@@ -75,6 +79,7 @@ _BERNOULLI = DistSpec(
     params=st.tuples(_finite(0.0, 1.0)),
     make=lambda p: Bernoulli(p=p[0]),
     make_columns=lambda p: Bernoulli(p=_col(p[0])),
+    make_masked=lambda p, m: Bernoulli(p=pl.when(~m).then(_col(p[0]))),
     density=lambda d, c: d.pmf(c),
     eval_range=lambda _: (-1.0, 2.0),
     support=lambda _: [0.0, 1.0],
@@ -88,6 +93,7 @@ _BINOMIAL = DistSpec(
     params=st.tuples(st.integers(min_value=0, max_value=20), _finite(0.0, 1.0)),
     make=lambda p: Binomial(n=int(p[0]), p=p[1]),
     make_columns=lambda p: Binomial(n=_col(int(p[0]), pl.Int64()), p=_col(p[1])),
+    make_masked=lambda p, m: Binomial(n=pl.when(~m).then(_col(int(p[0]), pl.Int64())), p=_col(p[1])),
     density=lambda d, c: d.pmf(c),
     eval_range=lambda p: (-1.0, p[0] + 1.0),
     support=lambda p: [float(k) for k in range(int(p[0]) + 1)],
@@ -99,6 +105,7 @@ _NORMAL = DistSpec(
     params=st.tuples(_finite(-10.0, 10.0), _finite(1e-2, 10.0)),
     make=lambda p: Normal(mean=p[0], std_dev=p[1]),
     make_columns=lambda p: Normal(mean=_col(p[0]), std_dev=_col(p[1])),
+    make_masked=lambda p, m: Normal(mean=pl.when(~m).then(_col(p[0])), std_dev=_col(p[1])),
     density=lambda d, c: d.pdf(c),
     eval_range=lambda p: (p[0] - 6.0 * p[1], p[0] + 6.0 * p[1]),
     integration_bounds=lambda p: (p[0] - 12.0 * p[1], p[0] + 12.0 * p[1]),
@@ -112,6 +119,7 @@ _UNIFORM = DistSpec(
     params=st.tuples(_finite(-10.0, 10.0), _finite(1e-2, 20.0)).map(lambda mw: (mw[0], mw[0] + mw[1])),
     make=lambda p: Uniform(min=p[0], max=p[1]),
     make_columns=lambda p: Uniform(min=_col(p[0]), max=_col(p[1])),
+    make_masked=lambda p, m: Uniform(min=pl.when(~m).then(_col(p[0])), max=_col(p[1])),
     density=lambda d, c: d.pdf(c),
     eval_range=lambda p: (p[0] - 0.5 * (p[1] - p[0]), p[1] + 0.5 * (p[1] - p[0])),
     integration_bounds=lambda p: (p[0], p[1]),
@@ -126,6 +134,7 @@ _LOGNORMAL = DistSpec(
     params=st.tuples(_finite(-1.5, 1.5), _finite(0.1, 0.9)),
     make=lambda p: LogNormal(mu=p[0], sigma=p[1]),
     make_columns=lambda p: LogNormal(mu=_col(p[0]), sigma=_col(p[1])),
+    make_masked=lambda p, m: LogNormal(mu=pl.when(~m).then(_col(p[0])), sigma=_col(p[1])),
     density=lambda d, c: d.pdf(c),
     # Support is (0, inf); the grid stays on the positive side and out to a 4-sigma-in-log upper tail.
     eval_range=lambda p: (0.0, exp(p[0] + 4.0 * p[1])),
