@@ -137,7 +137,7 @@ def register_plugin(
     function_name: str,
     args: IntoExprColumn | Iterable[IntoExprColumn],
     *,
-    kwargs: Mapping[str, float | int | None] | None = None,
+    kwargs: Mapping[str, float | int | list[int | None] | None] | None = None,
 ) -> pl.Expr:
     """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
 
@@ -149,9 +149,10 @@ def register_plugin(
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
         args: One expr or an iterable of exprs forming the plugin's positional inputs.
-        kwargs: Static keyword arguments serialised to Rust (a sampler `seed` and/or the constant parameters of a
-            `*_scalar` fast-path plugin). Accepted as a `Mapping` so the narrower `_scalar_kwargs` dicts pass without
-            an invariance fight; `register_plugin_function` wants a `dict`, hence the copy.
+        kwargs: Static keyword arguments serialised to Rust (a sampler `seed`, the multi-draw sampler's `seeds`
+            list, and/or the constant parameters of a `*_scalar` fast-path plugin). Accepted as a `Mapping` so the
+            narrower `_scalar_kwargs` dicts pass without an invariance fight; `register_plugin_function` wants a
+            `dict`, hence the copy.
     """
     return register_plugin_function(
         plugin_path=LIB,
@@ -187,6 +188,12 @@ class _UnivariateDistribution(ABC):
 
     _sample_dtype: ClassVar[PolarsDataType]
     """Element dtype produced `sample` (e.g. `Boolean`, `Float64`, `UInt64`). Set by each subclass."""
+
+    _samples_scalar_plugin: ClassVar[str]
+    """Name of the `<name>_samples_scalar` multi-draw plugin backing the constant-parameter `samples` fast path.
+
+    Set by each subclass; `_samples` routes through it when `_scalar_kwargs` is non-`None`.
+    """
 
     _scalar_kwargs: dict[str, float | int] | None
     """Constant parameters for the `<name>_sample_scalar` fast path, `None` when any parameter is column-valued.
@@ -240,15 +247,24 @@ class _UnivariateDistribution(ABC):
 
         Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.
 
-        When ``seed`` is set, distinct sub-seeds are derived from it so the `size` underlying ``sample`` calls
-        produce independent streams. Without this, every plugin call would re-seed the same RNG and yield
-        ``size`` identical columns.
+        When ``seed`` is set, distinct sub-seeds are derived from it so the ``size`` underlying draws produce
+        independent streams. Without this, every draw would re-seed the same RNG and yield ``size`` identical
+        columns. With ``seed=None``, each sub-seed resolves to fresh OS entropy (``size`` independent root seeds).
+
+        All-constant parameters route to the ``<name>_samples_scalar`` multi-draw plugin: one plugin call returning
+        the ``Array`` column directly, instead of ``size`` `sample` plugin calls glued by ``concat_arr`` (which pay
+        the fixed expression/FFI cost ``size`` times). Draw ``j`` of row ``i`` is seeded ``(seed_j, i)`` on both
+        paths, so their output is bit-identical (pinned by ``test_samples_scalar_fast_path_matches_per_row``).
         """
         rng = random.Random(seed)  # noqa: S311
-        seeds: Iterable[int] | Iterable[None] = (
-            repeat(None, size) if seed is None else (rng.randrange(2**63) for _ in range(size))
+        seeds: list[int | None] = (
+            list(repeat(None, size)) if seed is None else [rng.randrange(2**63) for _ in range(size)]
         )
 
+        if self._scalar_kwargs is not None:
+            return register_plugin(
+                self._samples_scalar_plugin, (ROW_INDEX_EXPR,), kwargs={"seeds": seeds, **self._scalar_kwargs}
+            )
         return pl.concat_arr(self.sample(seed=s) for s in seeds)
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:

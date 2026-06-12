@@ -9,7 +9,7 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_by_index, SampleKwargs};
+use crate::rng::{sample_by_index, samples_by_index, samples_u64_output, SampleKwargs};
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
 ///
@@ -199,6 +199,44 @@ fn binomial_sample_scalar(inputs: &[Series], kwargs: BinomialScalarKwargs) -> Po
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
                 dist.sample(&mut rng)
+            }),
+        )
+    })
+}
+
+/// Static parameters for the constant-parameter multi-draw fast path.
+///
+/// Like [`BinomialScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
+/// `k` sub-seeds, derived in Python exactly as before.
+#[derive(Deserialize)]
+struct BinomialSamplesScalarKwargs {
+    seeds: Vec<Option<u64>>,
+    n: i64,
+    p: f64,
+}
+
+/// Constant-parameter multi-draw Binomial sampler: `seeds.len()` draws per row in one call.
+///
+/// Replaces `samples`' former construction of `k` [`binomial_sample_scalar`] calls glued by
+/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the same
+/// `rand_distr` draw, so output is bit-identical to that path (pinned by
+/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(UInt64, seeds.len())`.
+#[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
+fn binomial_samples_scalar(
+    inputs: &[Series],
+    kwargs: BinomialSamplesScalarKwargs,
+) -> PolarsResult<Series> {
+    let dist = build_sampler(kwargs.n, kwargs.p)?;
+    let name = inputs[0].name().clone();
+
+    samples_by_index::<UInt64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+        UInt64Chunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().flat_map(|i| {
+                rngs.iter().map(move |row_rngs| {
+                    let mut rng = row_rngs.rng(i);
+                    dist.sample(&mut rng)
+                })
             }),
         )
     })

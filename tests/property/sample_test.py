@@ -58,6 +58,31 @@ def test_sample_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataOb
     assert_series_equal(fast, per_row)
 
 
+_SAMPLES_SIZE = 4
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@given(data=st.data())
+def test_samples_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataObject) -> None:
+    """Constant scalar parameters and the equivalent per-row columns multi-draw identically.
+
+    Constant parameters route `samples` through one `<name>_samples_scalar` plugin call that takes all
+    `size` sub-seeds as a kwarg and returns the `Array` column directly; column parameters take the
+    general construction of `size` per-row `sample` calls glued by `concat_arr`. Draw `j` of row `i` is
+    seeded `(seed_j, i)` on both paths, so for one seed they must agree bit for bit, the `samples`
+    counterpart of `test_sample_scalar_fast_path_matches_per_row`. A divergence (wrong sub-seed
+    derivation, a transposed row/draw layout in the flat buffer, or a parameter mix-up in the kwargs)
+    must fail here.
+    """
+    params = data.draw(spec.params)
+    frame = pl.DataFrame({"_": range(_N_ROWS)})
+
+    fast = frame.select(s=spec.make(params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
+    per_row = frame.select(s=spec.make_columns(params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
+
+    assert_series_equal(fast, per_row)
+
+
 @settings(max_examples=10)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())

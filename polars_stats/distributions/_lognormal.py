@@ -46,6 +46,7 @@ class LogNormal(ContinuousDistribution):
     _mu: pl.Expr
     _sigma: pl.Expr
     _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
+    _samples_scalar_plugin: ClassVar[str] = "lognormal_samples_scalar"
 
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")

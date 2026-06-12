@@ -16,6 +16,7 @@
 //! deliberately not the foundation here.
 
 use polars::prelude::*;
+use polars_arrow::datatypes::reshape::ReshapeDimension;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rand_pcg::Pcg64Mcg;
@@ -121,6 +122,84 @@ where
     let index_ca = index.u64()?;
     let rngs = row_rngs(seed);
     Ok(build(index_ca, &rngs).into_series())
+}
+
+/// Shared driver for the constant-parameter multi-draw (`samples`) fast paths.
+///
+/// The multi-draw counterpart of [`sample_by_index`]: `samples(size=k)` used to be `k` independent
+/// `<name>_sample_scalar` plugin calls glued by `concat_arr`, paying the fixed per-call expression
+/// and FFI cost `k` times. Here the Python layer passes all `k` sub-seeds in one call and the plugin
+/// returns the `Array(width=k)` column directly.
+///
+/// Each sub-seed resolves **once** (drawing OS entropy per `None`, preserving `seed=None`'s
+/// "`k` independent fresh root seeds" semantics), and draw `j` of row `i` seeds from
+/// `(seed_j, i)`, exactly as the `j`-th `sample(seed=seed_j)` call did. `build` produces the flat
+/// row-major buffer (row `i`'s `k` draws adjacent, sub-seed order), so the reshaped output is
+/// bit-identical to the former `concat_arr` construction.
+#[inline]
+pub(crate) fn samples_by_index<T, F>(
+    index: &Series,
+    seeds: &[Option<u64>],
+    build: F,
+) -> PolarsResult<Series>
+where
+    T: PolarsDataType,
+    ChunkedArray<T>: IntoSeries,
+    F: FnOnce(&UInt64Chunked, &[RowRngs]) -> ChunkedArray<T>,
+{
+    // The Python layer rejects `size <= 0` before registering the plugin; this guards the
+    // zero-width `Array` reshape against any other caller.
+    if seeds.is_empty() {
+        return Err(PolarsError::InvalidOperation(
+            "samples requires at least one sub-seed".into(),
+        ));
+    }
+    let index = index.cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let rngs: Vec<RowRngs> = seeds.iter().map(|seed| row_rngs(*seed)).collect();
+    let flat = build(index_ca, &rngs).into_series();
+    flat.reshape_array(&[
+        ReshapeDimension::Infer,
+        ReshapeDimension::new(seeds.len() as i64),
+    ])
+}
+
+/// The kwargs slice the `<name>_samples_scalar` output-dtype functions read: only the sub-seed
+/// list matters (its length is the `Array` width); serde skips the distribution parameters.
+#[derive(Deserialize)]
+pub(crate) struct SamplesOutputKwargs {
+    seeds: Vec<Option<u64>>,
+}
+
+fn samples_output(fields: &[Field], width: usize, inner: DataType) -> PolarsResult<Field> {
+    Ok(Field::new(
+        fields[0].name().clone(),
+        DataType::Array(Box::new(inner), width),
+    ))
+}
+
+/// Output dtype of a float-valued multi-draw plugin: `Array(Float64, seeds.len())`.
+pub(crate) fn samples_f64_output(
+    fields: &[Field],
+    kwargs: SamplesOutputKwargs,
+) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.seeds.len(), DataType::Float64)
+}
+
+/// Output dtype of an integer-valued multi-draw plugin: `Array(UInt64, seeds.len())`.
+pub(crate) fn samples_u64_output(
+    fields: &[Field],
+    kwargs: SamplesOutputKwargs,
+) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.seeds.len(), DataType::UInt64)
+}
+
+/// Output dtype of a boolean-valued multi-draw plugin: `Array(Boolean, seeds.len())`.
+pub(crate) fn samples_bool_output(
+    fields: &[Field],
+    kwargs: SamplesOutputKwargs,
+) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.seeds.len(), DataType::Boolean)
 }
 
 /// Per-call source of per-row RNGs, all derived from one already-resolved root seed.

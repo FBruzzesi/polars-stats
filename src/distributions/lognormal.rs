@@ -7,7 +7,7 @@ use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal};
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_by_index, SampleKwargs};
+use crate::rng::{sample_by_index, samples_by_index, samples_f64_output, SampleKwargs};
 
 /// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
@@ -171,6 +171,44 @@ fn lognormal_sample_scalar(
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
                 RandDistribution::sample(&dist, &mut rng)
+            }),
+        )
+    })
+}
+
+/// Static parameters for the constant-parameter multi-draw fast path.
+///
+/// Like [`LogNormalScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
+/// `k` sub-seeds, derived in Python exactly as before.
+#[derive(Deserialize)]
+struct LogNormalSamplesScalarKwargs {
+    seeds: Vec<Option<u64>>,
+    mu: f64,
+    sigma: f64,
+}
+
+/// Constant-parameter multi-draw LogNormal sampler: `seeds.len()` draws per row in one call.
+///
+/// Replaces `samples`' former construction of `k` [`lognormal_sample_scalar`] calls glued by
+/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the same
+/// `RandDistribution::sample`, so output is bit-identical to that path (pinned by
+/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(Float64, seeds.len())`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn lognormal_samples_scalar(
+    inputs: &[Series],
+    kwargs: LogNormalSamplesScalarKwargs,
+) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
+    let name = inputs[0].name().clone();
+
+    samples_by_index::<Float64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+        Float64Chunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().flat_map(|i| {
+                rngs.iter().map(move |row_rngs| {
+                    let mut rng = row_rngs.rng(i);
+                    RandDistribution::sample(&dist, &mut rng)
+                })
             }),
         )
     })

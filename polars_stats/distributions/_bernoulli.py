@@ -27,6 +27,7 @@ class Bernoulli(DiscreteDistribution):
 
     _p: pl.Expr
     _sample_dtype: ClassVar[PolarsDataType] = pl.Boolean()
+    _samples_scalar_plugin: ClassVar[str] = "bernoulli_samples_scalar"
 
     def __init__(self, p: float | IntoExprColumn) -> None:
         self._p = coerce_param(p, name="p")

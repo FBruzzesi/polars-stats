@@ -39,6 +39,7 @@ class Binomial(DiscreteDistribution):
     _n: pl.Expr
     _p: pl.Expr
     _sample_dtype: ClassVar[PolarsDataType] = pl.UInt64()
+    _samples_scalar_plugin: ClassVar[str] = "binomial_samples_scalar"
 
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
         self._n = coerce_n(n, name="n")

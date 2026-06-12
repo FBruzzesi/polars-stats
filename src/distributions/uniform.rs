@@ -6,7 +6,7 @@ use rand::distributions::{Distribution, Standard};
 use serde::Deserialize;
 use statrs::distribution::Uniform;
 
-use crate::rng::{sample_by_index, SampleKwargs};
+use crate::rng::{sample_by_index, samples_by_index, samples_f64_output, SampleKwargs};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
@@ -135,6 +135,45 @@ fn uniform_sample_scalar(inputs: &[Series], kwargs: UniformScalarKwargs) -> Pola
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
                 draw_half_open(lo, hi, &mut rng)
+            }),
+        )
+    })
+}
+
+/// Static parameters for the constant-bounds multi-draw fast path.
+///
+/// Like [`UniformScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
+/// `k` sub-seeds, derived in Python exactly as before.
+#[derive(Deserialize)]
+struct UniformSamplesScalarKwargs {
+    seeds: Vec<Option<u64>>,
+    min: f64,
+    max: f64,
+}
+
+/// Constant-bounds multi-draw Uniform sampler: `seeds.len()` draws per row in one call.
+///
+/// Replaces `samples`' former construction of `k` [`uniform_sample_scalar`] calls glued by
+/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the shared
+/// [`draw_half_open`], so output is bit-identical to that path (pinned by
+/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(Float64, seeds.len())`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn uniform_samples_scalar(
+    inputs: &[Series],
+    kwargs: UniformSamplesScalarKwargs,
+) -> PolarsResult<Series> {
+    build_dist(kwargs.min, kwargs.max)?;
+    let (lo, hi) = (kwargs.min, kwargs.max);
+    let name = inputs[0].name().clone();
+
+    samples_by_index::<Float64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+        Float64Chunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().flat_map(|i| {
+                rngs.iter().map(move |row_rngs| {
+                    let mut rng = row_rngs.rng(i);
+                    draw_half_open(lo, hi, &mut rng)
+                })
             }),
         )
     })

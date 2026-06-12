@@ -39,6 +39,7 @@ class Uniform(ContinuousDistribution):
     _min: pl.Expr
     _max: pl.Expr
     _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
+    _samples_scalar_plugin: ClassVar[str] = "uniform_samples_scalar"
 
     def __init__(self, min: float | IntoExprColumn, max: float | IntoExprColumn) -> None:  # noqa: A002
         self._min = coerce_param(min, name="min")

@@ -6,7 +6,7 @@ use rand::distributions::Distribution;
 use serde::Deserialize;
 use statrs::distribution::Bernoulli;
 
-use crate::rng::{sample_by_index, SampleKwargs};
+use crate::rng::{sample_by_index, samples_bool_output, samples_by_index, SampleKwargs};
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
@@ -107,6 +107,43 @@ fn bernoulli_sample_scalar(
             index_ca.into_no_null_iter().map(|i| {
                 let mut rng = rngs.rng(i);
                 <Bernoulli as Distribution<bool>>::sample(&dist, &mut rng)
+            }),
+        )
+    })
+}
+
+/// Static parameters for the constant-probability multi-draw fast path.
+///
+/// Like [`BernoulliScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
+/// `k` sub-seeds, derived in Python exactly as before.
+#[derive(Deserialize)]
+struct BernoulliSamplesScalarKwargs {
+    seeds: Vec<Option<u64>>,
+    p: f64,
+}
+
+/// Constant-probability multi-draw Bernoulli sampler: `seeds.len()` draws per row in one call.
+///
+/// Replaces `samples`' former construction of `k` [`bernoulli_sample_scalar`] calls glued by
+/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the same draw, so
+/// output is bit-identical to that path (pinned by
+/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(Boolean, seeds.len())`.
+#[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
+fn bernoulli_samples_scalar(
+    inputs: &[Series],
+    kwargs: BernoulliSamplesScalarKwargs,
+) -> PolarsResult<Series> {
+    let dist = build_dist(kwargs.p)?;
+    let name = inputs[0].name().clone();
+
+    samples_by_index::<BooleanType, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+        BooleanChunked::from_iter_values(
+            name,
+            index_ca.into_no_null_iter().flat_map(|i| {
+                rngs.iter().map(move |row_rngs| {
+                    let mut rng = row_rngs.rng(i);
+                    <Bernoulli as Distribution<bool>>::sample(&dist, &mut rng)
+                })
             }),
         )
     })

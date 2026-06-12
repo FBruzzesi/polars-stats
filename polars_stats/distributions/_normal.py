@@ -42,6 +42,7 @@ class Normal(ContinuousDistribution):
     _mean: pl.Expr
     _std_dev: pl.Expr
     _sample_dtype: ClassVar[PolarsDataType] = pl.Float64()
+    _samples_scalar_plugin: ClassVar[str] = "normal_samples_scalar"
 
     def __init__(
         self,
