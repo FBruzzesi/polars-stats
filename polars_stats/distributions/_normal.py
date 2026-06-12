@@ -99,6 +99,11 @@ class Normal(ContinuousDistribution):
             ).alias("sample")
         return register_plugin("normal_sample", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        return register_plugin(
+            "normal_samples", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
+        )
+
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""
         return self._value_plugin("normal_pdf", value)

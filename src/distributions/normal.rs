@@ -7,7 +7,10 @@ use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_scalar_plugin, samples_by_index, samples_f64_output, SampleKwargs};
+use crate::rng::{
+    sample_scalar_plugin, samples_by_index, samples_f64_output, samples_per_row, SampleKwargs,
+    SamplesKwargs,
+};
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
@@ -154,40 +157,81 @@ sample_scalar_plugin! {
 
 /// Static parameters for the constant-parameter multi-draw fast path.
 ///
-/// Like [`NormalScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's `k`
-/// sub-seeds, derived in Python exactly as before.
+/// Like [`NormalScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
+/// with the scalar parameters alongside).
 #[derive(Deserialize)]
 struct NormalSamplesScalarKwargs {
-    seeds: Vec<Option<u64>>,
+    seed: Option<u64>,
+    size: usize,
     mean: f64,
     std_dev: f64,
 }
 
-/// Constant-parameter multi-draw Normal sampler: `seeds.len()` draws per row in one call.
+/// Constant-parameter multi-draw Normal sampler: `size` draws per row in one call.
 ///
-/// Replaces `samples`' former construction of `k` [`normal_sample_scalar`] calls glued by
-/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the same
-/// `RandDistribution::sample`, so output is bit-identical to that path (pinned by
-/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(Float64, seeds.len())`.
+/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
+/// stream [`normal_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
+/// `sample` bit for bit and growing `size` extends each row's array. Returns
+/// `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples_scalar(
     inputs: &[Series],
     kwargs: NormalSamplesScalarKwargs,
 ) -> PolarsResult<Series> {
     let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
+    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+    samples_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
         Float64Chunked::from_iter_values(
             name,
             index_ca.into_no_null_iter().flat_map(|i| {
-                rngs.iter().map(move |row_rngs| {
-                    let mut rng = row_rngs.rng(i);
-                    RandDistribution::sample(&dist, &mut rng)
-                })
+                let mut rng = rngs.rng(i);
+                std::iter::repeat_with(move || RandDistribution::sample(&dist, &mut rng)).take(size)
             }),
         )
     })
+}
+
+/// Element-wise multi-draw Normal sampler: `size` draws per row in one call.
+///
+/// The column-parameter counterpart of [`normal_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`normal_sample`] calls glued by `concat_arr`: the distribution is built
+/// once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
+/// `(seed, i)`, so output is bit-identical to the scalar path for the same parameters (the
+/// seeding is positional, parameters never enter it, so equal-parameter rows still draw
+/// independently). Null/error contract follows [`normal_sample`] per row; a null row yields an
+/// array of null elements (the Python layer masks it to a null array). Returns
+/// `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let mean = inputs[0].cast(&DataType::Float64)?;
+    let mean_ca = mean.f64()?;
+    let std_dev = inputs[1].cast(&DataType::Float64)?;
+    let std_dev_ca = std_dev.f64()?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let name = inputs[0].name().clone();
+
+    let rows = mean_ca
+        .iter()
+        .zip(std_dev_ca.iter())
+        .zip(index_ca.iter())
+        .map(
+            |((mean_opt, std_opt), i_opt)| match (mean_opt, std_opt, i_opt) {
+                (Some(m), Some(s), Some(i)) => Ok(Some((i, build_dist(m, s)?))),
+                _ => Ok(None),
+            },
+        );
+
+    samples_per_row::<Float64Type, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        index_ca.len(),
+        rows,
+        RandDistribution::sample,
+    )
 }
 
 // Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins

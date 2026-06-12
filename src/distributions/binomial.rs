@@ -9,7 +9,10 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_scalar_plugin, samples_by_index, samples_u64_output, SampleKwargs};
+use crate::rng::{
+    sample_scalar_plugin, samples_by_index, samples_per_row, samples_u64_output, SampleKwargs,
+    SamplesKwargs,
+};
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
 ///
@@ -185,40 +188,79 @@ sample_scalar_plugin! {
 
 /// Static parameters for the constant-parameter multi-draw fast path.
 ///
-/// Like [`BinomialScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
-/// `k` sub-seeds, derived in Python exactly as before.
+/// Like [`BinomialScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
+/// with the scalar parameters alongside).
 #[derive(Deserialize)]
 struct BinomialSamplesScalarKwargs {
-    seeds: Vec<Option<u64>>,
+    seed: Option<u64>,
+    size: usize,
     n: i64,
     p: f64,
 }
 
-/// Constant-parameter multi-draw Binomial sampler: `seeds.len()` draws per row in one call.
+/// Constant-parameter multi-draw Binomial sampler: `size` draws per row in one call.
 ///
-/// Replaces `samples`' former construction of `k` [`binomial_sample_scalar`] calls glued by
-/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the same
-/// `rand_distr` draw, so output is bit-identical to that path (pinned by
-/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(UInt64, seeds.len())`.
+/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
+/// stream [`binomial_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
+/// `sample` bit for bit and growing `size` extends each row's array. Returns
+/// `Array(UInt64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples_scalar(
     inputs: &[Series],
     kwargs: BinomialSamplesScalarKwargs,
 ) -> PolarsResult<Series> {
     let dist = build_sampler(kwargs.n, kwargs.p)?;
+    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<UInt64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+    samples_by_index::<UInt64Type, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
         UInt64Chunked::from_iter_values(
             name,
             index_ca.into_no_null_iter().flat_map(|i| {
-                rngs.iter().map(move |row_rngs| {
-                    let mut rng = row_rngs.rng(i);
-                    dist.sample(&mut rng)
-                })
+                let mut rng = rngs.rng(i);
+                std::iter::repeat_with(move || dist.sample(&mut rng)).take(size)
             }),
         )
     })
+}
+
+/// Element-wise multi-draw Binomial sampler: `size` draws per row in one call.
+///
+/// The column-parameter counterpart of [`binomial_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`binomial_sample`] calls glued by `concat_arr`: the `rand_distr` sampler
+/// (whose BINV/BTPE setup is the expensive part) is built once per row instead of once per draw.
+/// Row `i`'s draws come from the one stream seeded `(seed, i)`, so output is bit-identical to
+/// the scalar path for the same parameters (the seeding is positional, parameters never enter
+/// it, so equal-parameter rows still draw independently). Null/error contract follows
+/// [`binomial_sample`] per row; a null row yields an array of null elements (the Python layer
+/// masks it to a null array). Returns `Array(UInt64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
+fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let n = inputs[0].cast(&DataType::Int64)?;
+    let n_ca = n.i64()?;
+    let p = inputs[1].cast(&DataType::Float64)?;
+    let p_ca = p.f64()?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let name = inputs[0].name().clone();
+
+    let rows = n_ca
+        .iter()
+        .zip(p_ca.iter())
+        .zip(index_ca.iter())
+        .map(|((n_opt, p_opt), i_opt)| match (n_opt, p_opt, i_opt) {
+            (Some(n), Some(p), Some(i)) => Ok(Some((i, build_sampler(n, p)?))),
+            _ => Ok(None),
+        });
+
+    samples_per_row::<UInt64Type, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        index_ca.len(),
+        rows,
+        |dist, rng| dist.sample(rng),
+    )
 }
 
 // Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins

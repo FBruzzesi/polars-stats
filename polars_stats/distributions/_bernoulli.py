@@ -65,6 +65,9 @@ class Bernoulli(DiscreteDistribution):
             ).alias("sample")
         return register_plugin("bernoulli_sample", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        return register_plugin("bernoulli_samples", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size})
+
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""
         p = self._checked_p

@@ -105,6 +105,11 @@ class Binomial(DiscreteDistribution):
             ).alias("sample")
         return register_plugin("binomial_sample", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        return register_plugin(
+            "binomial_samples", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
+        )
+
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Mass via native ``Discrete::pmf``; zero off the integer support ``{0, ..., n}``."""
         return self._value_plugin("binomial_pmf", value)

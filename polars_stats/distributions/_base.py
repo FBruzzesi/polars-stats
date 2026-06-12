@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import random
 from abc import ABC, abstractmethod
-from itertools import repeat
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
@@ -137,7 +135,7 @@ def register_plugin(
     function_name: str,
     args: IntoExprColumn | Iterable[IntoExprColumn],
     *,
-    kwargs: Mapping[str, float | int | list[int | None] | None] | None = None,
+    kwargs: Mapping[str, float | int | None] | None = None,
 ) -> pl.Expr:
     """Register a polars-stats Rust plugin call, fixing the defaults every distribution shares.
 
@@ -149,10 +147,10 @@ def register_plugin(
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
         args: One expr or an iterable of exprs forming the plugin's positional inputs.
-        kwargs: Static keyword arguments serialised to Rust (a sampler `seed`, the multi-draw sampler's `seeds`
-            list, and/or the constant parameters of a `*_scalar` fast-path plugin). Accepted as a `Mapping` so the
-            narrower `_scalar_kwargs` dicts pass without an invariance fight; `register_plugin_function` wants a
-            `dict`, hence the copy.
+        kwargs: Static keyword arguments serialised to Rust (a sampler `seed`, the multi-draw sampler's draw
+            count `size`, and/or the constant parameters of a `*_scalar` fast-path plugin). Accepted as a
+            `Mapping` so the narrower `_scalar_kwargs` dicts pass without an invariance fight;
+            `register_plugin_function` wants a `dict`, hence the copy.
     """
     return register_plugin_function(
         plugin_path=LIB,
@@ -223,9 +221,10 @@ class _UnivariateDistribution(ABC):
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
         """Draw `size` random variates per row, returning `Array(inner=_sample_dtype, shape=size)`.
 
-        When `seed` is set, distinct sub-seeds are derived from it so the `size` underlying `sample`
-        calls produce independent streams. Without this, every plugin call would re-seed the same RNG
-        and yield `size` identical columns.
+        Each row's `size` draws are consecutive values from one per-row random stream keyed by `seed` and the
+        row's position, so the result is reproducible for a fixed `seed` and independent of Polars chunking and
+        thread scheduling. `samples(size=1)` matches `sample` for the same seed, and growing `size` extends each
+        row's array without changing the existing draws.
 
         A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
 
@@ -247,25 +246,33 @@ class _UnivariateDistribution(ABC):
 
         Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.
 
-        When ``seed`` is set, distinct sub-seeds are derived from it so the ``size`` underlying draws produce
-        independent streams. Without this, every draw would re-seed the same RNG and yield ``size`` identical
-        columns. With ``seed=None``, each sub-seed resolves to fresh OS entropy (``size`` independent root seeds).
+        Row ``i``'s ``size`` draws are consecutive values from one per-row stream keyed ``(seed, i)``, the same
+        stream ``sample`` takes its single draw from. So ``samples(size=1)`` matches ``sample`` bit for bit for
+        the same seed, and growing ``size`` extends each row's array without changing the existing draws (both
+        pinned by property tests). With ``seed=None``, a fresh root seed resolves once per call.
 
-        All-constant parameters route to the ``<name>_samples_scalar`` multi-draw plugin: one plugin call returning
-        the ``Array`` column directly, instead of ``size`` `sample` plugin calls glued by ``concat_arr`` (which pay
-        the fixed expression/FFI cost ``size`` times). Draw ``j`` of row ``i`` is seeded ``(seed_j, i)`` on both
-        paths, so their output is bit-identical (pinned by ``test_samples_scalar_fast_path_matches_per_row``).
+        Both parameter shapes run as one native multi-draw plugin call returning the ``Array`` column directly:
+        all-constant parameters route to ``<name>_samples_scalar`` (parameters validated once, in kwargs), column
+        parameters to the per-row ``<name>_samples`` twin via `_samples_columns` (distribution rebuilt once per
+        row, not once per draw). Seeding is positional on both paths, so their output is bit-identical (pinned by
+        ``test_samples_scalar_fast_path_matches_per_row``).
         """
-        rng = random.Random(seed)  # noqa: S311
-        seeds: list[int | None] = (
-            list(repeat(None, size)) if seed is None else [rng.randrange(2**63) for _ in range(size)]
-        )
-
         if self._scalar_kwargs is not None:
             return register_plugin(
-                self._samples_scalar_plugin, (ROW_INDEX_EXPR,), kwargs={"seeds": seeds, **self._scalar_kwargs}
+                self._samples_scalar_plugin,
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "size": size, **self._scalar_kwargs},
             )
-        return pl.concat_arr(self.sample(seed=s) for s in seeds)
+        return self._samples_columns(size=size, seed=seed)
+
+    @abstractmethod
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        """Register the `<name>_samples` multi-draw plugin call for column-valued parameters.
+
+        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
+        `seed` and draw count `size` as kwargs. Called by `_samples`; null masking and naming are applied by
+        `samples`.
+        """
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""

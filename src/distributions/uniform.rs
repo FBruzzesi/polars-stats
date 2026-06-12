@@ -6,7 +6,10 @@ use rand::distributions::{Distribution, Standard};
 use serde::Deserialize;
 use statrs::distribution::Uniform;
 
-use crate::rng::{sample_scalar_plugin, samples_by_index, samples_f64_output, SampleKwargs};
+use crate::rng::{
+    sample_scalar_plugin, samples_by_index, samples_f64_output, samples_per_row, SampleKwargs,
+    SamplesKwargs,
+};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
@@ -121,21 +124,22 @@ sample_scalar_plugin! {
 
 /// Static parameters for the constant-bounds multi-draw fast path.
 ///
-/// Like [`UniformScalarKwargs`] with the single `seed` replaced by the `samples(size=k)` call's
-/// `k` sub-seeds, derived in Python exactly as before.
+/// Like [`UniformScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
+/// with the scalar bounds alongside).
 #[derive(Deserialize)]
 struct UniformSamplesScalarKwargs {
-    seeds: Vec<Option<u64>>,
+    seed: Option<u64>,
+    size: usize,
     min: f64,
     max: f64,
 }
 
-/// Constant-bounds multi-draw Uniform sampler: `seeds.len()` draws per row in one call.
+/// Constant-bounds multi-draw Uniform sampler: `size` draws per row in one call.
 ///
-/// Replaces `samples`' former construction of `k` [`uniform_sample_scalar`] calls glued by
-/// `concat_arr`: draw `j` of row `i` still seeds from `(seed_j, i)` and uses the shared
-/// [`draw_half_open`], so output is bit-identical to that path (pinned by
-/// `test_samples_scalar_fast_path_matches_per_row`). Returns `Array(Float64, seeds.len())`.
+/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
+/// stream [`uniform_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
+/// `sample` bit for bit and growing `size` extends each row's array. Returns
+/// `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples_scalar(
     inputs: &[Series],
@@ -143,19 +147,64 @@ fn uniform_samples_scalar(
 ) -> PolarsResult<Series> {
     build_dist(kwargs.min, kwargs.max)?;
     let (lo, hi) = (kwargs.min, kwargs.max);
+    let size = kwargs.size;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _>(&inputs[0], &kwargs.seeds, |index_ca, rngs| {
+    samples_by_index::<Float64Type, _>(&inputs[0], kwargs.seed, size, |index_ca, rngs| {
         Float64Chunked::from_iter_values(
             name,
             index_ca.into_no_null_iter().flat_map(|i| {
-                rngs.iter().map(move |row_rngs| {
-                    let mut rng = row_rngs.rng(i);
-                    draw_half_open(lo, hi, &mut rng)
-                })
+                let mut rng = rngs.rng(i);
+                std::iter::repeat_with(move || draw_half_open(lo, hi, &mut rng)).take(size)
             }),
         )
     })
+}
+
+/// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one
+/// call.
+///
+/// The column-parameter counterpart of [`uniform_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`uniform_sample`] calls glued by `concat_arr`: the bounds are validated
+/// once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
+/// `(seed, i)` via the shared [`draw_half_open`], so output is bit-identical to the scalar path
+/// for the same bounds (the seeding is positional, parameters never enter it, so equal-bound
+/// rows still draw independently). Null/error contract follows [`uniform_sample`] per row; a
+/// null row yields an array of null elements (the Python layer masks it to a null array).
+/// Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let min = inputs[0].cast(&DataType::Float64)?;
+    let min_ca = min.f64()?;
+    let max = inputs[1].cast(&DataType::Float64)?;
+    let max_ca = max.f64()?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let index_ca = index.u64()?;
+    let name = inputs[0].name().clone();
+
+    let rows =
+        min_ca
+            .iter()
+            .zip(max_ca.iter())
+            .zip(index_ca.iter())
+            .map(
+                |((min_opt, max_opt), i_opt)| match (min_opt, max_opt, i_opt) {
+                    (Some(lo), Some(hi), Some(i)) => {
+                        build_dist(lo, hi)?;
+                        Ok(Some((i, (lo, hi))))
+                    },
+                    _ => Ok(None),
+                },
+            );
+
+    samples_per_row::<Float64Type, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        index_ca.len(),
+        rows,
+        |&(lo, hi), rng| draw_half_open(lo, hi, rng),
+    )
 }
 
 /// Element-wise support width `max - min`, validating the parameterisation.

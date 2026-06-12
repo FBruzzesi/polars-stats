@@ -126,49 +126,101 @@ where
 
 /// Shared driver for the constant-parameter multi-draw (`samples`) fast paths.
 ///
-/// The multi-draw counterpart of [`sample_by_index`]: `samples(size=k)` used to be `k` independent
-/// `<name>_sample_scalar` plugin calls glued by `concat_arr`, paying the fixed per-call expression
-/// and FFI cost `k` times. Here the Python layer passes all `k` sub-seeds in one call and the plugin
-/// returns the `Array(width=k)` column directly.
+/// The multi-draw counterpart of [`sample_by_index`]: one plugin call returns the
+/// `Array(width=size)` column directly, instead of `size` `sample` plugin calls glued by
+/// `concat_arr` paying the fixed per-call expression and FFI cost `size` times.
 ///
-/// Each sub-seed resolves **once** (drawing OS entropy per `None`, preserving `seed=None`'s
-/// "`k` independent fresh root seeds" semantics), and draw `j` of row `i` seeds from
-/// `(seed_j, i)`, exactly as the `j`-th `sample(seed=seed_j)` call did. `build` produces the flat
-/// row-major buffer (row `i`'s `k` draws adjacent, sub-seed order), so the reshaped output is
-/// bit-identical to the former `concat_arr` construction.
+/// Row `i`'s `size` draws are **consecutive values from one per-row stream** seeded
+/// `(root_seed, i)`, the same stream `sample` takes its single draw from. So `samples(size=1)`
+/// is bit-identical to `sample` for the same seed, and growing `size` extends each row's array
+/// without changing the existing draws. The root seed resolves once per call (fresh OS entropy
+/// when `None`); a row's stream depends only on `(root_seed, i)`, never on other rows, so
+/// chunk/thread invariance is untouched. `build` produces the flat row-major buffer (row `i`'s
+/// `size` draws adjacent, stream order).
 #[inline]
 pub(crate) fn samples_by_index<T, F>(
     index: &Series,
-    seeds: &[Option<u64>],
+    seed: Option<u64>,
+    size: usize,
     build: F,
 ) -> PolarsResult<Series>
 where
     T: PolarsDataType,
     ChunkedArray<T>: IntoSeries,
-    F: FnOnce(&UInt64Chunked, &[RowRngs]) -> ChunkedArray<T>,
+    F: FnOnce(&UInt64Chunked, &RowRngs) -> ChunkedArray<T>,
 {
     // The Python layer rejects `size <= 0` before registering the plugin; this guards the
     // zero-width `Array` reshape against any other caller.
-    if seeds.is_empty() {
+    if size == 0 {
         return Err(PolarsError::InvalidOperation(
-            "samples requires at least one sub-seed".into(),
+            "samples requires a positive size".into(),
         ));
     }
     let index = index.cast(&DataType::UInt64)?;
     let index_ca = index.u64()?;
-    let rngs: Vec<RowRngs> = seeds.iter().map(|seed| row_rngs(*seed)).collect();
+    let rngs = row_rngs(seed);
     let flat = build(index_ca, &rngs).into_series();
-    flat.reshape_array(&[
-        ReshapeDimension::Infer,
-        ReshapeDimension::new(seeds.len() as i64),
-    ])
+    flat.reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
 }
 
-/// The kwargs slice the `<name>_samples_scalar` output-dtype functions read: only the sub-seed
-/// list matters (its length is the `Array` width); serde skips the distribution parameters.
+/// Shared driver for the column-parameter multi-draw (`samples`) per-row paths.
+///
+/// The column-parameter counterpart of [`samples_by_index`]. The caller iterates its parameter
+/// columns and yields, per row, the index and a ready-to-draw state (typically the built
+/// distribution, so it is constructed once per row rather than once per draw). A `None` row (any
+/// null input) becomes an array of `size` null elements (the Python layer masks it to a null
+/// array); an invalid parameterisation `?`-raises out of the row iterator.
+///
+/// Seeding is identical to [`samples_by_index`]: row `i`'s draws are consecutive values from one
+/// stream keyed `(root_seed, i)`, a function of position only, never of the parameters. So the
+/// scalar and column paths stay bit-identical for the same parameters and equal-parameter rows
+/// still draw independently. Note the per-draw *consumption* of that stream does depend on the
+/// row's parameters (rejection samplers draw a variable number of words), which is fine: the
+/// stream is private to the row.
+#[inline]
+pub(crate) fn samples_per_row<T, V, S, I, F>(
+    name: PlSmallStr,
+    seed: Option<u64>,
+    size: usize,
+    len: usize,
+    rows: I,
+    draw: F,
+) -> PolarsResult<Series>
+where
+    T: PolarsDataType,
+    ChunkedArray<T>: NewChunkedArray<T, V> + IntoSeries,
+    I: Iterator<Item = PolarsResult<Option<(u64, S)>>>,
+    F: Fn(&S, &mut Pcg64Mcg) -> V,
+{
+    if size == 0 {
+        return Err(PolarsError::InvalidOperation(
+            "samples requires a positive size".into(),
+        ));
+    }
+    let rngs = row_rngs(seed);
+    let mut flat: Vec<Option<V>> = Vec::with_capacity(len * size);
+    for row in rows {
+        match row? {
+            Some((index, state)) => {
+                let mut rng = rngs.rng(index);
+                flat.extend((0..size).map(|_| Some(draw(&state, &mut rng))));
+            },
+            None => flat.extend(std::iter::repeat_with(|| None).take(size)),
+        }
+    }
+    let ca = ChunkedArray::<T>::from_iter_options(name, flat.into_iter());
+    ca.into_series()
+        .reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
+}
+
+/// Kwargs shared by every column-parameter multi-draw plugin, and the slice the shared
+/// output-dtype functions read from the scalar variants' kwargs (serde skips their extra
+/// parameter fields): the optional root seed and the draw count, which is the output `Array`
+/// width.
 #[derive(Deserialize)]
-pub(crate) struct SamplesOutputKwargs {
-    seeds: Vec<Option<u64>>,
+pub(crate) struct SamplesKwargs {
+    pub(crate) seed: Option<u64>,
+    pub(crate) size: usize,
 }
 
 fn samples_output(fields: &[Field], width: usize, inner: DataType) -> PolarsResult<Field> {
@@ -178,28 +230,19 @@ fn samples_output(fields: &[Field], width: usize, inner: DataType) -> PolarsResu
     ))
 }
 
-/// Output dtype of a float-valued multi-draw plugin: `Array(Float64, seeds.len())`.
-pub(crate) fn samples_f64_output(
-    fields: &[Field],
-    kwargs: SamplesOutputKwargs,
-) -> PolarsResult<Field> {
-    samples_output(fields, kwargs.seeds.len(), DataType::Float64)
+/// Output dtype of a float-valued multi-draw plugin: `Array(Float64, size)`.
+pub(crate) fn samples_f64_output(fields: &[Field], kwargs: SamplesKwargs) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.size, DataType::Float64)
 }
 
-/// Output dtype of an integer-valued multi-draw plugin: `Array(UInt64, seeds.len())`.
-pub(crate) fn samples_u64_output(
-    fields: &[Field],
-    kwargs: SamplesOutputKwargs,
-) -> PolarsResult<Field> {
-    samples_output(fields, kwargs.seeds.len(), DataType::UInt64)
+/// Output dtype of an integer-valued multi-draw plugin: `Array(UInt64, size)`.
+pub(crate) fn samples_u64_output(fields: &[Field], kwargs: SamplesKwargs) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.size, DataType::UInt64)
 }
 
-/// Output dtype of a boolean-valued multi-draw plugin: `Array(Boolean, seeds.len())`.
-pub(crate) fn samples_bool_output(
-    fields: &[Field],
-    kwargs: SamplesOutputKwargs,
-) -> PolarsResult<Field> {
-    samples_output(fields, kwargs.seeds.len(), DataType::Boolean)
+/// Output dtype of a boolean-valued multi-draw plugin: `Array(Boolean, size)`.
+pub(crate) fn samples_bool_output(fields: &[Field], kwargs: SamplesKwargs) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.size, DataType::Boolean)
 }
 
 /// Generates a distribution's constant-parameter sampler fast path: the kwargs struct

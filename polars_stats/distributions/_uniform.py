@@ -82,6 +82,11 @@ class Uniform(ContinuousDistribution):
             ).alias("sample")
         return register_plugin("uniform_sample", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        return register_plugin(
+            "uniform_samples", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
+        )
+
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""
         in_range = value.is_between(self._min, self._max, closed="both")

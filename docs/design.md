@@ -63,6 +63,14 @@ path is selected only when the parameters are known scalars, so nothing column-v
 `sample_iter` was rejected for the loop body: it advances a single stream in row order, which couples rows across chunks
 and breaks the invariance guarantee the per-row seeding exists to provide.
 
+`samples` does, however, use one stream *per row*: row `i`'s `size` draws are consecutive values from the
+`(root_seed, i)` stream, the same stream `sample` takes its single draw from. That stays chunk-invariant because the
+stream is keyed by global row position; what remains rejected is any stream shared across rows. The per-row stream is
+what makes `samples(size=1)` equal `sample` bit for bit and `samples` prefix-stable in `size` (both pinned by property
+tests). The measured trade-off at 100k rows, `size=20`: cheap-draw distributions speed up (no per-draw re-seeding)
+while the normal slows ~20% (consecutive draws are sequentially dependent, so the ziggurat loses cross-draw
+instruction overlap); recorded in CHANGELOG.md as a pre-release seeded-output change.
+
 ### Binomial sampling uses `rand_distr`, not `statrs`
 
 `statrs` 0.18 implements `Distribution<u64> for Binomial` as `(0..n).fold(...)`, one uniform draw per trial, so a sampled

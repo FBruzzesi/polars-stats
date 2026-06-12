@@ -99,6 +99,11 @@ class LogNormal(ContinuousDistribution):
             ).alias("sample")
         return register_plugin("lognormal_sample", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed})
 
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        return register_plugin(
+            "lognormal_samples", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
+        )
+
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf`` (``0`` for ``value <= 0``)."""
         return self._value_plugin("lognormal_pdf", value)
