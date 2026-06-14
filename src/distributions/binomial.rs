@@ -10,7 +10,7 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::value_keyed_scalar;
 use crate::rng::{
-    sample_scalar_plugin, samples_by_index, samples_per_row, samples_u64_output, SampleKwargs,
+    sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
 };
 
@@ -182,39 +182,11 @@ sample_scalar_plugin! {
     /// path), and only the per-row index travels as an input; seeding and the draw are unchanged,
     /// so output matches `binomial_sample` for the same `(seed, index, n, p)`.
     fn binomial_sample_scalar(output_type = UInt64, physical = UInt64Type);
+
+    samples = binomial_samples_scalar as BinomialSamplesScalarKwargs -> samples_u64_output;
+
     build = |kw| build_sampler(kw.n, kw.p)?;
     draw = |dist, rng| dist.sample(rng);
-}
-
-/// Static parameters for the constant-parameter multi-draw fast path.
-///
-/// Like [`BinomialScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
-/// with the scalar parameters alongside).
-#[derive(Deserialize)]
-struct BinomialSamplesScalarKwargs {
-    seed: Option<u64>,
-    size: usize,
-    n: i64,
-    p: f64,
-}
-
-/// Constant-parameter multi-draw Binomial sampler: `size` draws per row in one call.
-///
-/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
-/// stream [`binomial_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
-/// `sample` bit for bit and growing `size` extends each row's array. Returns
-/// `Array(UInt64, size)`.
-#[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
-fn binomial_samples_scalar(
-    inputs: &[Series],
-    kwargs: BinomialSamplesScalarKwargs,
-) -> PolarsResult<Series> {
-    let dist = build_sampler(kwargs.n, kwargs.p)?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        dist.sample(rng)
-    })
 }
 
 /// Element-wise multi-draw Binomial sampler: `size` draws per row in one call.
@@ -230,21 +202,11 @@ fn binomial_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
-    let n_ca = n.i64()?;
     let p = inputs[1].cast(&DataType::Float64)?;
-    let p_ca = p.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rows = n_ca
-        .iter()
-        .zip(p_ca.iter())
-        .zip(index_ca.iter())
-        .map(|((n_opt, p_opt), i_opt)| match (n_opt, p_opt, i_opt) {
-            (Some(n), Some(p), Some(i)) => Ok(Some((i, build_sampler(n, p)?))),
-            _ => Ok(None),
-        });
+    let rows = ternary_param_rows(n.i64()?, p.f64()?, index.u64()?, build_sampler);
 
     samples_per_row::<UInt64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, |dist, rng| {
         dist.sample(rng)

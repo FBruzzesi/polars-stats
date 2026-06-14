@@ -8,7 +8,7 @@ use statrs::distribution::{Continuous, ContinuousCDF, LogNormal};
 
 use crate::distributions::value_keyed_scalar;
 use crate::rng::{
-    sample_scalar_plugin, samples_by_index, samples_f64_output, samples_per_row, SampleKwargs,
+    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
 };
 
@@ -151,39 +151,11 @@ sample_scalar_plugin! {
     /// seeding and the draw are unchanged, so output matches `lognormal_sample` for the same
     /// `(seed, index, mu, sigma)`.
     fn lognormal_sample_scalar(output_type = Float64, physical = Float64Type);
+
+    samples = lognormal_samples_scalar as LogNormalSamplesScalarKwargs -> samples_f64_output;
+
     build = |kw| build_dist(kw.mu, kw.sigma)?;
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
-}
-
-/// Static parameters for the constant-parameter multi-draw fast path.
-///
-/// Like [`LogNormalScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
-/// with the scalar parameters alongside).
-#[derive(Deserialize)]
-struct LogNormalSamplesScalarKwargs {
-    seed: Option<u64>,
-    size: usize,
-    mu: f64,
-    sigma: f64,
-}
-
-/// Constant-parameter multi-draw LogNormal sampler: `size` draws per row in one call.
-///
-/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
-/// stream [`lognormal_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
-/// `sample` bit for bit and growing `size` extends each row's array. Returns
-/// `Array(Float64, size)`.
-#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
-fn lognormal_samples_scalar(
-    inputs: &[Series],
-    kwargs: LogNormalSamplesScalarKwargs,
-) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        RandDistribution::sample(&dist, rng)
-    })
 }
 
 /// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call.
@@ -198,19 +170,11 @@ fn lognormal_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
-    let mu_ca = mu.f64()?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
-    let sigma_ca = sigma.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rows = mu_ca.iter().zip(sigma_ca.iter()).zip(index_ca.iter()).map(
-        |((mu_opt, sigma_opt), i_opt)| match (mu_opt, sigma_opt, i_opt) {
-            (Some(m), Some(s), Some(i)) => Ok(Some((i, build_dist(m, s)?))),
-            _ => Ok(None),
-        },
-    );
+    let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
     samples_per_row::<Float64Type, _, _, _, _>(
         name,

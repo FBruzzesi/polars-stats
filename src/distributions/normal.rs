@@ -8,7 +8,7 @@ use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
 use crate::distributions::value_keyed_scalar;
 use crate::rng::{
-    sample_scalar_plugin, samples_by_index, samples_f64_output, samples_per_row, SampleKwargs,
+    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
 };
 
@@ -151,39 +151,11 @@ sample_scalar_plugin! {
     /// seeding and the draw are unchanged, so output matches `normal_sample` for the same
     /// `(seed, index, mean, std_dev)`.
     fn normal_sample_scalar(output_type = Float64, physical = Float64Type);
+
+    samples = normal_samples_scalar as NormalSamplesScalarKwargs -> samples_f64_output;
+
     build = |kw| build_dist(kw.mean, kw.std_dev)?;
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
-}
-
-/// Static parameters for the constant-parameter multi-draw fast path.
-///
-/// Like [`NormalScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
-/// with the scalar parameters alongside).
-#[derive(Deserialize)]
-struct NormalSamplesScalarKwargs {
-    seed: Option<u64>,
-    size: usize,
-    mean: f64,
-    std_dev: f64,
-}
-
-/// Constant-parameter multi-draw Normal sampler: `size` draws per row in one call.
-///
-/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
-/// stream [`normal_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
-/// `sample` bit for bit and growing `size` extends each row's array. Returns
-/// `Array(Float64, size)`.
-#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
-fn normal_samples_scalar(
-    inputs: &[Series],
-    kwargs: NormalSamplesScalarKwargs,
-) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        RandDistribution::sample(&dist, rng)
-    })
 }
 
 /// Element-wise multi-draw Normal sampler: `size` draws per row in one call.
@@ -198,23 +170,11 @@ fn normal_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mean = inputs[0].cast(&DataType::Float64)?;
-    let mean_ca = mean.f64()?;
     let std_dev = inputs[1].cast(&DataType::Float64)?;
-    let std_dev_ca = std_dev.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rows = mean_ca
-        .iter()
-        .zip(std_dev_ca.iter())
-        .zip(index_ca.iter())
-        .map(
-            |((mean_opt, std_opt), i_opt)| match (mean_opt, std_opt, i_opt) {
-                (Some(m), Some(s), Some(i)) => Ok(Some((i, build_dist(m, s)?))),
-                _ => Ok(None),
-            },
-        );
+    let rows = ternary_param_rows(mean.f64()?, std_dev.f64()?, index.u64()?, build_dist);
 
     samples_per_row::<Float64Type, _, _, _, _>(
         name,

@@ -3,11 +3,10 @@ use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
-use serde::Deserialize;
 use statrs::distribution::Bernoulli;
 
 use crate::rng::{
-    sample_scalar_plugin, samples_bool_output, samples_by_index, samples_per_row, SampleKwargs,
+    binary_param_rows, sample_scalar_plugin, samples_bool_output, samples_per_row, SampleKwargs,
     SamplesKwargs,
 };
 
@@ -90,38 +89,11 @@ sample_scalar_plugin! {
     /// seeding and the draw are unchanged, so output matches `bernoulli_sample` for the same
     /// `(seed, index, p)`.
     fn bernoulli_sample_scalar(output_type = Boolean, physical = BooleanType);
+
+    samples = bernoulli_samples_scalar as BernoulliSamplesScalarKwargs -> samples_bool_output;
+
     build = |kw| build_dist(kw.p)?;
     draw = |dist, rng| <Bernoulli as Distribution<bool>>::sample(&dist, rng);
-}
-
-/// Static parameters for the constant-probability multi-draw fast path.
-///
-/// Like [`BernoulliScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
-/// with the scalar `p` alongside).
-#[derive(Deserialize)]
-struct BernoulliSamplesScalarKwargs {
-    seed: Option<u64>,
-    size: usize,
-    p: f64,
-}
-
-/// Constant-probability multi-draw Bernoulli sampler: `size` draws per row in one call.
-///
-/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
-/// stream [`bernoulli_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
-/// `sample` bit for bit and growing `size` extends each row's array. Returns
-/// `Array(Boolean, size)`.
-#[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
-fn bernoulli_samples_scalar(
-    inputs: &[Series],
-    kwargs: BernoulliSamplesScalarKwargs,
-) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.p)?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        <Bernoulli as Distribution<bool>>::sample(&dist, rng)
-    })
 }
 
 /// Element-wise multi-draw Bernoulli sampler: `size` draws per row in one call.
@@ -136,18 +108,10 @@ fn bernoulli_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
-    let proba_ca = proba.f64()?;
     let index = inputs[1].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rows = proba_ca
-        .iter()
-        .zip(index_ca.iter())
-        .map(|(p_opt, i_opt)| match (p_opt, i_opt) {
-            (Some(p), Some(i)) => Ok(Some((i, build_dist(p)?))),
-            _ => Ok(None),
-        });
+    let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
 
     samples_per_row::<BooleanType, _, _, _, _>(
         name,

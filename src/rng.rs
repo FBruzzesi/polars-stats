@@ -280,6 +280,56 @@ where
     Series::from_arrow(name, masked)
 }
 
+/// Build the per-row state iterator a single-parameter column `samples` plugin feeds to
+/// [`samples_per_row`]: zip the parameter column with the row index and, on a fully-non-null row,
+/// run `build` once to make the row's draw state.
+///
+/// Centralises the null contract every per-row multi-draw plugin shares (any null input nulls the
+/// whole row, matching the single-draw `try_*_elementwise` paths), so each distribution spells only
+/// its cast and its `build`.
+pub(crate) fn binary_param_rows<'a, A, S, F>(
+    param: &'a ChunkedArray<A>,
+    index: &'a UInt64Chunked,
+    build: F,
+) -> impl Iterator<Item = PolarsResult<Option<(u64, S)>>> + 'a
+where
+    A: PolarsNumericType,
+    F: Fn(A::Native) -> PolarsResult<S> + 'a,
+    S: 'a,
+{
+    param
+        .iter()
+        .zip(index.iter())
+        .map(move |(p_opt, i_opt)| match (p_opt, i_opt) {
+            (Some(p), Some(i)) => Ok(Some((i, build(p)?))),
+            _ => Ok(None),
+        })
+}
+
+/// Two-parameter counterpart of [`binary_param_rows`] (e.g. `(mean, std_dev)`, `(n, p)`): zip both
+/// parameter columns with the row index and, on a fully-non-null row, run `build` once. The two
+/// parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial) fits.
+pub(crate) fn ternary_param_rows<'a, A, B, S, F>(
+    a: &'a ChunkedArray<A>,
+    b: &'a ChunkedArray<B>,
+    index: &'a UInt64Chunked,
+    build: F,
+) -> impl Iterator<Item = PolarsResult<Option<(u64, S)>>> + 'a
+where
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    F: Fn(A::Native, B::Native) -> PolarsResult<S> + 'a,
+    S: 'a,
+{
+    a.iter()
+        .zip(b.iter())
+        .zip(index.iter())
+        .map(move |((a_opt, b_opt), i_opt)| match (a_opt, b_opt, i_opt) {
+            (Some(a), Some(b), Some(i)) => Ok(Some((i, build(a, b)?))),
+            _ => Ok(None),
+        })
+}
+
 /// Kwargs shared by every column-parameter multi-draw plugin, and the slice the shared
 /// output-dtype functions read from the scalar variants' kwargs (serde skips their extra
 /// parameter fields): the optional root seed and the draw count, which is the output `Array`
@@ -312,26 +362,33 @@ pub(crate) fn samples_bool_output(fields: &[Field], kwargs: SamplesKwargs) -> Po
     samples_output(fields, kwargs.size, DataType::Boolean)
 }
 
-/// Generates a distribution's constant-parameter sampler fast path: the kwargs struct
-/// (the scalar parameters next to the optional root `seed`) and the `#[polars_expr]`
-/// plugin that drives [`sample_by_index`].
+/// Generates a distribution's constant-parameter fast paths: both the single-draw `sample`
+/// plugin (driving [`sample_by_index`]) and the multi-draw `samples` plugin (driving
+/// [`samples_by_index`]), from one shared `build` / `draw`.
 ///
-/// The four things that vary between distributions are the macro's inputs:
+/// Emitting the two from one definition is what keeps them from drifting: the multi-draw fast
+/// path is just the single-draw one repeated `size` times on the same per-row stream, so they
+/// must share the exact `build` and `draw`. The five things that vary between distributions are
+/// the macro's inputs:
 ///
-/// * the kwargs fields (parameter names and types);
-/// * the output dtype, as the `(logical, physical)` pair `output_type = Float64,
-///   physical = Float64Type` (the two must agree; the logical name feeds
-///   `#[polars_expr]`, the physical one the output `ChunkedArray`);
-/// * `build`: validates the parameters and returns the per-call sampler state, built
-///   **once** (`?` is available). Usually the built distribution; Uniform validates and
-///   keeps the raw bounds instead;
+/// * the kwargs fields (parameter names and types), reused by both kwargs structs;
+/// * the single-draw output dtype, as the `(logical, physical)` pair `output_type = Float64,
+///   physical = Float64Type` (the two must agree; the logical name feeds `#[polars_expr]`, the
+///   physical one the output `ChunkedArray`);
+/// * the multi-draw twin, named by the `samples = <fn> as <kwargs> -> <output_fn>` clause: the
+///   plugin fn, its kwargs struct (the same parameters plus `size`), and the `Array`-typed
+///   output function (`samples_f64_output` / `_u64_` / `_bool_`);
+/// * `build`: validates the parameters and returns the per-call sampler state, built **once**
+///   (`?` is available). Usually the built distribution; Uniform validates and keeps the raw
+///   bounds instead;
 /// * `draw`: one draw from that state, given a `&mut` per-row RNG already seeded from
 ///   `(root_seed, index)`.
 ///
-/// `draw` must be the *same* draw the general per-row plugin performs, so the two paths
-/// stay byte-identical for the same `(seed, index, params)`; that contract is pinned by
-/// `test_sample_scalar_fast_path_matches_per_row`. Call sites are the distribution
-/// modules, which all have `polars::prelude::*` in scope (the expansion relies on it).
+/// `draw` must be the *same* draw the general per-row plugins perform, so the fast paths stay
+/// byte-identical to them for the same `(seed, index, params)`; pinned by
+/// `test_sample_scalar_fast_path_matches_per_row` and `test_samples_scalar_fast_path_matches_per_row`.
+/// Call sites are the distribution modules, which all have `polars::prelude::*` in scope and
+/// import the `samples_*_output` function they name (the expansion relies on both).
 macro_rules! sample_scalar_plugin {
     (
         $(#[$kwargs_meta:meta])*
@@ -339,6 +396,9 @@ macro_rules! sample_scalar_plugin {
 
         $(#[$fn_meta:meta])*
         fn $fn_name:ident(output_type = $logical:ident, physical = $physical:ty);
+
+        samples = $samples_fn:ident as $samples_kwargs:ident -> $samples_output:ident;
+
         build = |$kw:ident| $build:expr;
         draw = |$state:pat_param, $rng:ident| $draw:expr;
     ) => {
@@ -366,6 +426,37 @@ macro_rules! sample_scalar_plugin {
                     }),
                 )
             })
+        }
+
+        /// Constant-parameter kwargs for the multi-draw fast path: the single-draw parameters
+        /// plus the draw count `size` (the output `Array` width).
+        #[derive(serde::Deserialize)]
+        struct $samples_kwargs {
+            seed: Option<u64>,
+            size: usize,
+            $($param: $param_ty,)+
+        }
+
+        #[doc = concat!(
+            "Constant-parameter multi-draw fast path: the `samples` twin of [`", stringify!($fn_name),
+            "`]. `size` draws per row in one call, taken as consecutive values from the same \
+             `(seed, row_index)` per-row stream, so `samples(size=1)` matches `sample` bit for bit \
+             and the state is built once per call rather than once per draw. Returns \
+             `Array(inner, size)`."
+        )]
+        #[pyo3_polars::derive::polars_expr(output_type_func_with_kwargs=$samples_output)]
+        fn $samples_fn(inputs: &[Series], kwargs: $samples_kwargs) -> PolarsResult<Series> {
+            let $kw = &kwargs;
+            let $state = $build;
+            let name = inputs[0].name().clone();
+
+            $crate::rng::samples_by_index::<$physical, _, _>(
+                name,
+                &inputs[0],
+                kwargs.seed,
+                kwargs.size,
+                |$rng| $draw,
+            )
         }
     };
 }

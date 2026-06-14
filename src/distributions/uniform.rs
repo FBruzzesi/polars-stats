@@ -3,11 +3,10 @@ use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::{Distribution, Standard};
-use serde::Deserialize;
 use statrs::distribution::Uniform;
 
 use crate::rng::{
-    sample_scalar_plugin, samples_by_index, samples_f64_output, samples_per_row, SampleKwargs,
+    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
 };
 
@@ -118,40 +117,11 @@ sample_scalar_plugin! {
     /// travels as an input; seeding and the draw are unchanged, so output matches
     /// `uniform_sample` for the same `(seed, index, min, max)`.
     fn uniform_sample_scalar(output_type = Float64, physical = Float64Type);
+
+    samples = uniform_samples_scalar as UniformSamplesScalarKwargs -> samples_f64_output;
+
     build = |kw| { build_dist(kw.min, kw.max)?; (kw.min, kw.max) };
     draw = |(lo, hi), rng| draw_half_open(lo, hi, rng);
-}
-
-/// Static parameters for the constant-bounds multi-draw fast path.
-///
-/// Like [`UniformScalarKwargs`] plus the draw count `size` (the shared [`SamplesKwargs`] shape
-/// with the scalar bounds alongside).
-#[derive(Deserialize)]
-struct UniformSamplesScalarKwargs {
-    seed: Option<u64>,
-    size: usize,
-    min: f64,
-    max: f64,
-}
-
-/// Constant-bounds multi-draw Uniform sampler: `size` draws per row in one call.
-///
-/// Row `i`'s draws are consecutive values from the one stream seeded `(seed, i)`, the same
-/// stream [`uniform_sample_scalar`] takes its single draw from, so `samples(size=1)` matches
-/// `sample` bit for bit and growing `size` extends each row's array. Returns
-/// `Array(Float64, size)`.
-#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
-fn uniform_samples_scalar(
-    inputs: &[Series],
-    kwargs: UniformSamplesScalarKwargs,
-) -> PolarsResult<Series> {
-    build_dist(kwargs.min, kwargs.max)?;
-    let (lo, hi) = (kwargs.min, kwargs.max);
-    let name = inputs[0].name().clone();
-
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        draw_half_open(lo, hi, rng)
-    })
 }
 
 /// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one
@@ -167,27 +137,16 @@ fn uniform_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let min = inputs[0].cast(&DataType::Float64)?;
-    let min_ca = min.f64()?;
     let max = inputs[1].cast(&DataType::Float64)?;
-    let max_ca = max.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rows =
-        min_ca
-            .iter()
-            .zip(max_ca.iter())
-            .zip(index_ca.iter())
-            .map(
-                |((min_opt, max_opt), i_opt)| match (min_opt, max_opt, i_opt) {
-                    (Some(lo), Some(hi), Some(i)) => {
-                        build_dist(lo, hi)?;
-                        Ok(Some((i, (lo, hi))))
-                    },
-                    _ => Ok(None),
-                },
-            );
+    // The built distribution is validated then dropped; the row state keeps the raw bounds, as
+    // [`draw_half_open`] needs (mirrors the `uniform_sample_scalar` `build`).
+    let rows = ternary_param_rows(min.f64()?, max.f64()?, index.u64()?, |lo, hi| {
+        build_dist(lo, hi)?;
+        Ok((lo, hi))
+    });
 
     samples_per_row::<Float64Type, _, _, _, _>(
         name,
