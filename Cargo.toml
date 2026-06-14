@@ -20,6 +20,9 @@ pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-struct", "dtype
 serde = { version = "1", features = ["derive"] }
 polars = { version = "0.52.0", default-features = false, features = ["dtype-u8"] }
 polars-arrow = { version = "0.52.0", default-features = false }
+# Already in polars' tree; depended on directly for POOL and its rayon re-export, so the
+# multi-draw samplers parallelise on the same thread pool polars itself uses.
+polars-core = { version = "0.52.0", default-features = false }
 statrs = "0.18.0"
 rand = "0.8"
 # The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE) and its

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import random
 from abc import ABC, abstractmethod
-from itertools import repeat
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
@@ -149,9 +147,10 @@ def register_plugin(
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
         args: One expr or an iterable of exprs forming the plugin's positional inputs.
-        kwargs: Static keyword arguments serialised to Rust (a sampler `seed` and/or the constant parameters of a
-            `*_scalar` fast-path plugin). Accepted as a `Mapping` so the narrower `_scalar_kwargs` dicts pass without
-            an invariance fight; `register_plugin_function` wants a `dict`, hence the copy.
+        kwargs: Static keyword arguments serialised to Rust (a sampler `seed`, the multi-draw sampler's draw
+            count `size`, and/or the constant parameters of a `*_scalar` fast-path plugin). Accepted as a
+            `Mapping` so the narrower `_scalar_kwargs` dicts pass without an invariance fight;
+            `register_plugin_function` wants a `dict`, hence the copy.
     """
     return register_plugin_function(
         plugin_path=LIB,
@@ -185,8 +184,11 @@ class _UnivariateDistribution(ABC):
     The interface mirrors `scipy.stats.rv_continuous` / `rv_discrete` but returns `pl.Expr` instead of NumPy arrays.
     """
 
-    _sample_dtype: ClassVar[PolarsDataType]
-    """Element dtype produced `sample` (e.g. `Boolean`, `Float64`, `UInt64`). Set by each subclass."""
+    _samples_scalar_plugin: ClassVar[str]
+    """Name of the `<name>_samples_scalar` multi-draw plugin backing the constant-parameter `samples` fast path.
+
+    Set by each subclass; `_samples` routes through it when `_scalar_kwargs` is non-`None`.
+    """
 
     _scalar_kwargs: dict[str, float | int] | None
     """Constant parameters for the `<name>_sample_scalar` fast path, `None` when any parameter is column-valued.
@@ -195,13 +197,6 @@ class _UnivariateDistribution(ABC):
     input column to inherit a name from, the sampler outputs get the deliberate default names
     `"sample"` / `"samples"`; column-valued parameters keep polars root-name semantics instead.
     """
-
-    @abstractmethod
-    def _valid_mask(self) -> pl.Expr:
-        """Boolean expr, `True` on rows whose parameters yield a well-defined draw.
-
-        Rows that are `False` (null or out-of-domain parameters) get a null array from `samples`.
-        """
 
     @abstractmethod
     def sample(self, seed: int | None = None) -> pl.Expr:
@@ -214,13 +209,15 @@ class _UnivariateDistribution(ABC):
         """
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
-        """Draw `size` random variates per row, returning `Array(inner=_sample_dtype, shape=size)`.
+        """Draw `size` random variates per row, returning `Array(inner=<element dtype>, shape=size)`.
 
-        When `seed` is set, distinct sub-seeds are derived from it so the `size` underlying `sample`
-        calls produce independent streams. Without this, every plugin call would re-seed the same RNG
-        and yield `size` identical columns.
+        Each row's `size` draws are consecutive values from one per-row random stream keyed by `seed` and the
+        row's position, so the result is reproducible for a fixed `seed` and independent of Polars chunking and
+        thread scheduling. `samples(size=1)` matches `sample` for the same seed, and growing `size` extends each
+        row's array without changing the existing draws.
 
-        A row whose parameters are invalid (see `_valid_mask`) yields a null array, not an array of null elements.
+        A row with a null parameter yields a null array (not an array of null elements), produced natively by
+        the plugin via the output's outer validity; an invalid parameterisation raises.
 
         Naming follows `sample`: `"samples"` with all-constant parameters, the first parameter
         expression's root name otherwise.
@@ -228,11 +225,7 @@ class _UnivariateDistribution(ABC):
         if size <= 0:
             msg = f"size must be a positive integer, got {size}"
             raise ValueError(msg)
-        out = (
-            pl.when(self._valid_mask())
-            .then(self._samples(size=size, seed=seed))
-            .otherwise(pl.lit(None, dtype=pl.Array(self._sample_dtype, shape=size)))
-        )
+        out = self._samples(size=size, seed=seed)
         return out.alias("samples") if self._scalar_kwargs is not None else out
 
     def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
@@ -240,16 +233,33 @@ class _UnivariateDistribution(ABC):
 
         Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.
 
-        When ``seed`` is set, distinct sub-seeds are derived from it so the `size` underlying ``sample`` calls
-        produce independent streams. Without this, every plugin call would re-seed the same RNG and yield
-        ``size`` identical columns.
-        """
-        rng = random.Random(seed)  # noqa: S311
-        seeds: Iterable[int] | Iterable[None] = (
-            repeat(None, size) if seed is None else (rng.randrange(2**63) for _ in range(size))
-        )
+        Row ``i``'s ``size`` draws are consecutive values from one per-row stream keyed ``(seed, i)``, the same
+        stream ``sample`` takes its single draw from. So ``samples(size=1)`` matches ``sample`` bit for bit for
+        the same seed, and growing ``size`` extends each row's array without changing the existing draws (both
+        pinned by property tests). With ``seed=None``, a fresh root seed resolves once per call.
 
-        return pl.concat_arr(self.sample(seed=s) for s in seeds)
+        Both parameter shapes run as one native multi-draw plugin call returning the ``Array`` column directly:
+        all-constant parameters route to ``<name>_samples_scalar`` (parameters validated once, in kwargs), column
+        parameters to the per-row ``<name>_samples`` twin via `_samples_columns` (distribution rebuilt once per
+        row, not once per draw). Seeding is positional on both paths, so their output is bit-identical (pinned by
+        ``test_samples_scalar_fast_path_matches_per_row``).
+        """
+        if self._scalar_kwargs is not None:
+            return register_plugin(
+                self._samples_scalar_plugin,
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, "size": size, **self._scalar_kwargs},
+            )
+        return self._samples_columns(size=size, seed=seed)
+
+    @abstractmethod
+    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
+        """Register the `<name>_samples` multi-draw plugin call for column-valued parameters.
+
+        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
+        `seed` and draw count `size` as kwargs. Called by `_samples`; naming is applied by `samples`, and a
+        null-parameter row becomes a null array element inside the plugin.
+        """
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""

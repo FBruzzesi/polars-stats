@@ -5,7 +5,10 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::{Distribution, Standard};
 use statrs::distribution::Uniform;
 
-use crate::rng::{sample_scalar_plugin, SampleKwargs};
+use crate::rng::{
+    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
+    SamplesKwargs,
+};
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
@@ -114,8 +117,44 @@ sample_scalar_plugin! {
     /// travels as an input; seeding and the draw are unchanged, so output matches
     /// `uniform_sample` for the same `(seed, index, min, max)`.
     fn uniform_sample_scalar(output_type = Float64, physical = Float64Type);
+
+    samples = uniform_samples_scalar as UniformSamplesScalarKwargs -> samples_f64_output;
+
     build = |kw| { build_dist(kw.min, kw.max)?; (kw.min, kw.max) };
     draw = |(lo, hi), rng| draw_half_open(lo, hi, rng);
+}
+
+/// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one
+/// call.
+///
+/// The column-parameter counterpart of [`uniform_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`uniform_sample`] calls glued by `concat_arr`: the bounds are validated
+/// once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
+/// `(seed, i)` via the shared [`draw_half_open`], so output is bit-identical to the scalar path
+/// for the same bounds (the seeding is positional, parameters never enter it, so equal-bound
+/// rows still draw independently). Null/error contract follows [`uniform_sample`] per row; a
+/// null row yields a null array element. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let min = inputs[0].cast(&DataType::Float64)?;
+    let max = inputs[1].cast(&DataType::Float64)?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let name = inputs[0].name().clone();
+
+    // The built distribution is validated then dropped; the row state keeps the raw bounds, as
+    // [`draw_half_open`] needs (mirrors the `uniform_sample_scalar` `build`).
+    let rows = ternary_param_rows(min.f64()?, max.f64()?, index.u64()?, |lo, hi| {
+        build_dist(lo, hi)?;
+        Ok((lo, hi))
+    });
+
+    samples_per_row::<Float64Type, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        rows,
+        |&(lo, hi), rng| draw_half_open(lo, hi, rng),
+    )
 }
 
 /// Element-wise support width `max - min`, validating the parameterisation.

@@ -5,7 +5,10 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
 use statrs::distribution::Bernoulli;
 
-use crate::rng::{sample_scalar_plugin, SampleKwargs};
+use crate::rng::{
+    binary_param_rows, sample_scalar_plugin, samples_bool_output, samples_per_row, SampleKwargs,
+    SamplesKwargs,
+};
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
@@ -86,6 +89,35 @@ sample_scalar_plugin! {
     /// seeding and the draw are unchanged, so output matches `bernoulli_sample` for the same
     /// `(seed, index, p)`.
     fn bernoulli_sample_scalar(output_type = Boolean, physical = BooleanType);
+
+    samples = bernoulli_samples_scalar as BernoulliSamplesScalarKwargs -> samples_bool_output;
+
     build = |kw| build_dist(kw.p)?;
     draw = |dist, rng| <Bernoulli as Distribution<bool>>::sample(&dist, rng);
+}
+
+/// Element-wise multi-draw Bernoulli sampler: `size` draws per row in one call.
+///
+/// The column-parameter counterpart of [`bernoulli_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`bernoulli_sample`] calls glued by `concat_arr`: the distribution is
+/// built once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
+/// `(seed, i)`, so output is bit-identical to the scalar path for the same `p` (the seeding is
+/// positional, parameters never enter it, so equal-`p` rows still draw independently).
+/// Null/error contract follows [`bernoulli_sample`] per row; a null row yields a null array
+/// element. Returns `Array(Boolean, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
+fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let proba = inputs[0].cast(&DataType::Float64)?;
+    let index = inputs[1].cast(&DataType::UInt64)?;
+    let name = inputs[0].name().clone();
+
+    let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
+
+    samples_per_row::<BooleanType, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        rows,
+        <Bernoulli as Distribution<bool>>::sample,
+    )
 }

@@ -60,8 +60,18 @@ thread-invariance guarantees untouched.
 
 It is the one deliberate exception to "parameters travel in `inputs`, not `kwargs`": admissible precisely because the
 path is selected only when the parameters are known scalars, so nothing column-valued is ever forced into `kwargs`.
-`sample_iter` was rejected for the loop body: it advances a single stream in row order, which couples rows across chunks
-and breaks the invariance guarantee the per-row seeding exists to provide.
+
+### `samples` draws each row's array in one native call
+
+`sample_iter` was rejected for the multi-draw loop body: it advances a single stream in row order, which couples rows
+across chunks and breaks the invariance the per-row seeding exists to provide. `samples` instead uses one stream *per
+row*: row `i`'s `size` draws are consecutive values from the `(root_seed, i)` stream, the same stream `sample` takes its
+single draw from. That stays chunk-invariant because the stream is keyed by global row position; what remains rejected
+is any stream shared across rows. The per-row stream is what makes `samples(size=1)` equal `sample` bit for bit and
+`samples` prefix-stable in `size` (both pinned by property tests).
+
+It also runs as a single native plugin call that fills the whole `Array(inner, size)` column in one pass, replacing an
+earlier construction of `size` separate `sample` calls glued by `concat_arr`.
 
 ### Binomial sampling uses `rand_distr`, not `statrs`
 

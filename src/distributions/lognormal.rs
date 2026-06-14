@@ -7,7 +7,10 @@ use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal};
 
 use crate::distributions::value_keyed_scalar;
-use crate::rng::{sample_scalar_plugin, SampleKwargs};
+use crate::rng::{
+    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
+    SamplesKwargs,
+};
 
 /// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
@@ -148,8 +151,38 @@ sample_scalar_plugin! {
     /// seeding and the draw are unchanged, so output matches `lognormal_sample` for the same
     /// `(seed, index, mu, sigma)`.
     fn lognormal_sample_scalar(output_type = Float64, physical = Float64Type);
+
+    samples = lognormal_samples_scalar as LogNormalSamplesScalarKwargs -> samples_f64_output;
+
     build = |kw| build_dist(kw.mu, kw.sigma)?;
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
+}
+
+/// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call.
+///
+/// The column-parameter counterpart of [`lognormal_samples_scalar`], replacing `samples`' former
+/// construction of `k` [`lognormal_sample`] calls glued by `concat_arr`: the distribution is
+/// built once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
+/// `(seed, i)`, so output is bit-identical to the scalar path for the same parameters (the
+/// seeding is positional, parameters never enter it, so equal-parameter rows still draw
+/// independently). Null/error contract follows [`lognormal_sample`] per row; a null row yields
+/// a null array element. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let mu = inputs[0].cast(&DataType::Float64)?;
+    let sigma = inputs[1].cast(&DataType::Float64)?;
+    let index = inputs[2].cast(&DataType::UInt64)?;
+    let name = inputs[0].name().clone();
+
+    let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
+
+    samples_per_row::<Float64Type, _, _, _, _>(
+        name,
+        kwargs.seed,
+        kwargs.size,
+        rows,
+        RandDistribution::sample,
+    )
 }
 
 // Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins

@@ -1831,6 +1831,7 @@ version = "0.1.0"
 dependencies = [
  "polars",
  "polars-arrow",
+ "polars-core",
  "pyo3",
  "pyo3-polars",
  "rand 0.8.6",
