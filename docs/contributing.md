@@ -76,23 +76,40 @@ is canonical if it conflicts with this section.
 1. **Rust.** Add `src/distributions/<name>.rs`, register it in `src/distributions/mod.rs`, and implement a
    `#[polars_expr]` only for methods that need it:
 
-    * Always `sample` (native `statrs::Distribution::sample`). The sampler takes a per-row index as its last input
-      `Series` and derives its RNG from `src/rng.rs`: `let rngs = kwargs.row_rngs();` once outside the loop, then
-      `rngs.rng(i)` inside. Never reseed from chunk position. Use `try_*_elementwise` so a `null` in any input
-      propagates and an invalid parameter raises.
+    * Always the samplers, deriving the RNG from `src/rng.rs` (`let rngs = kwargs.row_rngs();` once outside the loop,
+      then `rngs.rng(i)` inside; never reseed from chunk position; `try_*_elementwise` so a `null` in any input
+      propagates and an invalid parameter raises). The per-row `<name>_sample` / `<name>_samples` (multi-draw, backing
+      `samples`) take the parameter columns plus a row index as the last input; the constant-parameter fast paths
+      `<name>_sample_scalar` / `<name>_samples_scalar` (parameters validated once in `kwargs`) come from the
+      `sample_scalar_plugin!` macro in `src/rng.rs`, generated from one shared `build` / `draw` so they stay
+      byte-identical to the per-row path.
     * When `statrs` is the cheapest path: `pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`, native
-      `median`.
+      `median`; each also gets a `<name>_<method>_scalar` constant-parameter twin via the shared `value_keyed_scalar`
+      driver.
     * When the closed form is trivial: leave it in Python instead.
     * Factor the validating constructor into a `build_dist(...) -> PolarsResult<Dist>` helper so an invalid parameter
       maps through a `ComputeError` consistently.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
-   `DiscreteDistribution`. Coerce each parameter with `coerce_param(value, name=...)`. **Do not validate parameter
-   *values* at construction**, coerce types only and let invalid values raise in Rust. Implement the private formula
-   hooks (`_pdf` / `_pmf`, `_cdf`, `_ppf`, and any `_log_*` / `_sf` closed form), plus the
-   `_samples_scalar_plugin` class var and `_samples_columns`. So closed-form methods raise on invalid params too,
-   route them through a small validating plugin that returns a reused quantity (e.g. `uniform_range`).
-   **Never override the public `pdf` / `cdf` / ... methods**: the base owns them. Export the class from
-   `polars_stats/__init__.py`.
+   `DiscreteDistribution`. In `__init__`, coerce each parameter with `coerce_param` / `coerce_n` (types only, **never
+   validate values** at construction, let invalid values raise in Rust) and store the fast-path bundle
+   `self._scalar_kwargs = scalar_kwargs(...)`. The base owns all routing (`sample`, `samples`, `_samples_columns`,
+   `_value_plugin`, `_moment`); a subclass declares only what is distribution-specific:
+
+    * `_plugin_prefix: ClassVar[str]` (e.g. `"normal"`), from which the base derives every sampler plugin name
+      (`<prefix>_sample` / `_sample_scalar` / `_samples` / `_samples_scalar`), routing scalar vs column parameters off
+      `_scalar_kwargs`.
+    * `_param_exprs`, the coerced parameters as a tuple in plugin-input order; the *first* sets the output's root name.
+    * The private formula hooks (`_pdf` / `_pmf`, `_cdf`, `_ppf`, and any `_log_*` / `_sf` closed form). For a
+      statrs-backed method, return `self._value_plugin("<name>_<method>", value)`: the base routes constant parameters
+      to the `_scalar` fast path and column parameters to the per-row plugin.
+    * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
+      `uniform_range` returns `max - min`). For a statrs-backed distribution whose moment formulas may omit a parameter,
+      expose it as `_checked_params` and gate every closed-form moment through `self._moment(<formula>)`; for a
+      closed-form distribution whose validator is already part of every formula (`Uniform`, `Bernoulli`), weave it in
+      directly and do not call `_moment`.
+
+    **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
+    `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.
 3. **Tests.** Two homes: `tests/distributions/<name>/`, one file per method (including a `validation_test.py` asserting
    an invalid parameter raises `ComputeError` for both scalar and column inputs); and `tests/scipy_parity/<name>_test.py`
    against `scipy.stats.<name>` to within `1e-10` (closed-form) or `1e-6` (binary-search `ppf`), compared with

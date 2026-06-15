@@ -3,10 +3,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     ContinuousDistribution,
     coerce_param,
     register_plugin,
@@ -15,6 +12,8 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from polars_stats._typing import IntoExprColumn
 
 
@@ -41,7 +40,7 @@ class Normal(ContinuousDistribution):
 
     _mean: pl.Expr
     _std_dev: pl.Expr
-    _samples_scalar_plugin: ClassVar[str] = "normal_samples_scalar"
+    _plugin_prefix: ClassVar[str] = "normal"
 
     def __init__(
         self,
@@ -53,51 +52,18 @@ class Normal(ContinuousDistribution):
         # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(mean=scalar_float(mean), std_dev=scalar_float(std_dev))
 
-    def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
-        """Register a value-keyed Rust plugin call ``f(value, mean, std_dev)``.
-
-        Validation of ``std_dev`` happens inside the plugin, so every value-keyed method reports an
-        invalid scale consistently; null inputs propagate per row.
-
-        Constant parameters route to the ``<function_name>_scalar`` twin (validated once, passed as
-        kwargs, only ``value`` crosses FFI), the same fast path as ``sample``; its output is
-        bit-identical to the per-row plugin.
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)
-        return register_plugin(function_name, (value, self._mean, self._std_dev))
+    @property
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        return (self._mean, self._std_dev)
 
     @property
-    def _checked_std_dev(self) -> pl.Expr:
+    def _checked_params(self) -> pl.Expr:
         """``std_dev`` validated in Rust against the full ``(mean, std_dev)`` parameterisation."""
         # Mirrors ``Uniform.range`` / ``Bernoulli._checked_p``: the closed-form moments derive from this
         # single FFI round-trip, so they report an invalid parameterisation (``std_dev <= 0``, or a
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
-        return register_plugin("normal_std_dev", (self._mean, self._std_dev))
-
-    def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one Normal sample per row, returning a ``Float64`` column.
-
-        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
-        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
-        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
-
-        Rows with an invalid ``std_dev`` raise; rows with a null parameter yield null.
-
-        The output column is named ``"sample"`` when both parameters are constants; column-valued
-        parameters keep polars root-name semantics (the name follows the first parameter expression).
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(
-                "normal_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
-            ).alias("sample")
-        return register_plugin("normal_sample", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed})
-
-    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        return register_plugin(
-            "normal_samples", (self._mean, self._std_dev, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
-        )
+        return register_plugin("normal_std_dev", self._param_exprs)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""
@@ -126,17 +92,6 @@ class Normal(ContinuousDistribution):
         (``ppf(0) = -inf``, ``ppf(1) = +inf``), matching scipy.
         """
         return self._value_plugin("normal_ppf", quantile)
-
-    def _moment(self, value: pl.Expr) -> pl.Expr:
-        """Gate a closed-form moment on a non-null, valid ``(mean, std_dev)`` parameterisation.
-
-        Evaluating ``_checked_std_dev`` validates ``std_dev`` in Rust (raising on ``std_dev <= 0`` or a
-        non-finite parameter) and is null when ``std_dev`` is null; the ``mean`` term propagates a null
-        ``mean``. So every moment nulls on either null input and raises identically on an invalid scale,
-        regardless of which parameter ``value`` itself references. Validation lives in the gate, so
-        ``value`` can read the raw ``self._std_dev`` / ``self._mean`` without re-validating.
-        """
-        return pl.when(self._checked_std_dev.is_not_null() & self._mean.is_not_null()).then(value)
 
     def mean(self) -> pl.Expr:
         """Expected value, the ``mean`` location parameter."""

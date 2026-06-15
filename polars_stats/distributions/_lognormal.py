@@ -3,10 +3,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     ContinuousDistribution,
     coerce_param,
     register_plugin,
@@ -15,6 +12,8 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from polars_stats._typing import IntoExprColumn
 
 
@@ -45,7 +44,7 @@ class LogNormal(ContinuousDistribution):
 
     _mu: pl.Expr
     _sigma: pl.Expr
-    _samples_scalar_plugin: ClassVar[str] = "lognormal_samples_scalar"
+    _plugin_prefix: ClassVar[str] = "lognormal"
 
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")
@@ -53,51 +52,18 @@ class LogNormal(ContinuousDistribution):
         # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(mu=scalar_float(mu), sigma=scalar_float(sigma))
 
-    def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
-        """Register a value-keyed Rust plugin call ``f(value, mu, sigma)``.
-
-        Validation of ``sigma`` happens inside the plugin, so every value-keyed method reports an
-        invalid parameterisation consistently; null inputs propagate per row.
-
-        Constant parameters route to the ``<function_name>_scalar`` twin (validated once, passed as
-        kwargs, only ``value`` crosses FFI), the same fast path as ``sample``; its output is
-        bit-identical to the per-row plugin.
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)
-        return register_plugin(function_name, (value, self._mu, self._sigma))
+    @property
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        return (self._mu, self._sigma)
 
     @property
-    def _checked_sigma(self) -> pl.Expr:
+    def _checked_params(self) -> pl.Expr:
         """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation."""
-        # Mirrors ``Normal._checked_std_dev`` / ``Uniform.range``: the closed-form moments derive from
+        # Mirrors ``Normal._checked_params`` / ``Uniform.range``: the closed-form moments derive from
         # this single FFI round-trip, so they report an invalid parameterisation (``sigma <= 0``, or a
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
-        return register_plugin("lognormal_sigma", (self._mu, self._sigma))
-
-    def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one LogNormal sample per row, returning a ``Float64`` column.
-
-        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``, partition
-        length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from ``seed``
-        and the row's position, so the result is independent of Polars chunking and thread scheduling.
-
-        Rows with an invalid ``sigma`` raise; rows with a null parameter yield null.
-
-        The output column is named ``"sample"`` when both parameters are constants; column-valued
-        parameters keep polars root-name semantics (the name follows the first parameter expression).
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(
-                "lognormal_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
-            ).alias("sample")
-        return register_plugin("lognormal_sample", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed})
-
-    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        return register_plugin(
-            "lognormal_samples", (self._mu, self._sigma, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
-        )
+        return register_plugin("lognormal_sigma", self._param_exprs)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf`` (``0`` for ``value <= 0``)."""
@@ -126,17 +92,6 @@ class LogNormal(ContinuousDistribution):
         (``ppf(0) = 0``, ``ppf(1) = +inf``), matching scipy.
         """
         return self._value_plugin("lognormal_ppf", quantile)
-
-    def _moment(self, value: pl.Expr) -> pl.Expr:
-        """Gate a closed-form moment on a non-null, valid ``(mu, sigma)`` parameterisation.
-
-        Evaluating ``_checked_sigma`` validates ``sigma`` in Rust (raising on ``sigma <= 0`` or a non-finite parameter)
-        and is null when ``sigma`` is null; the ``mu`` term propagates a null ``mu``. So every moment nulls on either
-        null input and raises identically on an invalid parameterisation, matching ``Normal._moment``.
-        Validation lives in the gate, so ``value`` can read the raw ``self._mu`` / ``self._sigma`` without
-        re-validating.
-        """
-        return pl.when(self._checked_sigma.is_not_null() & self._mu.is_not_null()).then(value)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``exp(mu + sigma ** 2 / 2)``."""

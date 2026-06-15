@@ -184,29 +184,57 @@ class _UnivariateDistribution(ABC):
     The interface mirrors `scipy.stats.rv_continuous` / `rv_discrete` but returns `pl.Expr` instead of NumPy arrays.
     """
 
-    _samples_scalar_plugin: ClassVar[str]
-    """Name of the `<name>_samples_scalar` multi-draw plugin backing the constant-parameter `samples` fast path.
+    _plugin_prefix: ClassVar[str]
+    """Shared prefix of this distribution's Rust plugin names (typically snake-case distribution name, e.g. `"normal"`).
 
-    Set by each subclass; `_samples` routes through it when `_scalar_kwargs` is non-`None`.
+    Every plugin a distribution registers is expected to follow the pattern: `f"{_plugin_prefix}_{suffix}"`
     """
 
     _scalar_kwargs: dict[str, float | int] | None
-    """Constant parameters for the `<name>_sample_scalar` fast path, `None` when any parameter is column-valued.
+    """Constant parameters for the `<prefix>_*_scalar` fast paths, `None` when any parameter is column-valued.
 
-    Set by each subclass at construction via `scalar_kwargs`. Doubles as the naming switch: with no
-    input column to inherit a name from, the sampler outputs get the deliberate default names
-    `"sample"` / `"samples"`; column-valued parameters keep polars root-name semantics instead.
+    Set by each subclass at construction via `scalar_kwargs`. Doubles as the routing switch shared by
+    `sample`, `_samples`, and `_value_plugin` (all-scalar routes to the validated-once fast path), and
+    as the naming switch: with no input column to inherit a name from, the sampler outputs take the
+    deliberate default names `"sample"` / `"samples"`; column-valued parameters keep polars root-name
+    semantics instead.
     """
 
+    @property
     @abstractmethod
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        """The distribution's parameters as coerced, row-aligned exprs, in plugin-input order.
+
+        The per-row plugins take these as positional inputs, ahead of `ROW_INDEX_EXPR` for the samplers
+        and after `value` for the value-keyed methods.
+        The order is part of the contract: output naming follows the first expression (polars root-name semantics,
+        pinned by `output_name_test.py`), and the Rust side reads them positionally.
+        Constant parameters additionally ride in `_scalar_kwargs` for the fast path.
+        """
+
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one random variate per row.
 
-        Returns a polars Expr evaluating to a column with one variate per input row. With
-        all-constant parameters the column is named `"sample"`; with column-valued parameters the
-        name follows the first parameter expression, as for any polars expression (so multi-column
-        parameters and `.name.*` modifiers keep working).
+        Returns a column with one variate per input row, in the distribution's element dtype
+        (`Float64`, `UInt64` or `Boolean`). Output length follows the surrounding context (frame length
+        under `select` / `with_columns`, partition length under `over` / `group_by`), and each row's draw
+        is derived from a per-row sub-seed mixed from `seed` and the row's position, so the result is
+        independent of Polars chunking and thread scheduling.
+
+        A row with an invalid parameter raises; a row with a null parameter yields null. The output is
+        named `"sample"` when every parameter is constant (the fast path); with any column-valued
+        parameter the name follows the first parameter expression (polars root-name semantics, so
+        `.name.*` modifiers keep working).
         """
+        if self._scalar_kwargs is not None:
+            return register_plugin(
+                f"{self._plugin_prefix}_sample_scalar",
+                (ROW_INDEX_EXPR,),
+                kwargs={"seed": seed, **self._scalar_kwargs},
+            ).alias("sample")
+        return register_plugin(
+            f"{self._plugin_prefix}_sample", (*self._param_exprs, ROW_INDEX_EXPR), kwargs={"seed": seed}
+        )
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
         """Draw `size` random variates per row, returning `Array(inner=<element dtype>, shape=size)`.
@@ -246,20 +274,39 @@ class _UnivariateDistribution(ABC):
         """
         if self._scalar_kwargs is not None:
             return register_plugin(
-                self._samples_scalar_plugin,
+                f"{self._plugin_prefix}_samples_scalar",
                 (ROW_INDEX_EXPR,),
                 kwargs={"seed": seed, "size": size, **self._scalar_kwargs},
             )
         return self._samples_columns(size=size, seed=seed)
 
-    @abstractmethod
     def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        """Register the `<name>_samples` multi-draw plugin call for column-valued parameters.
+        """Register the `<prefix>_samples` multi-draw plugin call for column-valued parameters.
 
         Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
         `seed` and draw count `size` as kwargs. Called by `_samples`; naming is applied by `samples`, and a
         null-parameter row becomes a null array element inside the plugin.
         """
+        return register_plugin(
+            f"{self._plugin_prefix}_samples",
+            (*self._param_exprs, ROW_INDEX_EXPR),
+            kwargs={"seed": seed, "size": size},
+        )
+
+    def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
+        """Register a value-keyed Rust plugin call `f(value, *params)` for a statrs-backed method.
+
+        Parameters are validated inside the plugin, so every value-keyed method reports an invalid
+        parameterisation consistently and propagates input nulls per row. With all-constant parameters the
+        call routes to the `f"{function_name}_scalar"` twin (validated once, passed as kwargs, only `value`
+        crosses FFI), bit-identical to the per-row path. Closed-form distributions (`Uniform`, `Bernoulli`)
+        never call this; their hooks compute the formula directly in Polars.
+        """
+        return (
+            register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)
+            if self._scalar_kwargs is not None
+            else register_plugin(function_name, (value, *self._param_exprs))
+        )
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""
@@ -316,6 +363,33 @@ class _UnivariateDistribution(ABC):
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
         return self._ppf(1 - quantile)
+
+    @property
+    def _checked_params(self) -> pl.Expr:
+        """Single validating round-trip backing the closed-form moments (statrs-backed distributions only).
+
+        A Rust plugin expr returning a parameter, or a derived quantity, that raises on an invalid
+        parameterisation and is null when any parameter is null. `_moment` gates on it. A distribution whose
+        moment formulas may omit a parameter (`Normal`, `LogNormal`, `Binomial`) overrides this and routes
+        its moments through `_moment`; one whose validating expr is already part of every moment formula
+        (`Uniform.range`, `Bernoulli._checked_p`) never calls `_moment`, so this default is never reached.
+        """
+        raise NotImplementedError
+
+    def _moment(self, value: pl.Expr) -> pl.Expr:
+        """Gate a closed-form moment on a non-null, valid parameterisation.
+
+        Evaluating `_checked_params` validates the parameters in Rust (raising on an invalid
+        parameterisation) and is null when any parameter is null, so the moment nulls on any null input and
+        raises consistently with the value-keyed methods regardless of which parameters `value` itself
+        references. Validation lives in the gate, so `value` reads the raw parameter exprs without
+        re-validating.
+
+        Gating on `_checked_params` alone suffices: every validator returns non-null only when *all*
+        parameters are non-null (its `(Some, ..)` match arm), so an explicit per-parameter null check would
+        be redundant (pinned by the `*_propagates_null_params` moment tests).
+        """
+        return pl.when(self._checked_params.is_not_null()).then(value)
 
     @abstractmethod
     def mean(self) -> pl.Expr:
