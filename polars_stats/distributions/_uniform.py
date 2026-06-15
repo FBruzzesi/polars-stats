@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, ClassVar
 import polars as pl
 
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     ContinuousDistribution,
     coerce_param,
     register_plugin,
@@ -38,7 +37,7 @@ class Uniform(ContinuousDistribution):
 
     _min: pl.Expr
     _max: pl.Expr
-    _samples_scalar_plugin: ClassVar[str] = "uniform_samples_scalar"
+    _plugin_prefix: ClassVar[str] = "uniform"
 
     def __init__(self, min: float | IntoExprColumn, max: float | IntoExprColumn) -> None:  # noqa: A002
         self._min = coerce_param(min, name="min")
@@ -46,6 +45,10 @@ class Uniform(ContinuousDistribution):
         # Constant bounds enable the constant-bounds sampler fast path; `None` falls back to the
         # per-row plugin.
         self._scalar_kwargs = scalar_kwargs(min=scalar_float(min), max=scalar_float(max))
+
+    @property
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        return (self._min, self._max)
 
     @property
     def range(self) -> pl.Expr:
@@ -56,31 +59,7 @@ class Uniform(ContinuousDistribution):
         infinite width. Every closed-form method derives from this, so they all validate
         consistently. Null bounds propagate.
         """
-        return register_plugin("uniform_range", (self._min, self._max))
-
-    def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one uniform sample per row, returning a ``Float64`` column.
-
-        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
-        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
-        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
-
-        The output column is named ``"sample"`` when both bounds are constants; column-valued
-        bounds keep polars root-name semantics (the name follows the first parameter expression).
-        """
-        if self._scalar_kwargs is not None:
-            # Constant bounds: pass them as kwargs and validate once in Rust, instead of expanding
-            # each into a full-length `pl.repeat` column re-validated per row. Only the row index
-            # crosses FFI, so seeding (and thus output) is identical to the per-row path.
-            return register_plugin(
-                "uniform_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
-            ).alias("sample")
-        return register_plugin("uniform_sample", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed})
-
-    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        return register_plugin(
-            "uniform_samples", (self._min, self._max, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
-        )
+        return register_plugin("uniform_range", self._param_exprs)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, ClassVar
 import polars as pl
 
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     DiscreteDistribution,
     coerce_param,
     register_plugin,
@@ -26,12 +25,16 @@ class Bernoulli(DiscreteDistribution):
     """
 
     _p: pl.Expr
-    _samples_scalar_plugin: ClassVar[str] = "bernoulli_samples_scalar"
+    _plugin_prefix: ClassVar[str] = "bernoulli"
 
     def __init__(self, p: float | IntoExprColumn) -> None:
         self._p = coerce_param(p, name="p")
         # A constant `p` enables the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(p=scalar_float(p))
+
+    @property
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        return (self._p,)
 
     @property
     def _checked_p(self) -> pl.Expr:
@@ -40,28 +43,7 @@ class Bernoulli(DiscreteDistribution):
         Computed in Rust so the closed-form methods report an invalid ``p`` consistently with
         ``sample`` rather than silently computing a negative probability. Null propagates.
         """
-        return register_plugin("bernoulli_proba", self._p)
-
-    def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one Bernoulli sample per row, returning a ``Boolean`` column.
-
-        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
-        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
-        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
-
-        Rows with an invalid parameter raise; rows with a null parameter yield null.
-
-        The output column is named ``"sample"`` when ``p`` is a constant; a column-valued ``p``
-        keeps polars root-name semantics (the name follows the parameter expression).
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(
-                "bernoulli_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
-            ).alias("sample")
-        return register_plugin("bernoulli_sample", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
-
-    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        return register_plugin("bernoulli_samples", (self._p, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size})
+        return register_plugin("bernoulli_proba", self._param_exprs)
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""

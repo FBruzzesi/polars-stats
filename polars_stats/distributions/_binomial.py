@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     DiscreteDistribution,
     coerce_n,
     coerce_param,
@@ -16,6 +13,8 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from polars_stats._typing import IntoExprColumn
 
 
@@ -38,7 +37,7 @@ class Binomial(DiscreteDistribution):
 
     _n: pl.Expr
     _p: pl.Expr
-    _samples_scalar_plugin: ClassVar[str] = "binomial_samples_scalar"
+    _plugin_prefix: ClassVar[str] = "binomial"
 
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
         self._n = coerce_n(n, name="n")
@@ -46,64 +45,21 @@ class Binomial(DiscreteDistribution):
         # Constant `(n, p)` enables the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(n=scalar_int(n), p=scalar_float(p))
 
-    def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
-        """Register a value-keyed Rust plugin call ``f(value, n, p)``.
-
-        Validation of ``(n, p)`` happens inside the plugin, so every value-keyed method reports an
-        invalid parameterisation consistently; null inputs propagate per row.
-
-        Constant parameters route to the ``<function_name>_scalar`` twin (validated once, passed as
-        kwargs, only ``value`` crosses FFI), the same fast path as ``sample``; its output is
-        bit-identical to the per-row plugin.
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)
-        return register_plugin(function_name, (value, self._n, self._p))
+    @property
+    def _param_exprs(self) -> tuple[pl.Expr, ...]:
+        return (self._n, self._p)
 
     @property
     def _checked_params(self) -> pl.Expr:
         """``p`` validated in Rust against the full ``(n, p)`` parameterisation (raises otherwise).
 
-        Mirrors ``Normal._checked_std_dev`` / ``Bernoulli._checked_p``: the closed-form moments
+        Mirrors ``Normal._checked_params`` / ``Bernoulli._checked_p``: the closed-form moments
         (``mean``, ``variance``) derive from this single FFI round-trip, so they report an invalid
         parameterisation (``n < 0`` or ``p`` outside ``[0, 1]``) as a ``ComputeError`` consistently
         with the value-keyed methods, rather than silently computing a moment from invalid inputs.
         Null in either parameter propagates to null.
         """
-        return register_plugin("binomial_params", (self._n, self._p))
-
-    def _moment(self, value: pl.Expr) -> pl.Expr:
-        """Gate a closed-form moment on a non-null, valid ``(n, p)`` parameterisation.
-
-        Evaluating ``_checked_params`` validates ``(n, p)`` in Rust (raising on ``n < 0`` or ``p``
-        outside ``[0, 1]``) and is null when either parameter is null. So every moment nulls on a null
-        input and raises identically on an invalid parameterisation, while ``value`` reads the raw
-        ``self._n`` / ``self._p`` without re-validating.
-        """
-        return pl.when(self._checked_params.is_not_null()).then(value)
-
-    def sample(self, seed: int | None = None) -> pl.Expr:
-        """Draw one Binomial sample per row, returning a ``UInt64`` column.
-
-        Output length follows the surrounding context (frame length under ``select`` / ``with_columns``,
-        partition length under ``over`` / ``group_by``). Each row's draw is derived from a per-row sub-seed mixed from
-        ``seed`` and the row's position, so the result is independent of Polars chunking and thread scheduling.
-
-        Rows with an invalid parameter raise; rows with a null parameter yield null.
-
-        The output column is named ``"sample"`` when both parameters are constants; column-valued
-        parameters keep polars root-name semantics (the name follows the first parameter expression).
-        """
-        if self._scalar_kwargs is not None:
-            return register_plugin(
-                "binomial_sample_scalar", (ROW_INDEX_EXPR,), kwargs={"seed": seed, **self._scalar_kwargs}
-            ).alias("sample")
-        return register_plugin("binomial_sample", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed})
-
-    def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
-        return register_plugin(
-            "binomial_samples", (self._n, self._p, ROW_INDEX_EXPR), kwargs={"seed": seed, "size": size}
-        )
+        return register_plugin("binomial_params", self._param_exprs)
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Mass via native ``Discrete::pmf``; zero off the integer support ``{0, ..., n}``."""
