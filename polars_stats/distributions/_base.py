@@ -308,6 +308,45 @@ class _UnivariateDistribution(ABC):
             else register_plugin(function_name, (value, *self._param_exprs))
         )
 
+    def _scalar_lit_args(self) -> list[pl.Expr]:
+        """The constant parameters as length-1 `pl.lit` exprs, in `_param_exprs` order.
+
+        Only meaningful when every parameter is constant (`_scalar_kwargs is not None`); the callers
+        guard on that. Passing these length-1 literals to a validating or computing plugin makes its
+        elementwise closure run **once**, not once per frame row, which is the whole point of the
+        constant-parameter moment fast path (see `_checked`).
+
+        The order follows `_scalar_kwargs` insertion order, and every subclass builds `_scalar_kwargs`
+        in `_param_exprs` order (the same order the per-row plugin reads its inputs positionally), so
+        the once-call and the per-row call validate the identical parameterisation. A drift there
+        surfaces in the moment / value-keyed property tests.
+        """
+        assert self._scalar_kwargs is not None  # noqa: S101  # guarded by every caller
+        return [pl.lit(value) for value in self._scalar_kwargs.values()]
+
+    def _checked(self, plugin_name: str, validated: pl.Expr) -> pl.Expr:
+        """A parameter-validating plugin call: per-row for column params, validated **once** for scalars.
+
+        The validating plugins (`normal_std_dev`, `uniform_range`, `bernoulli_proba`, ...) are
+        elementwise and return the quantity they are named for (the validated `std_dev`, the width
+        `max - min`, the validated `p`, ...). Called on the length-n `pl.repeat` parameter columns
+        they run `build_dist` once per row purely to re-check constants. This factors the two paths,
+        byte-identical for the same parameters:
+
+        * **Column parameters**: the per-row plugin over `_param_exprs` (unchanged behaviour); it
+          validates each row and propagates per-row nulls.
+        * **All-scalar parameters**: the same plugin is called once on length-1 `pl.lit` inputs, so it
+          validates a single time and still raises the same `ComputeError` on an invalid constant.
+          `validated` (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
+          `self._std_dev` or `self._max - self._min`) is returned behind the length-1 validity gate;
+          `pl.when` broadcasts the length-1 condition, so the result stays length-n and equals the
+          per-row output element for element. Only the per-row revalidation is removed.
+        """
+        if self._scalar_kwargs is None:
+            return register_plugin(plugin_name, self._param_exprs)
+        validated_once = register_plugin(plugin_name, self._scalar_lit_args())
+        return pl.when(validated_once.is_not_null()).then(validated)
+
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""
         v = as_expr(value)

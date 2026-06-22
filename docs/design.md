@@ -61,6 +61,26 @@ thread-invariance guarantees untouched.
 It is the one deliberate exception to "parameters travel in `inputs`, not `kwargs`": admissible precisely because the
 path is selected only when the parameters are known scalars, so nothing column-valued is ever forced into `kwargs`.
 
+### Constant parameters validate once, not per row
+
+The closed-form moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods of `Uniform` / `Bernoulli`
+do not build a distribution; they compute a Polars expression. But they still route their *validation* through a small
+Rust plugin (`normal_std_dev`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`) so an invalid
+parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a
+nonsense moment (see "Invalid parameters raise"). On the general path that plugin runs over the full-length `pl.repeat`
+parameter columns, validating the *same constant* on every row.
+
+For all-scalar parameters the same plugin is instead called on length-1 `pl.lit` inputs, so its elementwise closure runs
+once. The validated quantity (or, for `Binomial.entropy`, the support-sum value) is returned behind a `pl.when(...)`
+validity gate; the length-1 condition broadcasts, so the moment stays a length-n column byte-identical to the per-row
+path — and a length-1 collapse is deliberately *not* used, because it would break that path equality (column parameters
+still yield length-n). This needs no new plugin and no kwargs: it reuses the existing validators, called on fewer rows.
+
+It is the same "constant parameters take a fast path" idea as the sampler, applied to validation: nothing leaves Rust,
+and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). So it is not a
+carve-out of "validation lives in Rust per row" so much as the observation that, for a constant, "per row" and "once"
+are the same check — and once is enough.
+
 ### `samples` draws each row's array in one native call
 
 `sample_iter` was rejected for the multi-draw loop body: it advances a single stream in row order, which couples rows

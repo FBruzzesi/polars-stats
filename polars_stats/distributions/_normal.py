@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, ClassVar
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_kwargs,
 )
@@ -60,10 +59,11 @@ class Normal(ContinuousDistribution):
     def _checked_params(self) -> pl.Expr:
         """``std_dev`` validated in Rust against the full ``(mean, std_dev)`` parameterisation."""
         # Mirrors ``Uniform.range`` / ``Bernoulli._checked_p``: the closed-form moments derive from this
-        # single FFI round-trip, so they report an invalid parameterisation (``std_dev <= 0``, or a
-        # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
-        # either parameter propagates to null, so a moment built on this nulls when either input is null.
-        return register_plugin("normal_std_dev", self._param_exprs)
+        # FFI round-trip, so they report an invalid parameterisation (``std_dev <= 0``, or a non-finite parameter) as a
+        # ``ComputeError`` consistently with the value-keyed methods. Null in either parameter propagates to null, so a
+        # moment built on this nulls when either input is null.
+        # `_checked` validates once for scalar parameters (length-1 inputs) and per-row for columns.
+        return self._checked("normal_std_dev", self._std_dev)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""
