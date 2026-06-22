@@ -7,7 +7,6 @@ import polars as pl
 from polars_stats.distributions._base import (
     DiscreteDistribution,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_kwargs,
 )
@@ -38,12 +37,15 @@ class Bernoulli(DiscreteDistribution):
 
     @property
     def _checked_p(self) -> pl.Expr:
-        """``p`` validated in Rust to lie in ``[0, 1]`` (raises otherwise).
+        """``p`` validated in Rust to lie in ``[0, 1]`` (raises otherwise), as a length-n column.
 
-        Computed in Rust so the closed-form methods report an invalid ``p`` consistently with
-        ``sample`` rather than silently computing a negative probability. Null propagates.
+        Validated in Rust so the closed-form methods (moments and pmf/cdf/ppf) report an invalid ``p`` consistently
+        with ``sample`` rather than silently computing a negative probability. Null propagates.
+
+        `_checked` validates once for a scalar ``p`` (length-1 input) and per-row for a column,
+        returning the raw ``p`` behind the validity gate either way (length-n on both paths).
         """
-        return register_plugin("bernoulli_proba", self._param_exprs)
+        return self._checked("bernoulli_proba", self._p)
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""

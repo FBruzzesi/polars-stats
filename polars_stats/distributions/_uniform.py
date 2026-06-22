@@ -7,7 +7,6 @@ import polars as pl
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_kwargs,
 )
@@ -54,12 +53,14 @@ class Uniform(ContinuousDistribution):
     def range(self) -> pl.Expr:
         """Width of the support, ``max - min``.
 
-        Computed in Rust so an invalid parameterisation (``max <= min``, a non-finite bound, or a
+        Validated in Rust so an invalid parameterisation (``max <= min``, a non-finite bound, or a
         width overflowing ``float64``) raises rather than silently yielding a non-positive or
-        infinite width. Every closed-form method derives from this, so they all validate
-        consistently. Null bounds propagate.
+        infinite width. Every closed-form method (moments and pdf/cdf/ppf) derives from this, so they
+        all validate consistently. Null bounds propagate. `_checked` validates once for scalar bounds
+        (length-1 inputs) and per-row for columns; on the scalar path the width is recomputed in
+        Polars as ``max - min`` (bit-identical to the Rust ``hi - lo``) behind the validity gate.
         """
-        return register_plugin("uniform_range", self._param_exprs)
+        return self._checked("uniform_range", self._max - self._min)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""

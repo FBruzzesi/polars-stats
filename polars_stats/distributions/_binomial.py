@@ -53,13 +53,15 @@ class Binomial(DiscreteDistribution):
     def _checked_params(self) -> pl.Expr:
         """``p`` validated in Rust against the full ``(n, p)`` parameterisation (raises otherwise).
 
-        Mirrors ``Normal._checked_params`` / ``Bernoulli._checked_p``: the closed-form moments
-        (``mean``, ``variance``) derive from this single FFI round-trip, so they report an invalid
-        parameterisation (``n < 0`` or ``p`` outside ``[0, 1]``) as a ``ComputeError`` consistently
-        with the value-keyed methods, rather than silently computing a moment from invalid inputs.
-        Null in either parameter propagates to null.
+        Mirrors ``Normal._checked_params`` / ``Bernoulli._checked_p``: the closed-form moments (``mean``, ``variance``)
+        derive from this FFI round-trip, so they report an invalid parameterisation (``n < 0`` or
+        ``p`` outside ``[0, 1]``) as a ``ComputeError`` consistently with the value-keyed methods, rather than silently
+        computing a moment from invalid inputs.
+
+        Null in either parameter propagates to null. `_checked` validates once for scalar parameters
+        (length-1 inputs) and per-row for columns.
         """
-        return register_plugin("binomial_params", self._param_exprs)
+        return self._checked("binomial_params", self._p)
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Mass via native ``Discrete::pmf``; zero off the integer support ``{0, ..., n}``."""
@@ -104,4 +106,10 @@ class Binomial(DiscreteDistribution):
 
         ``0`` at the degenerate endpoints ``p in {0, 1}``.
         """
-        return register_plugin("binomial_entropy", (self._n, self._p))
+        # Unlike ``mean`` / ``variance`` there is no closed form, so the sum is evaluated by ``binomial_entropy``
+        # in Rust. For column parameters that runs once per row; for scalar parameters it is computed **once** on
+        # length-1 inputs and broadcast to length-n behind the ``_moment`` validity gate, so a constant's support sum is
+        # not re-evaluated on every row.
+        if self._scalar_kwargs is None:
+            return register_plugin("binomial_entropy", (self._n, self._p))
+        return self._moment(register_plugin("binomial_entropy", self._scalar_lit_args()))

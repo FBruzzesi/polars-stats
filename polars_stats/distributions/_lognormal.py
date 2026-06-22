@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, ClassVar
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_kwargs,
 )
@@ -60,10 +59,11 @@ class LogNormal(ContinuousDistribution):
     def _checked_params(self) -> pl.Expr:
         """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation."""
         # Mirrors ``Normal._checked_params`` / ``Uniform.range``: the closed-form moments derive from
-        # this single FFI round-trip, so they report an invalid parameterisation (``sigma <= 0``, or a
+        # this FFI round-trip, so they report an invalid parameterisation (``sigma <= 0``, or a
         # non-finite parameter) as a ``ComputeError`` consistently with the value-keyed methods. Null in
         # either parameter propagates to null, so a moment built on this nulls when either input is null.
-        return register_plugin("lognormal_sigma", self._param_exprs)
+        # `_checked` validates once for scalar parameters (length-1 inputs) and per-row for columns.
+        return self._checked("lognormal_sigma", self._sigma)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf`` (``0`` for ``value <= 0``)."""

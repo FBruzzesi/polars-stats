@@ -60,12 +60,32 @@ if TYPE_CHECKING:
     Side = Literal["polars_stats", "scipy"]
 
 
-Method = Literal["sample", "samples", "density", "cdf", "sf", "ppf"]
-"""A benchmarkable method. `density` resolves to `pdf` (continuous) or `pmf` (discrete) per distribution."""
+Method = Literal["sample", "samples", "density", "cdf", "sf", "ppf", "mean", "variance", "std", "entropy"]
+"""A benchmarkable method. `density` resolves to `pdf` (continuous) or `pmf` (discrete) per distribution.
 
-ALL_METHODS: tuple[Method, ...] = ("sample", "samples", "density", "cdf", "sf", "ppf")
+`mean` / `variance` / `std` / `entropy` are the parameter-only moments: they take no value column, so
+polars_stats returns a length-`rows` column of the (constant, for scalar params) moment while scipy
+returns a single scalar. The comparison is therefore inherently O(n) vs O(1); it exists to track the
+polars_stats cost (time and peak memory) across a change, not to "beat" scipy on a scalar reduction.
+"""
+
+ALL_METHODS: tuple[Method, ...] = (
+    "sample",
+    "samples",
+    "density",
+    "cdf",
+    "sf",
+    "ppf",
+    "mean",
+    "variance",
+    "std",
+    "entropy",
+)
 
 _VALUE_METHODS: frozenset[Method] = frozenset({"density", "cdf", "sf", "ppf"})
+
+_MOMENT_METHODS: frozenset[Method] = frozenset({"mean", "variance", "std", "entropy"})
+"""Parameter-only moments: no value column, one expression evaluated over the length frame."""
 
 OutputFormat = Literal["markdown", "json", "rich"]
 """How a report is emitted: a markdown file, a JSON file, or a rich table printed to the terminal."""
@@ -265,6 +285,11 @@ def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -
                 scipy_method = _density_name(comp.dist) if method == "density" else method
                 fn = getattr(frozen, scipy_method)
                 return lambda: fn(values)
+            if method in _MOMENT_METHODS:
+                # scipy's variance is `var`; `mean` / `std` / `entropy` share the name. Each is one
+                # scalar (O(1)), the baseline the length-n polars_stats moment is measured against.
+                # The bound method is itself the zero-arg callable the timing loop invokes.
+                return getattr(frozen, "var" if method == "variance" else method)  # type: ignore[no-any-return]
             size: int | tuple[int, int] = rows if method == "sample" else (rows, n)
             return lambda: frozen.rvs(size=size, random_state=seed)
         case "polars_stats":
@@ -272,6 +297,9 @@ def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -
             if method in _VALUE_METHODS:
                 lf = pl.LazyFrame({"x": _eval_inputs(comp, config, method)})
                 expr = _value_expr(dist, method)
+            elif method in _MOMENT_METHODS:
+                lf = _length_frame(rows)
+                expr = getattr(dist, method)()
             else:
                 lf = _length_frame(rows)
                 expr = dist.sample(seed=seed) if method == "sample" else dist.samples(n, seed=seed)
@@ -289,6 +317,14 @@ def _matches(method: Method, config: RunConfig, polars_out: object, scipy_out: o
         the loose `_MATCH_RTOL`/`_MATCH_ATOL` (the scipy-parity suite owns the tight bounds).
     """
     assert isinstance(polars_out, pl.DataFrame)  # noqa: S101  # help the type checker
+    if method in _MOMENT_METHODS:
+        # polars_stats returns a length-`rows` column of the (constant) moment; scipy returns one
+        # scalar. Gate on the column length and on every entry matching the scipy scalar.
+        ours = polars_out.to_series().cast(pl.Float64).to_numpy()
+        theirs = np.asarray(scipy_out, dtype=np.float64)
+        return polars_out.height == config.rows and np.allclose(
+            ours, theirs, rtol=_MATCH_RTOL, atol=_MATCH_ATOL, equal_nan=True
+        )
     assert isinstance(scipy_out, np.ndarray)  # noqa: S101  # help the type checker
     if method == "samples":
         dtype = polars_out.to_series().dtype
