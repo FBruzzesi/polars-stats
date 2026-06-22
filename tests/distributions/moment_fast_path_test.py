@@ -110,13 +110,15 @@ def test_binomial_entropy_scalar_and_column_paths_agree_on_validation(scalar: Bi
 
 
 def test_moment_fast_path_on_empty_frame_matches_per_row() -> None:
-    """On a zero-row frame the moment fast path mirrors the per-row path: empty out, no raise.
+    """On a zero-row frame, valid scalar params give an empty column matching the per-row path.
 
-    For valid parameters both paths produce an empty column of the moment's dtype. For *invalid*
-    parameters the moment fast path still does not raise on an empty frame: its validator is a gated
-    length-1 plugin input, which polars never evaluates when the gated output is empty. This is the
-    opposite of the value-keyed fast path (kwargs validation raises on empty), and matching the
-    per-row path here is the intended behaviour, so it is asserted rather than worked around.
+    The invalid-parameter case on an empty frame is deliberately *not* asserted. Unlike the
+    value-keyed fast path (whose kwargs validation raises unconditionally, pinned by
+    `value_keyed_fast_path_test.py`), the moment fast path validates via a *gated* length-1 plugin
+    input, and whether polars evaluates that input when the gated output is empty is
+    optimizer-dependent: some versions elide it and return empty, others run it and raise. Both are
+    acceptable for an invalid parameterisation over zero rows, so it is left unspecified rather than
+    pinned to one version's behaviour.
     """
     empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
 
@@ -124,12 +126,6 @@ def test_moment_fast_path_on_empty_frame_matches_per_row() -> None:
     valid_slow = empty.select(r=Normal(_col(0.0), _col(2.0)).variance())
     assert valid_fast.height == 0
     assert_series_equal(valid_fast["r"], valid_slow["r"], check_exact=True)
-
-    # Invalid scalar params: no rows, so no validation fires; both paths return empty (no raise).
-    invalid_fast = empty.select(r=Normal(0.0, -1.0).variance())
-    invalid_slow = empty.select(r=Normal(_col(0.0), _col(-1.0)).variance())
-    assert invalid_fast.height == 0
-    assert invalid_slow.height == 0
 
 
 # id -> (scalar instance, equivalent per-row instance, expected constant moment value). Degenerate
