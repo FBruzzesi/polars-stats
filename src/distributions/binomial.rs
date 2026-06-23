@@ -4,11 +4,10 @@ use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
 use rand_distr::Binomial as BinomialSampler;
-use serde::Deserialize;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::value_keyed_scalar;
+use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
 use crate::rng::{
     sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -63,40 +62,16 @@ fn support_point(value: f64) -> Option<u64> {
     }
 }
 
-/// Apply a value-keyed function `f(dist, value)` element-wise over `(value, n, p)`.
-///
-/// `inputs[0]` is the evaluation point, `inputs[1]` is `n`, `inputs[2]` is `p`. `null` in any input
-/// propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f` returns an
-/// `Option` so a method can null a row on its own terms (e.g. `ppf` outside `[0, 1]`). Shared by
-/// `pmf`, `ln_pmf`, `cdf`, `sf`, `ppf`.
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Binomial, f64) -> Option<f64>,
-{
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let value_ca = value.f64()?;
-    let n = inputs[1].cast(&DataType::Int64)?;
-    let n_ca = n.i64()?;
-    let p = inputs[2].cast(&DataType::Float64)?;
-    let p_ca = p.f64()?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        value_ca,
-        n_ca,
-        p_ca,
-        |value_opt, n_opt, p_opt| -> PolarsResult<Option<f64>> {
-            match (value_opt, n_opt, p_opt) {
-                (Some(v), Some(n), Some(p)) => {
-                    let dist = build_dist(n, p)?;
-                    Ok(f(&dist, v))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+value_keyed_per_row! {
+    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, n, p)`.
+    ///
+    /// `inputs[0]` is the evaluation point, `inputs[1]` is `n`, `inputs[2]` is `p`. `null` in any
+    /// input propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f`
+    /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
+    /// `[0, 1]`). Shared by `pmf`, `ln_pmf`, `cdf`, `sf`, `ppf`.
+    fn value_keyed(&Binomial);
+    params = (DataType::Int64 => i64, DataType::Float64 => f64);
+    build = build_dist;
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(n, p)`.
@@ -316,81 +291,50 @@ fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
-///
-/// Like [`BinomialScalarKwargs`] minus the sampler `seed`: when both parameters are Python
-/// scalars, the Python layer routes them here as kwargs instead of expanding each into a
-/// full-length column re-validated on every row. The distribution is validated and built once;
-/// only the evaluation-point column travels as an input.
-#[derive(Deserialize)]
-struct BinomialParamsKwargs {
-    n: i64,
-    p: f64,
+value_keyed_scalar_plugins! {
+    /// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
+    ///
+    /// Like [`BinomialScalarKwargs`] minus the sampler `seed`: when both parameters are Python
+    /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
+    /// full-length column re-validated on every row. The distribution is validated and built once;
+    /// only the evaluation-point column travels as an input.
+    struct BinomialParamsKwargs { n: i64, p: f64 }
+
+    build = |kw| build_dist(kw.n, kw.p)?;
+
+    methods {
+        /// Constant-parameter pmf; same body as [`binomial_pmf`] via [`pmf_value`], dist built once.
+        fn binomial_pmf_scalar => pmf_value;
+
+        /// Constant-parameter log-pmf; same body as [`binomial_ln_pmf`] via [`ln_pmf_value`], dist built once.
+        fn binomial_ln_pmf_scalar => ln_pmf_value;
+
+        /// Constant-parameter cdf; same body as [`binomial_cdf`] via [`cdf_value`], dist built once.
+        fn binomial_cdf_scalar => cdf_value;
+
+        /// Constant-parameter sf; same body as [`binomial_sf`] via [`sf_value`], dist built once.
+        fn binomial_sf_scalar => sf_value;
+
+        /// Constant-parameter ppf; same body as [`binomial_ppf`] via [`ppf_value`], dist built once.
+        fn binomial_ppf_scalar => ppf_value;
+    }
 }
 
-/// Constant-parameter pmf; same body as [`binomial_pmf`] via [`pmf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
-    value_keyed_scalar(&inputs[0], |v| pmf_value(&dist, v))
-}
-
-/// Constant-parameter log-pmf; same body as [`binomial_ln_pmf`] via [`ln_pmf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn binomial_ln_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
-    value_keyed_scalar(&inputs[0], |v| ln_pmf_value(&dist, v))
-}
-
-/// Constant-parameter cdf; same body as [`binomial_cdf`] via [`cdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
-    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
-}
-
-/// Constant-parameter sf; same body as [`binomial_sf`] via [`sf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
-    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
-}
-
-/// Constant-parameter ppf; same body as [`binomial_ppf`] via [`ppf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.n, kwargs.p)?;
-    value_keyed_scalar(&inputs[0], |q| ppf_value(&dist, q))
-}
-
-/// Validate the `(n, p)` parameterisation and return the validated `p`.
-///
-/// `inputs[0]` is `n`, `inputs[1]` is `p`. Mirrors `normal_std_dev` / `bernoulli_proba`: the
-/// closed-form moments (`mean = n * p`, `variance = n * p * (1 - p)`) are computed from Polars
-/// expressions and gated on this single FFI round-trip, so they report an invalid parameterisation
-/// identically to the value-keyed methods that build the distribution directly, rather than silently
-/// computing a moment from a negative `n` or an out-of-range `p`. `null` in either input propagates;
-/// a negative `n` or a `NaN` / out-of-range `p` raises `InvalidOperation` via [`build_dist`].
-#[polars_expr(output_type=Float64)]
-fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
-    let n = inputs[0].cast(&DataType::Int64)?;
-    let n_ca = n.i64()?;
-    let p = inputs[1].cast(&DataType::Float64)?;
-    let p_ca = p.f64()?;
-    let name = inputs[1].name().clone();
-
-    let ca: Float64Chunked =
-        try_binary_elementwise(n_ca, p_ca, |n_opt, p_opt| -> PolarsResult<Option<f64>> {
-            match (n_opt, p_opt) {
-                (Some(n), Some(p)) => {
-                    build_dist(n, p)?;
-                    Ok(Some(p))
-                },
-                _ => Ok(None),
-            }
-        })?;
-
-    Ok(ca.with_name(name).into_series())
+param_validator! {
+    /// Validate the `(n, p)` parameterisation and return the validated `p`.
+    ///
+    /// `inputs[0]` is `n`, `inputs[1]` is `p`. Mirrors `normal_std_dev` / `bernoulli_proba`: the
+    /// closed-form moments (`mean = n * p`, `variance = n * p * (1 - p)`) are computed from Polars
+    /// expressions and gated on this single FFI round-trip, so they report an invalid
+    /// parameterisation identically to the value-keyed methods that build the distribution
+    /// directly, rather than silently computing a moment from a negative `n` or an out-of-range
+    /// `p`. `null` in either input propagates; a negative `n` or a `NaN` / out-of-range `p` raises
+    /// `InvalidOperation` via [`build_dist`].
+    fn binomial_params;
+    params = (n: DataType::Int64 => i64, p: DataType::Float64 => f64);
+    build = build_dist;
+    returns = p;
+    output_name = inputs[1];
 }
 
 /// Element-wise Shannon entropy (in nats) via `statrs` `Distribution::entropy`, the exact support
