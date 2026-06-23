@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Annotated, get_args
 
 from cyclopts import App, Parameter
-from scipy.stats import bernoulli, binom, lognorm, norm, uniform
+from scipy.stats import bernoulli, binom, expon, lognorm, norm, uniform
 
 from benchmarks._harness import ALL_METHODS, Comparison, Method, OutputFormat, Sweep, emit, run_comparison
-from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, Exponential, LogNormal, Normal, Uniform
 
 # `--rows 1 2 3` (multiple tokens per flag), not `--rows 1 --rows 2`; without this a list option takes
 # a single token and the rest leak onto the positional `distributions`.
@@ -36,6 +36,7 @@ REGISTRY: dict[str, Comparison] = {
     "normal": Comparison("normal", Normal(mean=0.0, std_dev=1.0), norm(loc=0.0, scale=1.0)),
     "lognormal": Comparison("lognormal", LogNormal(mu=0.0, sigma=1.0), lognorm(s=1.0, scale=exp(0.0))),
     "uniform": Comparison("uniform", Uniform(min=0.0, max=1.0), uniform(loc=0.0, scale=1.0)),
+    "exponential": Comparison("exponential", Exponential(rate=1.0), expon(scale=1.0)),
     "bernoulli": Comparison("bernoulli", Bernoulli(p=0.3), bernoulli(0.3)),
     "binomial": Comparison("binomial", Binomial(n=10, p=0.3), binom(10, 0.3)),
 }

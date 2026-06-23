@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, Exponential, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -141,6 +141,22 @@ _LOGNORMAL = DistSpec(
     integration_bounds=lambda p: (0.0, exp(p[0] + 6.0 * p[1])),
 )
 
-ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL]
+_EXPONENTIAL = DistSpec(
+    name="exponential",
+    continuous=True,
+    # `rate > 0`; the lower bound keeps the mean `1 / rate` finite enough for the trapezoidal mass
+    # check, the upper bound keeps it from collapsing onto a near-degenerate spike at 0.
+    params=st.tuples(_finite(1e-2, 10.0)),
+    make=lambda p: Exponential(rate=p[0]),
+    make_columns=lambda p: Exponential(rate=_col(p[0])),
+    make_masked=lambda p, m: Exponential(rate=pl.when(~m).then(_col(p[0]))),
+    density=lambda d, c: d.pdf(c),
+    # Support is [0, inf); the grid spans the `x < 0` zero region through several means.
+    eval_range=lambda p: (-1.0 / p[0], 5.0 / p[0]),
+    # `1 - exp(-30)` of the mass lies below `30 / rate`; the rest is below the 1e-3 tolerance.
+    integration_bounds=lambda p: (0.0, 30.0 / p[0]),
+)
+
+ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL, _EXPONENTIAL]
 CONTINUOUS_SPECS = [s for s in ALL_SPECS if s.continuous]
 DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]

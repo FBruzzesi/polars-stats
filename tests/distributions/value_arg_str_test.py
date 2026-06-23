@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal
 
-from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, Exponential, LogNormal, Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution
 
 if TYPE_CHECKING:
@@ -27,6 +27,7 @@ DISTRIBUTIONS: list[tuple[_UnivariateDistribution, str]] = [
     (Uniform(min="lo", max="hi"), "Uniform"),
     (Bernoulli(p="p"), "Bernoulli"),
     (Binomial(n="n", p="p"), "Binomial"),
+    (Exponential(rate="p"), "Exponential"),  # `p` is positive on every row, a valid rate
 ]
 
 FRAME = pl.DataFrame(

@@ -1,5 +1,6 @@
 pub mod bernoulli;
 pub mod binomial;
+pub mod exponential;
 pub mod lognormal;
 pub mod normal;
 pub mod uniform;
@@ -168,9 +169,12 @@ pub(crate) use value_keyed_per_row;
 /// * `output_name = inputs[i]`: which input column names the output (most return the second
 ///   parameter and name after it; Uniform's width names after the first).
 ///
-/// Only the binary arm exists: `bernoulli_proba` is the lone unary validator and stays
-/// hand-written until a second one-parameter distribution justifies an arity arm. Call sites are
-/// the distribution modules (`polars::prelude::*` in scope).
+/// Two arms that differ only in arity: a binary one (`normal_std_dev`, `lognormal_sigma`,
+/// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`). The
+/// unary arm landed with the second one-parameter distribution (Exponential), the trigger the
+/// umbrella names for extracting it; before that `bernoulli_proba` was the lone hand-written unary
+/// validator. A unary validator's `output_name` is always `inputs[0]` (its only input). Call sites
+/// are the distribution modules (`polars::prelude::*` in scope).
 macro_rules! param_validator {
     (
         $(#[$meta:meta])*
@@ -199,6 +203,37 @@ macro_rules! param_validator {
                             Ok(Some($ret))
                         },
                         _ => Ok(None),
+                    }
+                },
+            )?;
+
+            Ok(ca.with_name(name).into_series())
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        fn $name:ident;
+        params = ($p1:ident: $p1_dt:expr => $p1_acc:ident);
+        build = $build:path;
+        returns = $ret:expr;
+        output_name = inputs[$out_idx:literal];
+    ) => {
+        $(#[$meta])*
+        #[pyo3_polars::derive::polars_expr(output_type=Float64)]
+        fn $name(inputs: &[Series]) -> PolarsResult<Series> {
+            let p1 = inputs[0].cast(&$p1_dt)?;
+            let p1_ca = p1.$p1_acc()?;
+            let name = inputs[$out_idx].name().clone();
+
+            let ca: Float64Chunked = polars::prelude::arity::try_unary_elementwise(
+                p1_ca,
+                |o1| -> PolarsResult<Option<f64>> {
+                    match o1 {
+                        Some($p1) => {
+                            $build($p1)?;
+                            Ok(Some($ret))
+                        },
+                        None => Ok(None),
                     }
                 },
             )?;
