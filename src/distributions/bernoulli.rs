@@ -5,6 +5,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution;
 use statrs::distribution::Bernoulli;
 
+use crate::distributions::param_validator;
 use crate::rng::{
     binary_param_rows, sample_scalar_plugin, samples_bool_output, samples_per_row, SampleKwargs,
     SamplesKwargs,
@@ -16,24 +17,18 @@ fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     })
 }
 
-/// Element-wise validation of the success probability: returns `p` unchanged, raising
-/// `InvalidOperation` if `p` is outside `[0, 1]`. `null` propagates.
-///
-/// The closed-form Python methods derive from this so they report an invalid `p` consistently with
-/// `bernoulli_sample`, instead of silently computing a negative probability.
-#[polars_expr(output_type=Float64)]
-fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
-    let proba = inputs[0].cast(&DataType::Float64)?;
-    let proba_ca = proba.f64()?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked =
-        proba_ca.try_apply_nonnull_values_generic(|p| -> PolarsResult<f64> {
-            build_dist(p)?;
-            Ok(p)
-        })?;
-
-    Ok(ca.with_name(name).into_series())
+param_validator! {
+    /// Element-wise validation of the success probability: returns `p` unchanged, raising
+    /// `InvalidOperation` if `p` is outside `[0, 1]`. `null` propagates.
+    ///
+    /// The closed-form Python methods derive from this so they report an invalid `p` consistently
+    /// with `bernoulli_sample`, instead of silently computing a negative probability. One of the
+    /// two unary `param_validator!` users (with `exponential_rate`).
+    fn bernoulli_proba;
+    params = (proba: DataType::Float64 => f64);
+    build = build_dist;
+    returns = proba;
+    output_name = inputs[0];
 }
 
 /// Element-wise Bernoulli sampler.

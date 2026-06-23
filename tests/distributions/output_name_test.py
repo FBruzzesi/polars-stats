@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Binomial, Exponential, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -27,6 +27,7 @@ _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
     "normal": Normal(mean=0.0, std_dev=1.0),
     "lognormal": LogNormal(mu=0.0, sigma=1.0),
     "uniform": Uniform(min=0.0, max=1.0),
+    "exponential": Exponential(rate=1.0),
 }
 
 # Distribution with a column-valued first parameter, paired with the root name the output inherits.
@@ -36,6 +37,8 @@ _COLUMN_PARAMS: dict[str, tuple[_UnivariateDistribution, str]] = {
     "normal": (Normal(mean=pl.col("mu"), std_dev=1.0), "mu"),
     "lognormal": (LogNormal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "uniform": (Uniform(min=pl.col("mu"), max=1.0), "mu"),
+    # `mu` is all-zero (an invalid rate); the rate column reads the positive `p` column instead.
+    "exponential": (Exponential(rate=pl.col("p")), "p"),
 }
 
 
