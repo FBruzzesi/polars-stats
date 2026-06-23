@@ -1,12 +1,11 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
+use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
-use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal};
 
-use crate::distributions::value_keyed_scalar;
+use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -29,72 +28,32 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<LogNormal> {
     })
 }
 
-/// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mu, sigma)`.
-///
-/// `inputs[0]` is the evaluation point, `inputs[1]` is `mu`, `inputs[2]` is `sigma`. `null` in any
-/// input propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f` returns an
-/// `Option` so a method can null a row on its own terms (e.g. `ppf` outside `[0, 1]`). Shared by
-/// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&LogNormal, f64) -> Option<f64>,
-{
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let value_ca = value.f64()?;
-    let mu = inputs[1].cast(&DataType::Float64)?;
-    let mu_ca = mu.f64()?;
-    let sigma = inputs[2].cast(&DataType::Float64)?;
-    let sigma_ca = sigma.f64()?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        value_ca,
-        mu_ca,
-        sigma_ca,
-        |value_opt, mu_opt, sigma_opt| -> PolarsResult<Option<f64>> {
-            match (value_opt, mu_opt, sigma_opt) {
-                (Some(v), Some(m), Some(s)) => {
-                    let dist = build_dist(m, s)?;
-                    Ok(f(&dist, v))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+value_keyed_per_row! {
+    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mu, sigma)`.
+    ///
+    /// `inputs[0]` is the evaluation point, `inputs[1]` is `mu`, `inputs[2]` is `sigma`. `null` in
+    /// any input propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f`
+    /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
+    /// `[0, 1]`). Shared by `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
+    fn value_keyed(&LogNormal);
+    params = (DataType::Float64 => f64, DataType::Float64 => f64);
+    build = build_dist;
 }
 
-/// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
-///
-/// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `normal_std_dev` / `uniform_range`: the
-/// closed-form moments (`mean`, `variance`, `median`, `entropy`) are computed in Python and all
-/// derive from this single FFI round-trip, so they report an invalid parameterisation identically to
-/// the value-keyed methods that build the distribution directly. `null` in either input propagates;
-/// a `NaN` `mu` or a non-positive / `NaN` `sigma` raises `InvalidOperation` via [`build_dist`].
-#[polars_expr(output_type=Float64)]
-fn lognormal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
-    let mu = inputs[0].cast(&DataType::Float64)?;
-    let mu_ca = mu.f64()?;
-    let sigma = inputs[1].cast(&DataType::Float64)?;
-    let sigma_ca = sigma.f64()?;
-    let name = inputs[1].name().clone();
-
-    let ca: Float64Chunked = try_binary_elementwise(
-        mu_ca,
-        sigma_ca,
-        |mu_opt, sigma_opt| -> PolarsResult<Option<f64>> {
-            match (mu_opt, sigma_opt) {
-                (Some(m), Some(s)) => {
-                    build_dist(m, s)?;
-                    Ok(Some(s))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+param_validator! {
+    /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
+    ///
+    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `normal_std_dev` / `uniform_range`: the
+    /// closed-form moments (`mean`, `variance`, `median`, `entropy`) are computed in Python and all
+    /// derive from this single FFI round-trip, so they report an invalid parameterisation
+    /// identically to the value-keyed methods that build the distribution directly. `null` in
+    /// either input propagates; a `NaN` `mu` or a non-positive / `NaN` `sigma` raises
+    /// `InvalidOperation` via [`build_dist`].
+    fn lognormal_sigma;
+    params = (mu: DataType::Float64 => f64, sigma: DataType::Float64 => f64);
+    build = build_dist;
+    returns = sigma;
+    output_name = inputs[1];
 }
 
 /// Element-wise LogNormal sampler.
@@ -249,52 +208,31 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
-///
-/// Like [`LogNormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python
-/// scalars, the Python layer routes them here as kwargs instead of expanding each into a
-/// full-length column re-validated on every row. The distribution is validated and built once;
-/// only the evaluation-point column travels as an input.
-#[derive(Deserialize)]
-struct LogNormalParamsKwargs {
-    mu: f64,
-    sigma: f64,
-}
+value_keyed_scalar_plugins! {
+    /// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
+    ///
+    /// Like [`LogNormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python
+    /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
+    /// full-length column re-validated on every row. The distribution is validated and built once;
+    /// only the evaluation-point column travels as an input.
+    struct LogNormalParamsKwargs { mu: f64, sigma: f64 }
 
-/// Constant-parameter pdf; same body as [`lognormal_pdf`] via [`pdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn lognormal_pdf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    value_keyed_scalar(&inputs[0], |v| pdf_value(&dist, v))
-}
+    build = |kw| build_dist(kw.mu, kw.sigma)?;
 
-/// Constant-parameter log-pdf; same body as [`lognormal_ln_pdf`] via [`ln_pdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn lognormal_ln_pdf_scalar(
-    inputs: &[Series],
-    kwargs: LogNormalParamsKwargs,
-) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    value_keyed_scalar(&inputs[0], |v| ln_pdf_value(&dist, v))
-}
+    methods {
+        /// Constant-parameter pdf; same body as [`lognormal_pdf`] via [`pdf_value`], dist built once.
+        fn lognormal_pdf_scalar => pdf_value;
 
-/// Constant-parameter cdf; same body as [`lognormal_cdf`] via [`cdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn lognormal_cdf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
-}
+        /// Constant-parameter log-pdf; same body as [`lognormal_ln_pdf`] via [`ln_pdf_value`], dist built once.
+        fn lognormal_ln_pdf_scalar => ln_pdf_value;
 
-/// Constant-parameter sf; same body as [`lognormal_sf`] via [`sf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn lognormal_sf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
-}
+        /// Constant-parameter cdf; same body as [`lognormal_cdf`] via [`cdf_value`], dist built once.
+        fn lognormal_cdf_scalar => cdf_value;
 
-/// Constant-parameter ppf; same body as [`lognormal_ppf`] via [`ppf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn lognormal_ppf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mu, kwargs.sigma)?;
-    value_keyed_scalar(&inputs[0], |q| ppf_value(&dist, q))
+        /// Constant-parameter sf; same body as [`lognormal_sf`] via [`sf_value`], dist built once.
+        fn lognormal_sf_scalar => sf_value;
+
+        /// Constant-parameter ppf; same body as [`lognormal_ppf`] via [`ppf_value`], dist built once.
+        fn lognormal_ppf_scalar => ppf_value;
+    }
 }

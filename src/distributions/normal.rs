@@ -1,12 +1,11 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
+use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
-use serde::Deserialize;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 
-use crate::distributions::value_keyed_scalar;
+use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -29,72 +28,31 @@ fn build_dist(mean: f64, std_dev: f64) -> PolarsResult<Normal> {
     })
 }
 
-/// Validate the `(mean, std_dev)` parameterisation and return the validated `std_dev`.
-///
-/// `inputs[0]` is `mean`, `inputs[1]` is `std_dev`. Mirrors `uniform_range`: the closed-form moments
-/// (`mean`, `variance`, `median`, `entropy`) all derive from this single FFI round-trip, so they
-/// report an invalid parameterisation identically to the value-keyed methods that build the
-/// distribution directly. `null` in either input propagates; a `NaN` mean or a non-positive / `NaN`
-/// `std_dev` raises `InvalidOperation` via [`build_dist`].
-#[polars_expr(output_type=Float64)]
-fn normal_std_dev(inputs: &[Series]) -> PolarsResult<Series> {
-    let mean = inputs[0].cast(&DataType::Float64)?;
-    let mean_ca = mean.f64()?;
-    let std_dev = inputs[1].cast(&DataType::Float64)?;
-    let std_dev_ca = std_dev.f64()?;
-    let name = inputs[1].name().clone();
-
-    let ca: Float64Chunked = try_binary_elementwise(
-        mean_ca,
-        std_dev_ca,
-        |mean_opt, std_opt| -> PolarsResult<Option<f64>> {
-            match (mean_opt, std_opt) {
-                (Some(m), Some(s)) => {
-                    build_dist(m, s)?;
-                    Ok(Some(s))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+param_validator! {
+    /// Validate the `(mean, std_dev)` parameterisation and return the validated `std_dev`.
+    ///
+    /// `inputs[0]` is `mean`, `inputs[1]` is `std_dev`. Mirrors `uniform_range`: the closed-form
+    /// moments (`mean`, `variance`, `median`, `entropy`) all derive from this single FFI
+    /// round-trip, so they report an invalid parameterisation identically to the value-keyed
+    /// methods that build the distribution directly. `null` in either input propagates; a `NaN`
+    /// mean or a non-positive / `NaN` `std_dev` raises `InvalidOperation` via [`build_dist`].
+    fn normal_std_dev;
+    params = (mean: DataType::Float64 => f64, std_dev: DataType::Float64 => f64);
+    build = build_dist;
+    returns = std_dev;
+    output_name = inputs[1];
 }
 
-/// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mean, std_dev)`.
-///
-/// `inputs[0]` is the evaluation point, `inputs[1]` is `mean`, `inputs[2]` is `std_dev`. `null` in
-/// any input propagates to `null`; an invalid `std_dev` raises via [`build_dist`]. `f` returns an
-/// `Option` so a method can null a row on its own terms (e.g. `ppf` outside `[0, 1]`). Shared by
-/// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Normal, f64) -> Option<f64>,
-{
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let value_ca = value.f64()?;
-    let mean = inputs[1].cast(&DataType::Float64)?;
-    let mean_ca = mean.f64()?;
-    let std_dev = inputs[2].cast(&DataType::Float64)?;
-    let std_dev_ca = std_dev.f64()?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        value_ca,
-        mean_ca,
-        std_dev_ca,
-        |value_opt, mean_opt, std_opt| -> PolarsResult<Option<f64>> {
-            match (value_opt, mean_opt, std_opt) {
-                (Some(v), Some(m), Some(s)) => {
-                    let dist = build_dist(m, s)?;
-                    Ok(f(&dist, v))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+value_keyed_per_row! {
+    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mean, std_dev)`.
+    ///
+    /// `inputs[0]` is the evaluation point, `inputs[1]` is `mean`, `inputs[2]` is `std_dev`. `null`
+    /// in any input propagates to `null`; an invalid `std_dev` raises via [`build_dist`]. `f`
+    /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
+    /// `[0, 1]`). Shared by `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
+    fn value_keyed(&Normal);
+    params = (DataType::Float64 => f64, DataType::Float64 => f64);
+    build = build_dist;
 }
 
 /// Element-wise Normal sampler.
@@ -250,49 +208,31 @@ fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
-///
-/// Like [`NormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python scalars,
-/// the Python layer routes them here as kwargs instead of expanding each into a full-length
-/// column re-validated on every row. The distribution is validated and built once; only the
-/// evaluation-point column travels as an input.
-#[derive(Deserialize)]
-struct NormalParamsKwargs {
-    mean: f64,
-    std_dev: f64,
-}
+value_keyed_scalar_plugins! {
+    /// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
+    ///
+    /// Like [`NormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python
+    /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
+    /// full-length column re-validated on every row. The distribution is validated and built once;
+    /// only the evaluation-point column travels as an input.
+    struct NormalParamsKwargs { mean: f64, std_dev: f64 }
 
-/// Constant-parameter pdf; same body as [`normal_pdf`] via [`pdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    value_keyed_scalar(&inputs[0], |v| pdf_value(&dist, v))
-}
+    build = |kw| build_dist(kw.mean, kw.std_dev)?;
 
-/// Constant-parameter log-pdf; same body as [`normal_ln_pdf`] via [`ln_pdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    value_keyed_scalar(&inputs[0], |v| ln_pdf_value(&dist, v))
-}
+    methods {
+        /// Constant-parameter pdf; same body as [`normal_pdf`] via [`pdf_value`], dist built once.
+        fn normal_pdf_scalar => pdf_value;
 
-/// Constant-parameter cdf; same body as [`normal_cdf`] via [`cdf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
-}
+        /// Constant-parameter log-pdf; same body as [`normal_ln_pdf`] via [`ln_pdf_value`], dist built once.
+        fn normal_ln_pdf_scalar => ln_pdf_value;
 
-/// Constant-parameter sf; same body as [`normal_sf`] via [`sf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
-}
+        /// Constant-parameter cdf; same body as [`normal_cdf`] via [`cdf_value`], dist built once.
+        fn normal_cdf_scalar => cdf_value;
 
-/// Constant-parameter ppf; same body as [`normal_ppf`] via [`ppf_value`], dist built once.
-#[polars_expr(output_type=Float64)]
-fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = build_dist(kwargs.mean, kwargs.std_dev)?;
-    value_keyed_scalar(&inputs[0], |q| ppf_value(&dist, q))
+        /// Constant-parameter sf; same body as [`normal_sf`] via [`sf_value`], dist built once.
+        fn normal_sf_scalar => sf_value;
+
+        /// Constant-parameter ppf; same body as [`normal_ppf`] via [`ppf_value`], dist built once.
+        fn normal_ppf_scalar => ppf_value;
+    }
 }

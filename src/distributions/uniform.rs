@@ -1,10 +1,11 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
+use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::{Distribution, Standard};
 use statrs::distribution::Uniform;
 
+use crate::distributions::param_validator;
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -157,36 +158,19 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
     )
 }
 
-/// Element-wise support width `max - min`, validating the parameterisation.
-///
-/// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
-/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
-/// (surfaces as a `ComputeError`).
-///
-/// Every closed-form Python method derives from this width, so routing it through Rust is what lets
-/// them report an invalid parameterisation consistently with `uniform_sample`, instead of silently
-/// producing a negative or infinite result.
-#[polars_expr(output_type=Float64)]
-fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
-    let min = inputs[0].cast(&DataType::Float64)?;
-    let min_ca = min.f64()?;
-    let max = inputs[1].cast(&DataType::Float64)?;
-    let max_ca = max.f64()?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked = try_binary_elementwise(
-        min_ca,
-        max_ca,
-        |min_opt, max_opt| -> PolarsResult<Option<f64>> {
-            match (min_opt, max_opt) {
-                (Some(lo), Some(hi)) => {
-                    build_dist(lo, hi)?;
-                    Ok(Some(hi - lo))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+param_validator! {
+    /// Element-wise support width `max - min`, validating the parameterisation.
+    ///
+    /// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
+    /// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
+    /// (surfaces as a `ComputeError`).
+    ///
+    /// Every closed-form Python method derives from this width, so routing it through Rust is what
+    /// lets them report an invalid parameterisation consistently with `uniform_sample`, instead of
+    /// silently producing a negative or infinite result.
+    fn uniform_range;
+    params = (min: DataType::Float64 => f64, max: DataType::Float64 => f64);
+    build = build_dist;
+    returns = max - min;
+    output_name = inputs[0];
 }
