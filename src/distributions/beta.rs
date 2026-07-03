@@ -14,10 +14,10 @@ use crate::rng::{
 
 /// Construct a `statrs::Beta`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::Beta::new(shape_a, shape_b)` rejects a `NaN`, infinite, or non-positive shape (unlike
-/// the Normal scale, an infinite shape is rejected too). We surface that as `InvalidOperation` so
-/// an invalid shape fails the whole evaluation rather than silently nulling the row. Validation
-/// lives here so every method that builds a distribution reports an invalid shape identically.
+/// `statrs::Beta::new(shape_a, shape_b)` rejects a `NaN`, infinite, or non-positive shape.
+/// We surface that as `InvalidOperation` so an invalid shape fails the whole evaluation
+/// rather than silently nulling the row.
+/// Validation lives here so every method that builds a distribution reports an invalid shape identically.
 fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
     Beta::new(a, b).map_err(|e| {
         PolarsError::InvalidOperation(
