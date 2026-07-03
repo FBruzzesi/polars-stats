@@ -42,7 +42,6 @@ class Binomial(DiscreteDistribution):
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
         self._n = coerce_n(n, name="n")
         self._p = coerce_param(p, name="p")
-        # Constant `(n, p)` enables the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(n=scalar_int(n), p=scalar_float(p))
 
     @property

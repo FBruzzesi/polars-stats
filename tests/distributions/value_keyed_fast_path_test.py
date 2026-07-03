@@ -1,4 +1,4 @@
-"""Validation contract of the constant-parameter value-keyed fast path (Normal, LogNormal, Binomial).
+"""Validation contract of the constant-parameter value-keyed fast path (Normal, LogNormal, Binomial, Beta).
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
 plugin that validates and builds the `statrs` distribution once (via the shared `build_dist`), instead of rebuilding it
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Binomial, LogNormal, Normal
+from polars_stats import Beta, Binomial, LogNormal, Normal
 from polars_stats.distributions._base import ContinuousDistribution
 from tests._polars_compat import assert_series_equal
 
@@ -68,6 +68,12 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     "binomial p=nan": (lambda: Binomial(5, _NAN), lambda: Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "binomial p=1.5": (lambda: Binomial(5, 1.5), lambda: Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "binomial n=-1": (lambda: Binomial(-1, 0.5), lambda: Binomial(_col(-1, pl.Int64()), _col(0.5)), True),
+    "beta a=nan": (lambda: Beta(_NAN, 1.0), lambda: Beta(_col(_NAN), _col(1.0)), True),
+    "beta a=0": (lambda: Beta(0.0, 1.0), lambda: Beta(_col(0.0), _col(1.0)), True),
+    "beta b=-1": (lambda: Beta(2.0, -1.0), lambda: Beta(_col(2.0), _col(-1.0)), True),
+    # An infinite shape is *rejected* by statrs, unlike the Normal / LogNormal scale; both paths must
+    # agree on that too.
+    "beta a=inf (rejected)": (lambda: Beta(_INF, 1.0), lambda: Beta(_col(_INF), _col(1.0)), True),
 }
 
 

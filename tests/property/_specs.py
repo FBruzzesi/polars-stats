@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Binomial, Exponential, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -157,6 +157,22 @@ _EXPONENTIAL = DistSpec(
     integration_bounds=lambda p: (0.0, 30.0 / p[0]),
 )
 
-ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL, _EXPONENTIAL]
+_BETA = DistSpec(
+    name="beta",
+    continuous=True,
+    # Shapes are kept >= 1 so the density stays bounded at the support endpoints: a shape < 1
+    # diverges at its boundary, which the trapezoidal mass check cannot integrate. Shapes below 1
+    # are covered directly by the functional and scipy-parity suites.
+    params=st.tuples(_finite(1.0, 10.0), _finite(1.0, 10.0)),
+    make=lambda p: Beta(a=p[0], b=p[1]),
+    make_columns=lambda p: Beta(a=_col(p[0]), b=_col(p[1])),
+    make_masked=lambda p, m: Beta(a=pl.when(~m).then(_col(p[0])), b=_col(p[1])),
+    density=lambda d, c: d.pdf(c),
+    # Support is [0, 1]; the grid spans the zero-density regions on both sides.
+    eval_range=lambda _: (-0.5, 1.5),
+    integration_bounds=lambda _: (0.0, 1.0),
+)
+
+ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL, _EXPONENTIAL, _BETA]
 CONTINUOUS_SPECS = [s for s in ALL_SPECS if s.continuous]
 DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]

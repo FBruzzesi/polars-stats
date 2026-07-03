@@ -2,7 +2,8 @@
 
 The closed-form moments (`mean` / `variance` / `std` / `entropy`) and the closed forms of `Uniform`
 / `Bernoulli` route their *validation* through a small Rust plugin (`normal_std_dev`, `uniform_range`,
-`bernoulli_proba`, `binomial_params`, `lognormal_sigma`, plus `binomial_entropy`'s support sum). For
+`bernoulli_proba`, `binomial_params`, `lognormal_sigma`, `beta_params`, plus the `binomial_entropy` /
+`beta_entropy` parameter-keyed formulas). For
 all-scalar parameters that plugin is called once on length-1 `pl.lit` inputs instead of per row.
 `tests/property/moment_test.py` pins bit-equality against the per-row path for *valid* parameters;
 this module pins the parts that test does not reach:
@@ -30,7 +31,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, LogNormal, Normal, Uniform
 from tests._polars_compat import assert_series_equal
 
 if TYPE_CHECKING:
@@ -67,6 +68,11 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "binomial n=-1": (Binomial(-1, 0.5), Binomial(_col(-1, pl.Int64()), _col(0.5)), True),
     "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
+    "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
+    "beta b=-1": (Beta(2.0, -1.0), Beta(_col(2.0), _col(-1.0)), True),
+    "beta a=nan": (Beta(_NAN, 1.0), Beta(_col(_NAN), _col(1.0)), True),
+    # An infinite shape is *rejected* by statrs, unlike the Normal / LogNormal scale.
+    "beta a=inf (rejected)": (Beta(_INF, 1.0), Beta(_col(_INF), _col(1.0)), True),
 }
 
 

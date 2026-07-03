@@ -28,7 +28,6 @@ class Bernoulli(DiscreteDistribution):
 
     def __init__(self, p: float | IntoExprColumn) -> None:
         self._p = coerce_param(p, name="p")
-        # A constant `p` enables the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(p=scalar_float(p))
 
     @property

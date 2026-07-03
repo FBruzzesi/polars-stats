@@ -41,8 +41,6 @@ class Uniform(ContinuousDistribution):
     def __init__(self, min: float | IntoExprColumn, max: float | IntoExprColumn) -> None:  # noqa: A002
         self._min = coerce_param(min, name="min")
         self._max = coerce_param(max, name="max")
-        # Constant bounds enable the constant-bounds sampler fast path; `None` falls back to the
-        # per-row plugin.
         self._scalar_kwargs = scalar_kwargs(min=scalar_float(min), max=scalar_float(max))
 
     @property
