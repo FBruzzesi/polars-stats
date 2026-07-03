@@ -15,18 +15,39 @@ default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-pyo3 = { version = "0.26.0", features = ["abi3-py39"] }
-pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-struct", "dtype-array"] }
+pyo3 = { version = "0.26.0", features = ["abi3-py310"] }
+pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
 polars = { version = "0.52.0", default-features = false, features = ["dtype-u8"] }
 polars-arrow = { version = "0.52.0", default-features = false }
 # Already in polars' tree; depended on directly for POOL and its rayon re-export, so the
 # multi-draw samplers parallelise on the same thread pool polars itself uses.
 polars-core = { version = "0.52.0", default-features = false }
-statrs = "0.18.0"
+# Trim statrs to what this crate uses. `default-features = false` drops the optional `nalgebra` feature
+# (and its matrixmultiply / num-complex / num-rational / num-integer subtree), which statrs pulls only for
+# its multivariate distributions (MultivariateNormal, Dirichlet, ...) that this crate does not use.
+# `rand` is re-enabled explicitly: the statrs-backed samplers (Normal, Bernoulli, Exponential, ...) draw via
+# statrs's `rand::distributions::Distribution` impl, so dropping it fails to compile. `nalgebra?/rand` inside
+# statrs's `rand` feature is inert while `nalgebra` is off, so no nalgebra returns. Compile-only trim,
+# identical output.
+statrs = { version = "0.18.0", default-features = false, features = ["rand"] }
 rand = "0.8"
 # The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE) and its
 # per-draw uniform consumption: a bump can change it. The committed Cargo.lock pins the exact build
 # version; treat any update as a deliberate, changelog-recorded seeded-output change.
 rand_distr = "0.4"
 rand_pcg = "0.3"
+
+[profile.release]
+lto = "thin"  # "fat" is more aggressive; see trade-off
+codegen-units = 1
+strip = true  # smaller wheel; drops debug symbols only
+
+# TODO(FBruzzesi): Properly evaluate `lto="fat"` in terms of:
+# - wheel size (compressed)
+# - .so size (uncompressed)
+# - performance
+# - build time
+# [profile.dist-release]
+# inherits = "release"
+# lto = "fat"
