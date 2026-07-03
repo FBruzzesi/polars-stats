@@ -48,7 +48,6 @@ class LogNormal(ContinuousDistribution):
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")
         self._sigma = coerce_param(sigma, name="sigma")
-        # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(mu=scalar_float(mu), sigma=scalar_float(sigma))
 
     @property

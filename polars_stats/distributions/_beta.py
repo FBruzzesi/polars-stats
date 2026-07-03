@@ -23,14 +23,13 @@ class Beta(ContinuousDistribution):
     them ``shape_a`` / ``shape_b``.
 
     Arguments:
-        a: First shape parameter (alpha), with ``a > 0``. Either a Python ``float`` or an
-            ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one
-            shape per row.
+        a: First shape parameter (alpha), with ``a > 0``. Either a Python ``float`` or an ``IntoExprColumn``
+            (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one shape per row.
         b: Second shape parameter (beta), with ``b > 0``. Same accepted types as ``a``.
 
-    An invalid shape (``a <= 0``, ``b <= 0``, or a non-finite parameter) is not checked at
-    construction; matching every other distribution, it raises ``InvalidOperation`` (a
-    ``ComputeError``) when any method is evaluated. Null parameters propagate to null.
+    An invalid shape (``a <= 0``, ``b <= 0``, or a non-finite parameter) is not checked at construction; matching every
+    other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
+    Null parameters propagate to null.
 
     The support is ``[0, 1]``: ``pdf`` is ``0`` outside it, and when a shape is ``< 1`` the density
     diverges (``inf`` or large finite values) at the corresponding boundary.
@@ -43,7 +42,6 @@ class Beta(ContinuousDistribution):
     def __init__(self, a: float | IntoExprColumn, b: float | IntoExprColumn) -> None:
         self._a = coerce_param(a, name="a")
         self._b = coerce_param(b, name="b")
-        # Constant shapes enable the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(a=scalar_float(a), b=scalar_float(b))
 
     @property
@@ -55,10 +53,9 @@ class Beta(ContinuousDistribution):
         """``b`` validated in Rust against the full ``(a, b)`` parameterisation (raises otherwise).
 
         Mirrors ``Normal._checked_params`` / ``Binomial._checked_params``: the closed-form moments
-        (``mean``, ``variance``) derive from this FFI round-trip, so they report an invalid shape as
-        a ``ComputeError`` consistently with the value-keyed methods. Null in either parameter
-        propagates to null. `_checked` validates once for scalar parameters (length-1 inputs) and
-        per-row for columns.
+        (``mean``, ``variance``) derive from this FFI round-trip, so they report an invalid shape as a ``ComputeError``
+        consistently with the value-keyed methods. Null in either parameter propagates to null. `_checked` validates
+        once for scalar parameters (length-1 inputs) and per-row for columns.
         """
         return self._checked("beta_params", self._b)
 
@@ -86,8 +83,8 @@ class Beta(ContinuousDistribution):
         """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf`` (inverse regularized incomplete beta).
 
         A quantile outside ``[0, 1]`` yields null; the endpoints map to the support bounds
-        (``ppf(0) = 0``, ``ppf(1) = 1``), matching scipy. ``median`` is ``ppf(0.5)`` (the base-class
-        default); the beta median has no closed form.
+        (``ppf(0) = 0``, ``ppf(1) = 1``), matching scipy. ``median`` is ``ppf(0.5)`` (the base-class default);
+        the beta median has no closed form.
         """
         return self._value_plugin("beta_ppf", quantile)
 

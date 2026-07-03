@@ -38,8 +38,6 @@ class Exponential(ContinuousDistribution):
 
     def __init__(self, rate: float | IntoExprColumn) -> None:
         self._rate = coerce_param(rate, name="rate")
-        # A constant `rate` enables the constant-parameter sampler fast path; `None` falls back to the
-        # per-row plugin.
         self._scalar_kwargs = scalar_kwargs(rate=scalar_float(rate))
 
     @property

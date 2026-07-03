@@ -48,7 +48,6 @@ class Normal(ContinuousDistribution):
     ) -> None:
         self._mean = coerce_param(mean, name="mean")
         self._std_dev = coerce_param(std_dev, name="std_dev")
-        # Constant parameters enable the fast sampler path; `None` falls back to the per-row plugin.
         self._scalar_kwargs = scalar_kwargs(mean=scalar_float(mean), std_dev=scalar_float(std_dev))
 
     @property
