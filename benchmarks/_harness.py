@@ -292,7 +292,7 @@ def _value_expr(dist: Distribution, method: Method) -> pl.Expr:
         raise AssertionError(msg)
     # `_report_name` resolves `density` / `log_density` to the family-specific `pdf` / `log_pmf` / ...;
     # the other tokens are the method names themselves.
-    return getattr(dist, _report_name(dist, method))(pl.col("x"))
+    return getattr(dist, _report_name(dist, method))(pl.col("x"))  # type: ignore[no-any-return]
 
 
 def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -> Callable[[], object]:
