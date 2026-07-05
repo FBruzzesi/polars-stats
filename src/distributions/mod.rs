@@ -158,9 +158,8 @@ pub(crate) use value_keyed_per_row;
 /// These plugins exist so the closed-form moments and (for Uniform / Bernoulli) value-keyed
 /// methods, which are pure Polars expressions, still report an invalid parameterisation through
 /// the same Rust `build_dist` rather than silently producing a garbage result. The constant-
-/// parameter fast path (issue 20 item 6) calls the very same plugin on length-1 `pl.lit` inputs,
-/// so it is built once instead of per row. The four knobs that vary between distributions are the
-/// macro's inputs:
+/// parameter fast path calls the very same plugin on length-1 `pl.lit` inputs, so it is built
+/// once instead of per row. The four knobs that vary between distributions are the macro's inputs:
 ///
 /// * each parameter's `<name>: <cast dtype> => <accessor>` (binomial's `n` is `Int64`/`.i64()`,
 ///   the continuous parameters are `Float64`/`.f64()`); the matched values bind to `<name>`;

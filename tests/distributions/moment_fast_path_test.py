@@ -1,4 +1,4 @@
-"""Validation contract of the constant-parameter moment fast path (validate-once, issue 20 item 6).
+"""Validation contract of the constant-parameter moment fast path (validate-once).
 
 The closed-form moments (`mean` / `variance` / `std` / `entropy`) and the closed forms of `Uniform`
 / `Bernoulli` route their *validation* through a small Rust plugin (`normal_std_dev`, `uniform_range`,

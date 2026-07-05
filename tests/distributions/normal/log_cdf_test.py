@@ -4,6 +4,7 @@ import math
 from typing import TYPE_CHECKING
 
 import polars as pl
+import pytest
 
 from polars_stats import Normal
 from tests._polars_compat import assert_series_equal
@@ -26,3 +27,13 @@ def test_log_cdf_propagates_null_in_value() -> None:
     result = df.select(r=Normal().log_cdf(pl.col("x")))["r"]
     expected = pl.Series("r", [math.log(0.5), None], dtype=pl.Float64)
     assert_series_equal(result, expected)
+
+
+def test_log_cdf_finite_in_deep_tail() -> None:
+    # `cdf(-40)` underflows to `0`, so the naive `cdf().log()` is `-inf`; the native `ln_erfc` form
+    # stays finite. Reference value is `scipy.stats.norm.logcdf(-40)`.
+    df = pl.DataFrame({"x": [-40.0]})
+    result = df.select(r=Normal().log_cdf(pl.col("x")))["r"]
+    naive = df.select(r=Normal().cdf(pl.col("x")).log())["r"]
+    assert naive.item(0) == float("-inf")
+    assert result.item(0) == pytest.approx(-804.608442, rel=1e-6)

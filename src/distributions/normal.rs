@@ -1,9 +1,13 @@
 #![allow(clippy::unused_unit)]
+use std::f64::consts::{LN_2, SQRT_2};
+
 use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
+use statrs::function::erf;
+use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
 use crate::rng::{
@@ -163,6 +167,65 @@ fn sf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(dist.sf(v))
 }
 
+/// Point past which `erfc(t)` is close enough to underflowing (`erfc ~ 1e-274` at `t = 25`,
+/// underflow near `t = 26.6`) that we switch `ln_erfc` to the asymptotic series.
+const LN_ERFC_ASYMPTOTIC_MIN: f64 = 25.0;
+
+/// Natural log of the complementary error function, stable in the right tail.
+///
+/// `erfc(t).ln()` returns `-inf` once `erfc(t)` rounds to `0` (`t` above ~26.6), the regime `log_cdf`
+/// / `log_sf` exist to serve. Past [`LN_ERFC_ASYMPTOTIC_MIN`] we switch to the asymptotic expansion
+/// `erfc(t) = exp(-t^2) / (t * sqrt(pi)) * (1 - 1/(2t^2) + 3/(4t^4) - 15/(8t^6) + ...)`, whose log is a
+/// large finite negative number; below it, statrs `erfc` holds full relative precision so the direct
+/// form is exact. The two branches agree to ~1e-13 at the crossover, so the join is seamless.
+fn ln_erfc(t: f64) -> f64 {
+    if t < LN_ERFC_ASYMPTOTIC_MIN {
+        erf::erfc(t).ln()
+    } else {
+        let t2 = t * t;
+        let u = 0.5 / t2;
+        let series = 1.0 - u * (1.0 - 3.0 * u * (1.0 - 5.0 * u * (1.0 - 7.0 * u)));
+        -t2 - t.ln() - 0.5 * statrs::consts::LN_PI + series.ln()
+    }
+}
+
+/// `ln(0.5 * erfc(s))` with full relative precision on both sides: [`ln_erfc`] for the small half
+/// (`s >= 0`), `ln_1p` for the near-one half (`s < 0`, where `erfc(s) = 2 - erfc(-s)` rounds to `2`
+/// and the direct log collapses to `0` instead of the true tiny negative, e.g. `-7.6e-24` at
+/// 10 std_dev; scipy's `log_ndtr` takes the same branch).
+fn ln_half_erfc(s: f64) -> f64 {
+    if s >= 0.0 {
+        -LN_2 + ln_erfc(s)
+    } else {
+        (-0.5 * erf::erfc(-s)).ln_1p()
+    }
+}
+
+/// Standardise `x` into the `erfc` argument `t = (x - mean) / (std_dev * sqrt(2))`, so that
+/// `cdf(x) = 0.5 * erfc(-t)` and `sf(x) = 0.5 * erfc(t)` (statrs' own `cdf` / `sf` definition).
+fn erfc_arg(dist: &Normal, x: f64) -> f64 {
+    let mean = dist.mean().expect("Normal always has a mean");
+    let std_dev = dist.std_dev().expect("Normal always has a std_dev");
+    (x - mean) / (std_dev * SQRT_2)
+}
+
+/// Native log-cdf via `ln(0.5 * erfc(-t))`: finite in the left tail (no `cdf().ln()` underflow) and
+/// full relative precision in the right one (see [`ln_half_erfc`]).
+///
+/// `pub(crate)` so `LogNormal` reuses it on the underlying normal at `ln(x)` (log-normal log-cdf is
+/// the underlying normal's log-cdf composed with `ln`).
+pub(crate) fn ln_cdf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(ln_half_erfc(-erfc_arg(dist, v)))
+}
+
+/// Native log-sf via `ln(0.5 * erfc(t))`: finite in the right tail (no `sf().ln()` underflow) and
+/// full relative precision in the left one (see [`ln_half_erfc`]).
+///
+/// `pub(crate)` for the same reason as [`ln_cdf_value`].
+pub(crate) fn ln_sf_value(dist: &Normal, v: f64) -> Option<f64> {
+    Some(ln_half_erfc(erfc_arg(dist, v)))
+}
+
 /// A quantile outside `[0, 1]` yields `null`; the closed endpoints map to the infinite tails
 /// (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
 fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
@@ -201,6 +264,18 @@ fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
 }
 
+/// Element-wise log-cdf via the stable [`ln_erfc`] form (finite in the left tail, unlike `cdf().ln()`).
+#[polars_expr(output_type=Float64)]
+fn normal_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_cdf_value)
+}
+
+/// Element-wise log-sf via the stable [`ln_erfc`] form (finite in the right tail, unlike `sf().ln()`).
+#[polars_expr(output_type=Float64)]
+fn normal_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_sf_value)
+}
+
 /// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
 /// See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
@@ -231,6 +306,12 @@ value_keyed_scalar_plugins! {
 
         /// Constant-parameter sf; same body as [`normal_sf`] via [`sf_value`], dist built once.
         fn normal_sf_scalar => sf_value;
+
+        /// Constant-parameter log-cdf; same body as [`normal_ln_cdf`] via [`ln_cdf_value`], dist built once.
+        fn normal_ln_cdf_scalar => ln_cdf_value;
+
+        /// Constant-parameter log-sf; same body as [`normal_ln_sf`] via [`ln_sf_value`], dist built once.
+        fn normal_ln_sf_scalar => ln_sf_value;
 
         /// Constant-parameter ppf; same body as [`normal_ppf`] via [`ppf_value`], dist built once.
         fn normal_ppf_scalar => ppf_value;

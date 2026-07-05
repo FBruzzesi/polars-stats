@@ -76,13 +76,24 @@ class Normal(ContinuousDistribution):
         """Cumulative distribution via native ``ContinuousCDF::cdf``."""
         return self._value_plugin("normal_cdf", value)
 
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """Log-cdf via the native stable ``ln_erfc`` form (finite past ~38 std_dev, unlike ``cdf().log()``)."""
+        return self._value_plugin("normal_ln_cdf", value)
+
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
 
-        ``log_sf`` and ``isf`` inherit the base-class defaults, which compose this native ``sf`` and
-        ``ppf`` rather than the generic ``1 - cdf`` fallback.
+        ``isf`` inherits the base-class default ``ppf(1 - quantile)`` over the native ``ppf``.
         """
         return self._value_plugin("normal_sf", value)
+
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """Log-sf via the native stable ``ln_erfc`` form (finite past ~38 std_dev, unlike ``sf().log()``).
+
+        The flagship anomaly-scoring path: ``sf`` for a many-sigma event underflows to ``0`` and its log to
+        ``-inf``; this stays finite (``scipy.stats.norm.logsf``-equivalent).
+        """
+        return self._value_plugin("normal_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf``.

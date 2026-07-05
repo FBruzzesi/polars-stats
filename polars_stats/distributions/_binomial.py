@@ -77,8 +77,10 @@ class Binomial(DiscreteDistribution):
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival ``P(X > floor(value))`` via native ``DiscreteCDF::sf`` (accurate upper tail).
 
-        ``log_sf`` and ``isf`` inherit the base-class defaults, which compose this native ``sf`` and
-        ``ppf`` rather than the generic ``1 - cdf`` fallback.
+        ``isf`` inherits the base-class default ``ppf(1 - quantile)``. ``log_sf`` (and ``log_cdf``)
+        inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to ``-inf`` deep in the
+        tails: the regularized incomplete beta has no cheap stable log form (scipy's ``logsf`` /
+        ``logcdf`` are naive here too, so parity holds).
         """
         return self._value_plugin("binomial_sf", value)
 

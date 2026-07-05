@@ -5,10 +5,11 @@ Two method families are compared:
 * **sampling**: `sample` (one variate per row) and `samples` (``n_samples`` variates per row),
   against ``scipy.rvs``. Independent RNGs mean values cannot match, so correctness is a shape-only
   gate.
-* **value-keyed**: `density` (`pdf` / `pmf` by family), `cdf`, `sf` and `ppf`, against the matching
-  frozen-scipy method. Both sides evaluate the *same* deterministic inputs (the distribution's own
-  seeded draws; open-interval quantiles for `ppf`), so here the `match` column is a real
-  ``np.allclose`` value check, not just a shape check.
+* **value-keyed**: `density` / `log_density` (`pdf` / `pmf` and `log_pdf` / `log_pmf` by family),
+  `cdf`, `log_cdf`, `sf`, `log_sf` and `ppf`, against the matching frozen-scipy method. Both sides
+  evaluate the *same* deterministic inputs (the distribution's own seeded draws; open-interval
+  quantiles for `ppf`), so here the `match` column is a real ``np.allclose`` value check, not just
+  a shape check.
 
 `run.py` owns the `Comparison` registry (one entry per distribution) and the CLI; it calls `run_comparison` over a
 `Sweep` of sizes. This module is *not* runnable; run ``uv run --group benchmarks benchmarks/run.py`` instead.
@@ -60,8 +61,23 @@ if TYPE_CHECKING:
     Side = Literal["polars_stats", "scipy"]
 
 
-Method = Literal["sample", "samples", "density", "cdf", "sf", "ppf", "mean", "variance", "std", "entropy"]
-"""A benchmarkable method. `density` resolves to `pdf` (continuous) or `pmf` (discrete) per distribution.
+Method = Literal[
+    "sample",
+    "samples",
+    "density",
+    "log_density",
+    "cdf",
+    "log_cdf",
+    "sf",
+    "log_sf",
+    "ppf",
+    "mean",
+    "variance",
+    "std",
+    "entropy",
+]
+"""A benchmarkable method. `density` / `log_density` resolve to `pdf` / `log_pdf` (continuous) or
+`pmf` / `log_pmf` (discrete) per distribution; `log_cdf` / `log_sf` call scipy's `logcdf` / `logsf`.
 
 `mean` / `variance` / `std` / `entropy` are the parameter-only moments: they take no value column, so
 polars_stats returns a length-`rows` column of the (constant, for scalar params) moment while scipy
@@ -73,8 +89,11 @@ ALL_METHODS: tuple[Method, ...] = (
     "sample",
     "samples",
     "density",
+    "log_density",
     "cdf",
+    "log_cdf",
     "sf",
+    "log_sf",
     "ppf",
     "mean",
     "variance",
@@ -82,7 +101,7 @@ ALL_METHODS: tuple[Method, ...] = (
     "entropy",
 )
 
-_VALUE_METHODS: frozenset[Method] = frozenset({"density", "cdf", "sf", "ppf"})
+_VALUE_METHODS: frozenset[Method] = frozenset({"density", "log_density", "cdf", "log_cdf", "sf", "log_sf", "ppf"})
 
 _MOMENT_METHODS: frozenset[Method] = frozenset({"mean", "variance", "std", "entropy"})
 """Parameter-only moments: no value column, one expression evaluated over the length frame."""
@@ -240,6 +259,20 @@ def _density_name(dist: Distribution) -> Literal["pdf", "pmf"]:
     return "pdf" if isinstance(dist, ContinuousDistribution) else "pmf"
 
 
+def _report_name(dist: Distribution, method: Method) -> str:
+    """The report label: the `polars_stats` method actually called (`density` -> `pdf` / `pmf`, ...)."""
+    if method == "density":
+        return _density_name(dist)
+    if method == "log_density":
+        return f"log_{_density_name(dist)}"
+    return method
+
+
+def _scipy_name(dist: Distribution, method: Method) -> str:
+    """The frozen-scipy attribute for a value-keyed method (`log_cdf` -> `logcdf`, `log_density` -> `logpdf`)."""
+    return _report_name(dist, method).replace("log_", "log")
+
+
 def _eval_inputs(comp: Comparison, config: RunConfig, method: Method) -> np.ndarray:
     """Deterministic evaluation inputs for a value-keyed method, shared by both sides.
 
@@ -254,19 +287,12 @@ def _eval_inputs(comp: Comparison, config: RunConfig, method: Method) -> np.ndar
 
 def _value_expr(dist: Distribution, method: Method) -> pl.Expr:
     """The `polars_stats` expression for a value-keyed method, evaluated on the shared `x` column."""
-    x = pl.col("x")
-    match method:
-        case "density":
-            return dist.pdf(x) if isinstance(dist, ContinuousDistribution) else dist.pmf(x)  # type: ignore[attr-defined]
-        case "cdf":
-            return dist.cdf(x)
-        case "sf":
-            return dist.sf(x)
-        case "ppf":
-            return dist.ppf(x)
-        case _:
-            msg = f"not a value-keyed method: {method}"
-            raise AssertionError(msg)
+    if method not in _VALUE_METHODS:
+        msg = f"not a value-keyed method: {method}"
+        raise AssertionError(msg)
+    # `_report_name` resolves `density` / `log_density` to the family-specific `pdf` / `log_pmf` / ...;
+    # the other tokens are the method names themselves.
+    return getattr(dist, _report_name(dist, method))(pl.col("x"))  # type: ignore[no-any-return]
 
 
 def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -> Callable[[], object]:
@@ -282,8 +308,7 @@ def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -
             frozen = comp.scipy_frozen
             if method in _VALUE_METHODS:
                 values = _eval_inputs(comp, config, method)
-                scipy_method = _density_name(comp.dist) if method == "density" else method
-                fn = getattr(frozen, scipy_method)
+                fn = getattr(frozen, _scipy_name(comp.dist, method))
                 return lambda: fn(values)
             if method in _MOMENT_METHODS:
                 # scipy's variance is `var`; `mean` / `std` / `entropy` share the name. Each is one
@@ -389,8 +414,8 @@ def _measure(comp: Comparison, method: Method, config: RunConfig) -> Result:
         for side in sides
     }
     return Result(
-        # `density` is the sweep token; the report shows the method actually called.
-        method=_density_name(comp.dist) if method == "density" else method,
+        # `density` / `log_density` are the sweep tokens; the report shows the method actually called.
+        method=_report_name(comp.dist, method),
         rows=config.rows,
         n_samples=config.n_samples if method == "samples" else None,
         polars_stats=measurements["polars_stats"],

@@ -1,8 +1,9 @@
 """Entrypoint for the ``polars_stats`` vs ``scipy.stats`` benchmarks.
 
 Compare the sampling methods (`sample` / `samples` vs ``scipy.rvs``) and the value-keyed methods
-(`pdf` / `pmf`, `cdf`, `sf`, `ppf` vs their frozen-scipy counterparts) on speed and peak memory,
-sweeping over one or more row counts and sample widths in a single report::
+(`pdf` / `pmf`, `log_pdf` / `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf` vs their frozen-scipy
+counterparts) on speed and peak memory, sweeping over one or more row counts and sample widths in a
+single report::
 
     uv run --group benchmarks benchmarks/run.py                                   # all distributions and methods
     uv run --group benchmarks benchmarks/run.py normal binomial                   # a subset of distributions
@@ -61,8 +62,9 @@ def main(  # noqa: PLR0913
 
     Arguments:
         distributions: Distributions to compare (e.g. `normal binomial`). Defaults to all of them.
-        methods: Methods to compare (e.g. `--methods sample density ppf`); `density` resolves to
-            `pdf` / `pmf` per distribution family. Defaults to all of them.
+        methods: Methods to compare (e.g. `--methods sample density log_sf ppf`); `density` /
+            `log_density` resolve to `pdf` / `pmf` and `log_pdf` / `log_pmf` per distribution
+            family. Defaults to all of them.
         rows: Row counts to sweep over (e.g. `--rows 1_000_000 10_000_000`). Defaults to `[1_000_000]`.
         n_samples: Sample widths to sweep over for `samples` (e.g. `--n-samples 5 10 20`). Defaults to `[10]`.
         iterations: Timed runs per cell; runtime is reported as p50 +/- std.
