@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from math import exp
 
+import numpy as np
 import polars as pl
 import pytest
 from scipy.stats import lognorm as scipy_lognorm
@@ -9,10 +10,10 @@ from scipy.stats import lognorm as scipy_lognorm
 from polars_stats import LogNormal
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
-# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
-# of the per-method functional tests under `tests/distributions/lognormal`. `sigma` is kept moderate:
-# the mean / variance grow exponentially in `sigma` and lose absolute precision against scipy past
-# `sigma > 5` (see the issue caveat).
+# Parameter and evaluation grids for the parity sweep.
+# Owned by this test category and independent of the per-method functional tests under `tests/distributions/lognormal`.
+# `sigma` is kept moderate: the mean / variance grow exponentially in `sigma` and
+# lose absolute precision against scipy past `sigma > 5`.
 _PARAMS = [(0.0, 1.0), (0.5, 0.5), (-1.0, 0.25), (1.0, 0.75), (0.0, 0.1)]
 _QUANTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]
 
@@ -67,3 +68,51 @@ def test_method_matches_scipy(case: Case[LogNormal], mu: float, sigma: float) ->
         value_grid=_value_grid(mu, sigma),
         quantiles=_QUANTILES,
     )
+
+
+# Standardised deviations of ln(x): `x = exp(mu + sigma * z)` probes both the far-right (large z)
+# and far-left (x -> 0+, large negative z) tails where the naive `sf().log()` / `cdf().log()` are
+# `-inf`, plus the direct-erfc band and the `ln_erfc` branch crossover (`z ~ 35.36`, bracketed by
+# 35 and 36), mirroring the Normal grid.
+_TAIL_HALF = (5.0, 10.0, 20.0, 30.0, 35.0, 36.0, 37.0, 38.0, 40.0, 50.0, 100.0)
+_TAIL_Z = (*(-z for z in _TAIL_HALF), *_TAIL_HALF)
+
+
+@pytest.mark.parametrize(("mu", "sigma"), [(0.0, 1.0), (1.0, 2.0)], ids=["mu=0,sigma=1", "mu=1,sigma=2"])
+def test_log_tail_matches_scipy(mu: float, sigma: float) -> None:
+    """`log_cdf` / `log_sf` stay finite and match scipy far into both tails, where `sf().log()` is `-inf`.
+
+    Mirrors the Normal tail exemplar (the log-normal log-cdf / log-sf are the underlying normal's,
+    composed with `ln`): probe *beyond* the underflow threshold, the regime the geometric
+    `test_method_matches_scipy` grid never reaches.
+    """
+    xs = [exp(mu + sigma * z) for z in _TAIL_Z]
+    dist = LogNormal(mu=mu, sigma=sigma)
+    frozen = scipy_lognorm(s=sigma, scale=exp(mu))
+
+    got = pl.DataFrame({"x": xs}).select(log_cdf=dist.log_cdf("x"), log_sf=dist.log_sf("x"))
+    assert got["log_cdf"].is_finite().all(), "log_cdf underflowed to -inf in the tail"
+    assert got["log_sf"].is_finite().all(), "log_sf underflowed to -inf in the tail"
+    np.testing.assert_allclose(got["log_cdf"].to_numpy(), frozen.logcdf(xs), rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(xs), rtol=1e-8, atol=1e-10)
+
+
+@pytest.mark.parametrize(("mu", "sigma"), [(0.0, 1.0), (1.0, 2.0)], ids=["mu=0,sigma=1", "mu=1,sigma=2"])
+def test_log_near_one_side_keeps_relative_precision(mu: float, sigma: float) -> None:
+    """The near-certain side matches scipy in *relative* terms (``atol=0``), not just within slack.
+
+    Mirrors the Normal pin of the ``log1p`` branch: ``log_cdf`` far right of the median (and
+    ``log_sf`` far left) is a tiny negative number the erfc reflection would round to ``0.0``.
+    """
+    zs = [1.0, 5.0, 10.0, 20.0, 30.0]
+    dist = LogNormal(mu=mu, sigma=sigma)
+    frozen = scipy_lognorm(s=sigma, scale=exp(mu))
+
+    upper = [exp(mu + sigma * z) for z in zs]
+    lower = [exp(mu - sigma * z) for z in zs]
+    got = pl.DataFrame({"hi": upper, "lo": lower}).select(
+        log_cdf=dist.log_cdf(pl.col("hi")),
+        log_sf=dist.log_sf(pl.col("lo")),
+    )
+    np.testing.assert_allclose(got["log_cdf"].to_numpy(), frozen.logcdf(upper), rtol=1e-9, atol=0.0)
+    np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(lower), rtol=1e-9, atol=0.0)

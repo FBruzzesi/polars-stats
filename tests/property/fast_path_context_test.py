@@ -1,10 +1,10 @@
 """Constant-parameter fast paths stay byte-identical to the per-row path across polars contexts.
 
-The scalar moment and closed-form value-keyed fast paths (issue 20 item 6) build a length-1
-validity gate, `pl.when(validated_once.is_not_null()).then(<context-length value>)`, where
-`validated_once` is a validating plugin called on length-1 `pl.lit` inputs. The bit-equality tests
-`moment_test.py` and `value_keyed_test.py` pin the fast path against the per-row path under a plain
-`select`, where the gate broadcasts a length-1 condition against a whole-frame value.
+The scalar moment and closed-form value-keyed fast paths build a length-1 validity gate,
+`pl.when(validated_once.is_not_null()).then(<context-length value>)`, where `validated_once` is a validating plugin
+called on length-1 `pl.lit` inputs. The bit-equality tests `moment_test.py` and `value_keyed_test.py` pin the fast path
+against the per-row path under a plain `select`, where the gate broadcasts a length-1 condition against a
+whole-frame value.
 
 This module pins the same equality under the contexts where the broadcast target length is *not* the
 whole frame, the cases a `select`-only test cannot see:

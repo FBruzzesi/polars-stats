@@ -14,7 +14,7 @@ DEFAULT_SIZE = 1000
 
 # `(mu, sigma)` grid exposed through the `params` fixture so no test file redeclares it. `sigma` is
 # kept moderate: the LogNormal mean/variance grow exponentially in `sigma` and lose absolute
-# precision against scipy past `sigma > 5` (see the issue caveat).
+# precision against scipy past `sigma > 5`.
 PARAMS = [(0.0, 1.0), (0.5, 0.5), (-1.0, 0.25), (1.0, 0.75), (0.0, 0.1)]
 
 

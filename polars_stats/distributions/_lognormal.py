@@ -76,13 +76,28 @@ class LogNormal(ContinuousDistribution):
         """Cumulative distribution via native ``ContinuousCDF::cdf`` (``0`` for ``value <= 0``)."""
         return self._value_plugin("lognormal_cdf", value)
 
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """Log-cdf via the underlying normal's stable ``ln_erfc`` form; ``-inf`` for ``value <= 0``.
+
+        Finite far into the left tail, unlike ``cdf().log()``.
+        """
+        return self._value_plugin("lognormal_ln_cdf", value)
+
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
 
-        ``log_sf`` and ``isf`` inherit the base-class defaults, which compose this native ``sf`` and
-        ``ppf`` rather than the generic ``1 - cdf`` fallback.
+        ``isf`` inherits the base-class default ``ppf(1 - quantile)`` over the native ``ppf``.
         """
         return self._value_plugin("lognormal_sf", value)
+
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """Log-sf via the underlying normal's stable ``ln_erfc`` form; ``0`` for ``value <= 0``.
+
+        Finite far into the right tail, unlike ``sf().log()``. The flagship anomaly-scoring path for a
+        heavy-tailed positive quantity: ``sf`` for a far-tail value underflows to ``0`` and its log to
+        ``-inf``; this stays finite.
+        """
+        return self._value_plugin("lognormal_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf``.

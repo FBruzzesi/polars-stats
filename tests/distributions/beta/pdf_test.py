@@ -21,7 +21,7 @@ def test_pdf_outside_support_is_zero() -> None:
 
 
 def test_pdf_diverges_at_boundaries_for_shapes_below_one() -> None:
-    # A shape < 1 makes the density divergent at the matching boundary (the issue caveat).
+    # A shape < 1 makes the density divergent at the matching boundary .
     df = pl.DataFrame({"x": [0.0, 1.0]})
     result = df.select(r=Beta(a=0.5, b=0.5).pdf(pl.col("x")))["r"]
     expected = pl.Series("r", [float("inf"), float("inf")], dtype=pl.Float64)

@@ -13,9 +13,6 @@ if TYPE_CHECKING:
 
     from polars_stats._typing import IntoExprColumn, PolarsDataType
 
-# TODO(FBruzzesi): Investigate better implementations for log_* methods over
-# the naive ones due to concerns on numerical stability
-
 _ROW_INDEX_NAME = "__polars_stats_row_index__"
 ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 """Per-row position `0..len` used to derive per-row sub-seeds in samplers.
@@ -362,6 +359,12 @@ class _UnivariateDistribution(ABC):
         return propagate_null(v, self._log_cdf(v))
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """Default `log(cdf)`; underflows to `-inf` once `cdf` rounds to `0` deep in the left tail.
+
+        There is no native shortcut to bind (statrs exposes no `ln_cdf`, Polars no `erf`), so a
+        distribution with a genuine tail must override this with a stable form: a `log1p` / exact
+        closed form (Exponential, Uniform) or a special-function binding in Rust (Normal).
+        """
         return self._cdf(value).log()
 
     def sf(self, value: float | IntoExprColumn) -> pl.Expr:
@@ -379,6 +382,12 @@ class _UnivariateDistribution(ABC):
         return propagate_null(v, self._log_sf(v))
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """Default `log(sf)`; underflows to `-inf` once `sf` rounds to `0` deep in the right tail.
+
+        The flagship anomaly-scoring path (`log_sf` for many-sigma events); override it for any
+        distribution with a genuine tail. Same options as `_log_cdf`: a `log1p` / exact closed form
+        or a Rust special-function binding.
+        """
         return self._sf(value).log()
 
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
