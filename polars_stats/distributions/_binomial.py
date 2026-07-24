@@ -52,13 +52,7 @@ class Binomial(DiscreteDistribution):
     def _checked_params(self) -> pl.Expr:
         """``p`` validated in Rust against the full ``(n, p)`` parameterisation (raises otherwise).
 
-        Mirrors ``Normal._checked_params`` / ``Bernoulli._checked_p``: the closed-form moments (``mean``, ``variance``)
-        derive from this FFI round-trip, so they report an invalid parameterisation (``n < 0`` or
-        ``p`` outside ``[0, 1]``) as a ``ComputeError`` consistently with the value-keyed methods, rather than silently
-        computing a moment from invalid inputs.
-
-        Null in either parameter propagates to null. `_checked` validates once for scalar parameters
-        (length-1 inputs) and per-row for columns.
+        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
         """
         return self._checked("binomial_params", self._p)
 

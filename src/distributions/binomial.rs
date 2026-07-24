@@ -63,12 +63,9 @@ fn support_point(value: f64) -> Option<u64> {
 }
 
 value_keyed_per_row! {
-    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, n, p)`.
-    ///
-    /// `inputs[0]` is the evaluation point, `inputs[1]` is `n`, `inputs[2]` is `p`. `null` in any
-    /// input propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f`
-    /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
-    /// `[0, 1]`). Shared by `pmf`, `ln_pmf`, `cdf`, `sf`, `ppf`.
+    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, n, p)`; shared by `pmf`,
+    /// `ln_pmf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises via
+    /// [`build_dist`]; `f` may return `None` to null a row on its own terms.
     fn value_keyed(&Binomial);
     params = (DataType::Int64 => i64, DataType::Float64 => f64);
     build = build_dist;
@@ -106,15 +103,10 @@ where
 
 /// Element-wise Binomial sampler.
 ///
-/// `inputs[0]` carries `n`, `inputs[1]` `p`, and `inputs[2]` a per-row index used to derive a
-/// per-row sub-seed, so the function is genuinely element-wise: chunking and threading cannot change
-/// the output. With `seed=None`, a fresh root seed is drawn once per call.
-///
-/// Per-row validation:
-///   * `null` (in any input) propagates;
-///   * a negative `n`, or a `NaN` / out-of-range `p`, raises `InvalidOperation`.
-///
-/// Returns a `UInt64` series.
+/// `inputs[0]` carries `n`, `inputs[1]` `p`, `inputs[2]` the per-row index each row's sub-seed
+/// derives from, so chunking and threading cannot change the output; `seed=None` draws a fresh
+/// root seed once per call. Per row, `null` propagates and an invalid parameterisation raises via
+/// [`build_sampler`]. Returns `UInt64`.
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
@@ -147,15 +139,13 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
 }
 
 sample_scalar_plugin! {
-    /// Static parameters for the constant-parameter sampler fast path: when both `n` and `p` are
-    /// Python scalars, they travel here as kwargs instead of as two full-length `pl.repeat`
-    /// columns re-validated on every row.
+    /// Static `(n, p)` for the constant-parameter sampler fast path: validated once, passed as
+    /// kwargs instead of full-length columns.
     struct BinomialScalarKwargs { n: i64, p: f64 }
 
-    /// Constant-parameter Binomial sampler: [`binomial_sample`] for the all-scalar case. The
-    /// `rand_distr` sampler is validated and built once (via [`build_sampler`], like the per-row
-    /// path), and only the per-row index travels as an input; seeding and the draw are unchanged,
-    /// so output matches `binomial_sample` for the same `(seed, index, n, p)`.
+    /// Constant-parameter Binomial sampler: [`binomial_sample`] with the `rand_distr` sampler
+    /// built once (via [`build_sampler`], like the per-row path); seeding and draw unchanged, so
+    /// output is bit-identical for the same inputs.
     fn binomial_sample_scalar(output_type = UInt64, physical = UInt64Type);
 
     samples = binomial_samples_scalar as BinomialSamplesScalarKwargs -> samples_u64_output;
@@ -164,16 +154,13 @@ sample_scalar_plugin! {
     draw = |dist, rng| dist.sample(rng);
 }
 
-/// Element-wise multi-draw Binomial sampler: `size` draws per row in one call.
+/// Element-wise multi-draw Binomial sampler: `size` draws per row in one call, the `rand_distr`
+/// sampler (whose BINV/BTPE setup is the expensive part) built once per row.
 ///
-/// The column-parameter counterpart of [`binomial_samples_scalar`], replacing `samples`' former
-/// construction of `k` [`binomial_sample`] calls glued by `concat_arr`: the `rand_distr` sampler
-/// (whose BINV/BTPE setup is the expensive part) is built once per row instead of once per draw.
-/// Row `i`'s draws come from the one stream seeded `(seed, i)`, so output is bit-identical to
-/// the scalar path for the same parameters (the seeding is positional, parameters never enter
-/// it, so equal-parameter rows still draw independently). Null/error contract follows
-/// [`binomial_sample`] per row; a null row yields a null array element. Returns
-/// `Array(UInt64, size)`.
+/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
+/// [`binomial_samples_scalar`] for the same parameters. Null/error contract follows
+/// [`binomial_sample`] per row; a null row yields a null array element.
+/// Returns `Array(UInt64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
@@ -292,12 +279,8 @@ fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 value_keyed_scalar_plugins! {
-    /// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
-    ///
-    /// Like [`BinomialScalarKwargs`] minus the sampler `seed`: when both parameters are Python
-    /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
-    /// full-length column re-validated on every row. The distribution is validated and built once;
-    /// only the evaluation-point column travels as an input.
+    /// Static `(n, p)` for the constant-parameter value-keyed fast paths (`<method>_scalar`):
+    /// validated and built once, only the evaluation-point column crosses FFI.
     struct BinomialParamsKwargs { n: i64, p: f64 }
 
     build = |kw| build_dist(kw.n, kw.p)?;
@@ -323,13 +306,10 @@ value_keyed_scalar_plugins! {
 param_validator! {
     /// Validate the `(n, p)` parameterisation and return the validated `p`.
     ///
-    /// `inputs[0]` is `n`, `inputs[1]` is `p`. Mirrors `normal_sigma` / `bernoulli_proba`: the
-    /// closed-form moments (`mean = n * p`, `variance = n * p * (1 - p)`) are computed from Polars
-    /// expressions and gated on this single FFI round-trip, so they report an invalid
-    /// parameterisation identically to the value-keyed methods that build the distribution
-    /// directly, rather than silently computing a moment from a negative `n` or an out-of-range
-    /// `p`. `null` in either input propagates; a negative `n` or a `NaN` / out-of-range `p` raises
-    /// `InvalidOperation` via [`build_dist`].
+    /// `inputs[0]` is `n`, `inputs[1]` is `p`. The Python closed-form moments (`mean = n * p`,
+    /// `variance = n * p * (1 - p)`) are gated on this single FFI round-trip, so they raise on an
+    /// invalid parameterisation exactly like the value-keyed methods. `null` in either input
+    /// propagates; invalid raises via [`build_dist`].
     fn binomial_params;
     params = (n: DataType::Int64 => i64, p: DataType::Float64 => f64);
     build = build_dist;

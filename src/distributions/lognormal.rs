@@ -44,12 +44,9 @@ fn build_underlying_normal(mu: f64, sigma: f64) -> PolarsResult<Normal> {
 }
 
 value_keyed_per_row! {
-    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mu, sigma)`.
-    ///
-    /// `inputs[0]` is the evaluation point, `inputs[1]` is `mu`, `inputs[2]` is `sigma`. `null` in
-    /// any input propagates to `null`; an invalid parameterisation raises via [`build_dist`]. `f`
-    /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
-    /// `[0, 1]`). Shared by `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
+    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by
+    /// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises
+    /// via [`build_dist`]; `f` may return `None` to null a row on its own terms.
     fn value_keyed(&LogNormal);
     params = (DataType::Float64 => f64, DataType::Float64 => f64);
     build = build_dist;
@@ -70,12 +67,9 @@ value_keyed_per_row! {
 param_validator! {
     /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
     ///
-    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `normal_sigma` / `uniform_range`: the
-    /// closed-form moments (`mean`, `variance`, `median`, `entropy`) are computed in Python and all
-    /// derive from this single FFI round-trip, so they report an invalid parameterisation
-    /// identically to the value-keyed methods that build the distribution directly. `null` in
-    /// either input propagates; a `NaN` `mu` or a non-positive / `NaN` `sigma` raises
-    /// `InvalidOperation` via [`build_dist`].
+    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
+    /// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
+    /// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
     fn lognormal_sigma;
     params = (mu: DataType::Float64 => f64, sigma: DataType::Float64 => f64);
     build = build_dist;
@@ -85,15 +79,10 @@ param_validator! {
 
 /// Element-wise LogNormal sampler.
 ///
-/// `inputs[0]` carries `mu`, `inputs[1]` `sigma`, and `inputs[2]` a per-row index used to derive a
-/// per-row sub-seed, so the function is genuinely element-wise: chunking and threading cannot change
-/// the output. With `seed=None`, a fresh root seed is drawn once per call.
-///
-/// Per-row validation:
-///   * `null` (in any input) propagates;
-///   * a `NaN` `mu`, or a non-positive / `NaN` `sigma`, raises `InvalidOperation`.
-///
-/// Returns a `Float64` series.
+/// `inputs[0]` carries `mu`, `inputs[1]` `sigma`, `inputs[2]` the per-row index each row's
+/// sub-seed derives from, so chunking and threading cannot change the output; `seed=None` draws a
+/// fresh root seed once per call. Per row, `null` propagates and an invalid parameterisation
+/// raises via [`build_dist`]. Returns `Float64`.
 #[polars_expr(output_type=Float64)]
 fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -127,15 +116,12 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
 }
 
 sample_scalar_plugin! {
-    /// Static parameters for the constant-parameter sampler fast path: when both `mu` and `sigma`
-    /// are Python scalars, they travel here as kwargs instead of as two full-length `pl.repeat`
-    /// columns re-validated on every row.
+    /// Static `(mu, sigma)` for the constant-parameter sampler fast path: validated once, passed
+    /// as kwargs instead of full-length columns.
     struct LogNormalScalarKwargs { mu: f64, sigma: f64 }
 
-    /// Constant-parameter LogNormal sampler: [`lognormal_sample`] for the all-scalar case. The
-    /// distribution is validated and built once, and only the per-row index travels as an input;
-    /// seeding and the draw are unchanged, so output matches `lognormal_sample` for the same
-    /// `(seed, index, mu, sigma)`.
+    /// Constant-parameter LogNormal sampler: [`lognormal_sample`] with the distribution built
+    /// once; seeding and draw unchanged, so output is bit-identical for the same inputs.
     fn lognormal_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = lognormal_samples_scalar as LogNormalSamplesScalarKwargs -> samples_f64_output;
@@ -144,15 +130,13 @@ sample_scalar_plugin! {
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
 }
 
-/// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call.
+/// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call, the distribution
+/// built once per row.
 ///
-/// The column-parameter counterpart of [`lognormal_samples_scalar`], replacing `samples`' former
-/// construction of `k` [`lognormal_sample`] calls glued by `concat_arr`: the distribution is
-/// built once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
-/// `(seed, i)`, so output is bit-identical to the scalar path for the same parameters (the
-/// seeding is positional, parameters never enter it, so equal-parameter rows still draw
-/// independently). Null/error contract follows [`lognormal_sample`] per row; a null row yields
-/// a null array element. Returns `Array(Float64, size)`.
+/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
+/// [`lognormal_samples_scalar`] for the same parameters. Null/error contract follows
+/// [`lognormal_sample`] per row; a null row yields a null array element.
+/// Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -270,12 +254,8 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 value_keyed_scalar_plugins! {
-    /// Static parameters for the constant-parameter value-keyed fast paths (`<method>_scalar`).
-    ///
-    /// Like [`LogNormalScalarKwargs`] minus the sampler `seed`: when both parameters are Python
-    /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
-    /// full-length column re-validated on every row. The distribution is validated and built once;
-    /// only the evaluation-point column travels as an input.
+    /// Static `(mu, sigma)` for the constant-parameter value-keyed fast paths (`<method>_scalar`):
+    /// validated and built once, only the evaluation-point column crosses FFI.
     struct LogNormalParamsKwargs { mu: f64, sigma: f64 }
 
     build = |kw| build_dist(kw.mu, kw.sigma)?;

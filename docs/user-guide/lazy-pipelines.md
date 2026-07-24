@@ -73,4 +73,4 @@ print(df.group_by("group", maintain_order=True).agg(density=dist.pdf("x")))
 
 This is what the scalar-to-column coercion buys: a Python `float` parameter is expanded to a row-aligned expression, so
 the plugin always receives a length-matched input and stays elementwise under partitioning. See
-[Architecture / Column-valued parameters](../architecture.md#column-valued-parameters) for the mechanics.
+[Architecture / Column-valued parameters](../explanation/architecture.md#column-valued-parameters) for the mechanics.

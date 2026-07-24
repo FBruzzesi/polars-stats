@@ -32,7 +32,7 @@ param_validator! {
     /// Exponential is an elementary closed-form distribution, so its pdf / cdf / ppf and moments are
     /// pure Polars expressions; routing the rate through this validator is what lets them report an
     /// invalid parameterisation consistently with `exponential_sample`, instead of silently computing
-    /// with a non-positive rate. One of the two unary `param_validator!` users (with `bernoulli_proba`).
+    /// with a non-positive rate.
     fn exponential_rate;
     params = (rate: DataType::Float64 => f64);
     build = build_dist;
@@ -42,17 +42,14 @@ param_validator! {
 
 /// Element-wise Exponential sampler.
 ///
-/// `inputs[0]` carries the rate (one per row) and `inputs[1]` a per-row index used to derive a
-/// per-row sub-seed, so the function is genuinely element-wise: chunking and threading cannot change
-/// the output. With `seed=None`, a fresh root seed is drawn once per call.
-///
-/// Per-row validation:
-///   * `null` (in either input) propagates;
-///   * a `NaN` or non-positive `rate` raises `InvalidOperation`.
+/// `inputs[0]` carries the rate (one per row), `inputs[1]` the per-row index each row's sub-seed
+/// derives from, so chunking and threading cannot change the output; `seed=None` draws a fresh
+/// root seed once per call. Per row, `null` propagates and an invalid rate raises via
+/// [`build_dist`].
 ///
 /// The draw keeps `statrs` (`O(1)` ziggurat: `sample_exp_1(rng) / rate`); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class `statrs` uses (unlike
-/// the binomial draw, see docs/design.md). Returns a `Float64` series.
+/// the binomial draw, see docs/explanation/design.md). Returns a `Float64` series.
 #[polars_expr(output_type=Float64)]
 fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
@@ -83,14 +80,12 @@ fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<S
 }
 
 sample_scalar_plugin! {
-    /// Static parameter for the constant-rate sampler fast path: when `rate` is a Python scalar, it
-    /// travels here as a kwarg instead of as a full-length `pl.repeat` column re-validated on every row.
+    /// Static `rate` for the constant-parameter sampler fast path: validated once, passed as a
+    /// kwarg instead of a full-length column.
     struct ExponentialScalarKwargs { rate: f64 }
 
-    /// Constant-rate Exponential sampler: [`exponential_sample`] for the scalar-`rate` case. The
-    /// distribution is validated and built once, and only the per-row index travels as an input;
-    /// seeding and the draw are unchanged, so output matches `exponential_sample` for the same
-    /// `(seed, index, rate)`.
+    /// Constant-rate Exponential sampler: [`exponential_sample`] with the distribution built once;
+    /// seeding and draw unchanged, so output is bit-identical for the same inputs.
     fn exponential_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = exponential_samples_scalar as ExponentialSamplesScalarKwargs -> samples_f64_output;
@@ -99,14 +94,13 @@ sample_scalar_plugin! {
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
 }
 
-/// Element-wise multi-draw Exponential sampler: `size` draws per row in one call.
+/// Element-wise multi-draw Exponential sampler: `size` draws per row in one call, the distribution
+/// built once per row.
 ///
-/// The column-parameter counterpart of [`exponential_samples_scalar`]: the distribution is built once
-/// per row instead of once per draw. Row `i`'s draws come from the one stream seeded `(seed, i)`, so
-/// output is bit-identical to the scalar path for the same `rate` (the seeding is positional,
-/// parameters never enter it, so equal-`rate` rows still draw independently). Null/error contract
-/// follows [`exponential_sample`] per row; a null row yields a null array element. Returns
-/// `Array(Float64, size)`.
+/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
+/// [`exponential_samples_scalar`] for the same `rate`. Null/error contract follows
+/// [`exponential_sample`] per row; a null row yields a null array element.
+/// Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;

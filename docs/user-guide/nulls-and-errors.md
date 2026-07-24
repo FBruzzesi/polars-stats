@@ -52,7 +52,7 @@ A wrong parameter *type* (e.g. passing a `list`) is rejected earlier, at constru
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined (some are on the roadmap) is set out in
-[Design notes](../design.md#moments-that-are-undefined).
+[Design notes](../explanation/design.md#moments-that-are-undefined).
 
 Raising is loud, uniform across distributions, and uniform across scalar vs column inputs. The rationale is in
-[Design notes](../design.md#invalid-parameters-raise-they-never-silently-null).
+[Design notes](../explanation/design.md#invalid-parameters-raise-they-never-silently-null).

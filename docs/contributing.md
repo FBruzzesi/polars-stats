@@ -20,7 +20,7 @@ Prefer the `Makefile` targets so flags stay consistent with CI:
 ```bash
 make test       # POLARS_MAX_THREADS=4 uv run --group testing pytest tests
 make typing     # pyrefly + pyright + mypy (all three, as in CI)
-make lint       # ruff + rumdl + cargo fmt (nightly) + clippy
+make lint       # prek hooks (ruff, rumdl, ryl) + cargo fmt (nightly) + clippy
 make benchmark  # polars_stats vs scipy comparison report (benchmarks/)
 ```
 
@@ -43,13 +43,13 @@ uv run --group docs zensical serve
 | `pyo3-polars` | the `#[polars_expr]` macro and FFI glue (source of ABI churn) |
 | `pyo3` | Python FFI, abi3 for forward compatibility |
 | `statrs` 0.18 | distribution math, and sampling except the binomial draw |
-| `rand_distr` 0.4 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](design.md#binomial-sampling-uses-rand_distr-not-statrs) |
+| `rand_distr` 0.4 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](explanation/design.md#binomial-sampling-uses-rand_distr-not-statrs) |
 | `rand` 0.8 | `RngCore` / `OsRng` for the unseeded root seed |
 | `rand_pcg` 0.3 | `Pcg64Mcg` per-row RNG for deterministic seeded sampling |
 | `serde` | deserialise the static `seed` kwarg |
 
 Deliberately excluded: `rand_chacha` (replaced by `rand_pcg`; per-row `ChaCha20`
-construction regressed sampling 10 to 20x, see [Design notes](design.md#sampling-derives-a-fresh-per-row-rng-from-root_seed-row_index)),
+construction made sampling markedly slower, see [Design notes](explanation/design.md#sampling-derives-a-fresh-per-row-rng-from-root_seed-row_index)),
 `ndarray` (Polars is Arrow-native), `rayon` (Polars parallelises at the planner), `scirs2-stats` (pre-1.0).
 
 ### Python runtime
@@ -65,7 +65,8 @@ Only `polars>=1.15`. No other runtime dependencies.
 * Python is checked by `ruff` (lint + format) and three type checkers in CI (`mypy`, `pyright`, `pyrefly`);
     Rust by `cargo fmt` (nightly) and `cargo clippy --all-features --all-targets -- -D warnings`.
     Prose and config are linted by `rumdl` (Markdown), `ryl` (YAML), `codespell`, `typos`, and `blacken-docs`, wired
-    through `.pre-commit-config.yaml`. Do not bypass the hooks with `--no-verify` unless asked.
+    through `.pre-commit-config.yaml` and run by `prek` both locally and in CI, so the hook versions pinned there are
+    the single source of truth. Do not bypass the hooks with `--no-verify` unless asked.
 
 ## Adding a distribution
 
@@ -83,10 +84,17 @@ is canonical if it conflicts with this section.
       `<name>_sample_scalar` / `<name>_samples_scalar` (parameters validated once in `kwargs`) come from the
       `sample_scalar_plugin!` macro in `src/rng.rs`, generated from one shared `build` / `draw` so they stay
       byte-identical to the per-row path.
-    * When `statrs` is the cheapest path: `pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`, native
-      `median`; each also gets a `<name>_<method>_scalar` constant-parameter twin via the shared `value_keyed_scalar`
-      driver.
-    * When the closed form is trivial: leave it in Python instead.
+    * When a method needs a **special function** (`erf`, log-gamma, regularized incomplete beta/gamma, ...) or has
+      no elementary closed form: bind it in `statrs` (`pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`,
+      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (from the
+      `value_keyed_per_row!` macro) and the constant-parameter `<name>_<method>_scalar` twin (from the
+      `value_keyed_scalar_plugins!` macro), both over the shared `value_keyed_scalar` driver, so the two paths are
+      byte-identical by construction. All three macros live in `src/distributions/mod.rs`.
+    * When a method is an **elementary** closed form (no special function: a Normal's
+      `0.5*log(2*pi*e*sigma^2)`, the Uniform / Exponential / Cauchy `pdf` / `cdf` / `ppf`, `mean = n*p`, ...):
+      **leave it in Python as a Polars expression, do not bind it in Rust.** A Rust binding for arithmetic Polars does
+      natively is dead FFI surface. `Uniform` and `Bernoulli` are the canonical closed-form distributions: only
+      `sample` and the validator touch Rust, everything else is a Polars hook in `_<name>.py`.
     * Factor the validating constructor into a `build_dist(...) -> PolarsResult<Dist>` helper so an invalid parameter
       maps through a `ComputeError` consistently.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
@@ -103,17 +111,32 @@ is canonical if it conflicts with this section.
       statrs-backed method, return `self._value_plugin("<name>_<method>", value)`: the base routes constant parameters
       to the `_scalar` fast path and column parameters to the per-row plugin.
     * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
-      `uniform_range` returns `max - min`). For a statrs-backed distribution whose moment formulas may omit a parameter,
-      expose it as `_checked_params` and gate every closed-form moment through `self._moment(<formula>)`; for a
-      closed-form distribution whose validator is already part of every formula (`Uniform`, `Bernoulli`), weave it in
-      directly and do not call `_moment`.
+      `uniform_range` returns `max - min`). The two-parameter validators are generated by the `param_validator!` macro
+      (`src/distributions/mod.rs`): declare each `<name>: <dtype> => <accessor>`, the `build`, the `returns` expression,
+      and `output_name = inputs[i]`. One-parameter validators (`bernoulli_proba`, `exponential_rate`) use the macro's
+      unary arm (a single `<name>: <dtype> => <accessor>`). For a statrs-backed distribution
+      whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate every closed-form
+      moment through `self._moment(<formula>)`; for a closed-form distribution whose validator is already part of every
+      formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
     `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.
-3. **Tests.** Two homes: `tests/distributions/<name>/`, one file per method (including a `validation_test.py` asserting
-   an invalid parameter raises `ComputeError` for both scalar and column inputs); and `tests/scipy_parity/<name>_test.py`
-   against `scipy.stats.<name>` to within `1e-10` (closed-form) or `1e-6` (binary-search `ppf`), compared with
-   `np.testing.assert_allclose`.
+3. **Tests.** A new distribution touches its own files **and** several shared registries; missing a registry silently
+   drops it from that suite (the run still passes, so nothing warns you). All of:
+
+    * `tests/distributions/<name>/`: one file per method, mirroring `tests/distributions/bernoulli/`, including a
+      `validation_test.py` asserting an invalid parameter raises `ComputeError` (not a null) for both scalar and column
+      inputs.
+    * `tests/scipy_parity/<name>_test.py`: one `Case` per method against `scipy.stats.<name>` through the shared
+      `_harness.py` (default absolute tolerance `1e-12`, relaxed per `Case` to `1e-9` / `1e-6` for erf-based or
+      binary-search-`ppf` methods).
+    * Shared registries, one entry each: `tests/property/_specs.py` (`ALL_SPECS`: a `DistSpec` with
+      `make` / `make_columns` / `make_masked` plus `density`, `eval_range`, and `integration_bounds` (continuous) or
+      `support` (discrete), which drives the whole property suite), `tests/distributions/output_name_test.py` (the
+      `sample` / `samples` output-naming contract), `tests/distributions/value_arg_str_test.py` (a `str` value
+      argument means `pl.col(name)`), and, for distributions with the corresponding fast path,
+      `tests/distributions/value_keyed_fast_path_test.py` and `tests/distributions/moment_fast_path_test.py`
+      (scalar-vs-column validation contracts, including invalid-parameter cases).
 4. **Update the umbrella issue** when the change merges.
 
 ## Conventions
@@ -124,7 +147,7 @@ state uncertainty explicitly; end non-trivial answers with a short "Blind spots"
 Code: KISS and YAGNI; production-grade type hints and explicit error handling; default to no comments, add one only when
 the *why* is non-obvious. Do not refactor speculatively, do not introduce backwards-compatibility shims unless asked,
 and do not add the `DistKind` dispatch macro (rejected for v1, see
-[Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)).
+[Design notes](explanation/design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)).
 
 Tests assert on `pl.Series` / `pl.DataFrame` via `polars.testing`, not Python lists. For random output, assert the null
 mask, not values. Genuinely scalar results are fine to read with `.item(...)` and compare via `pytest.approx`. scipy

@@ -52,10 +52,7 @@ class Beta(ContinuousDistribution):
     def _checked_params(self) -> pl.Expr:
         """``b`` validated in Rust against the full ``(a, b)`` parameterisation (raises otherwise).
 
-        Mirrors ``Normal._checked_params`` / ``Binomial._checked_params``: the closed-form moments
-        (``mean``, ``variance``) derive from this FFI round-trip, so they report an invalid shape as a ``ComputeError``
-        consistently with the value-keyed methods. Null in either parameter propagates to null. `_checked` validates
-        once for scalar parameters (length-1 inputs) and per-row for columns.
+        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
         """
         return self._checked("beta_params", self._b)
 

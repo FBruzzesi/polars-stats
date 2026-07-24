@@ -47,7 +47,7 @@ Pass an integer `seed` for output that is deterministic across platforms, chunki
 Determinism comes from deriving a fresh per-row generator from `(seed, row_index)` rather than advancing one shared RNG
 in iteration order. That keying makes a row's draw depend only on its global position, not on how Polars chunks,
 threads, or morsels the data, so `sample` is genuinely elementwise and correct under `over` / `group_by`. The mechanics
-are in [Architecture / Sampling](../architecture.md#sampling).
+are in [Architecture / Sampling](../explanation/architecture.md#sampling).
 
 !!! info "Streaming engine"
 

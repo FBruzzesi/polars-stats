@@ -1,7 +1,11 @@
 [package]
 name = "polars-stats"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
+description = "Probability distributions as Polars expressions"
+license = "MIT"
+repository = "https://github.com/FBruzzesi/polars-stats"
+publish = false # ships only as a cdylib inside the Python wheel, never to crates.io
 
 [lib]
 name = "polars_stats"

@@ -89,8 +89,8 @@ Runtime needs `polars>=1.15` and Python `>=3.10`.
 
 Full docs at [fbruzzesi.github.io/polars-stats](https://fbruzzesi.github.io/polars-stats/): the
 [API reference](https://fbruzzesi.github.io/polars-stats/reference/) with the distribution catalogue and method
-surface, and the [architecture](https://fbruzzesi.github.io/polars-stats/architecture/) and
-[design notes](https://fbruzzesi.github.io/polars-stats/design/).
+surface, and the [architecture](https://fbruzzesi.github.io/polars-stats/explanation/architecture/) and
+[design notes](https://fbruzzesi.github.io/polars-stats/explanation/design/).
 
 ## A note on the Rust code
 
@@ -102,6 +102,20 @@ per-row paths.
 
 Treat the Rust idioms with the appropriate skepticism: if you spot something that should be written differently,
 an issue or PR is very welcome.
+
+## Related projects
+
+`polars-stats` is not the first take on statistics inside Polars expressions. Two projects cover neighbouring
+ground, and if your need matches their scope they may serve you well:
+
+* [`polars-random`](https://github.com/diegoglozano/polars-random) generates random columns as native Polars
+  expressions (uniform, normal, binomial, integers), with column-valued parameters and seeding. Its focus is
+  sampling; `polars-stats` treats sampling as one method of a full distribution object, next to `pdf` / `cdf` /
+  `sf` / `ppf`, their numerically stable log variants, and closed-form moments.
+* [`polars_normal_stats`](https://github.com/MaxwellB13/polars_normal_stats) exposes `normal_cdf` / `normal_ppf` /
+  `normal_pdf` as expressions, also with per-row parameters. It covers the Normal distribution through three
+  functions; `polars-stats` generalises the same idea to a catalogue of distributions behind one scipy-like class
+  API, and adds survival functions, `log_cdf` / `log_sf`, and reproducible sampling.
 
 ## License
 
