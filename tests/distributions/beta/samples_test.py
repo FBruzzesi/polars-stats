@@ -29,7 +29,9 @@ def test_samples_seed_reproducible(frame: Callable[..., pl.DataFrame], seed: int
 
 
 def test_samples_within_support(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    result = frame(size=512).select(s=Beta(a=0.5, b=0.5).samples(size=8, seed=seed))["s"].arr.explode()
+    result = (
+        frame(size=512).select(s=Beta(a=0.5, b=0.5).samples(size=8, seed=seed))["s"].arr.explode(empty_as_null=False)
+    )
     assert result.is_between(0.0, 1.0).all()
 
 
@@ -46,7 +48,9 @@ def test_samples_moments_close(frame: Callable[..., pl.DataFrame], seed: int) ->
     a, b = 2.0, 3.0
     mean = a / (a + b)
     std = math.sqrt(a * b / ((a + b) ** 2 * (a + b + 1)))
-    result = frame(size=4_000).select(s=Beta(a=a, b=b).samples(size=16, seed=seed))["s"].arr.explode()
+    result = (
+        frame(size=4_000).select(s=Beta(a=a, b=b).samples(size=16, seed=seed))["s"].arr.explode(empty_as_null=False)
+    )
     _mean, _std = cast("float", result.mean()), cast("float", result.std())
     assert abs(_mean - mean) < 0.05 * std
     assert abs(_std - std) < 0.05 * std

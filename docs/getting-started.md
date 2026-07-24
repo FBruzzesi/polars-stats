@@ -10,8 +10,7 @@ icon: lucide/rocket
 pip install polars-stats
 ```
 
-Runtime needs only `polars>=1.15` and Python `>=3.10`. To build from source, see
-[Contributing](contributing.md).
+Runtime needs `polars>=1.15` and Python `>=3.10`. To build from source, see [Contributing](contributing.md).
 
 ## Construct a distribution
 

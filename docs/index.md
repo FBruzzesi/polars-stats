@@ -75,7 +75,7 @@ Runtime needs `polars>=1.15` and Python `>=3.10`
 
 ## A note on the Rust code
 
-**I am not a Rust expert, and a good part of the Rust layer was written with AI assistance. I am still learning!**
+**I am not a Rust expert, and a good part of the Rust layer was written with AI assistance.**
 
 What I vouch for is the behaviour, which is pinned by an extensive test suite: parity against `scipy.stats` on every
 method, property-based invariants, and bit-identity between the constant-parameter fast paths and the general

@@ -37,12 +37,9 @@ jobs:
     steps:
       - run: 'true'
 
-  # Runs every hook pinned in .pre-commit-config.yaml (ruff-format, ruff-check, uv-lock, rumdl,
-  # ryl, codespell, typos, blacken-docs, whitespace/EOF/AST checks, tests naming), so CI lints at
-  # exactly the same versions as local runs. `no-commit-to-branch` is commit-stage-only, hence
-  # skipped. Rust lints stay in the dedicated `rust-lint` job (toolchain + cache concerns).
+  # NOTE: Rust lints stay in the dedicated `rust-lint` job (toolchain + cache concerns).
   prek:
-    name: lint / prek
+    name: prek
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -38,7 +38,11 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_moments_close(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mean, std = 2.0, 1.5
-    result = frame(size=4_000).select(s=Normal(mu=mean, sigma=std).samples(size=16, seed=seed))["s"].arr.explode()
+    result = (
+        frame(size=4_000)
+        .select(s=Normal(mu=mean, sigma=std).samples(size=16, seed=seed))["s"]
+        .arr.explode(empty_as_null=False)
+    )
     _mean, _std = cast("float", result.mean()), cast("float", result.std())
     assert abs(_mean - mean) < 0.05 * std
     assert abs(_std - std) < 0.05 * std

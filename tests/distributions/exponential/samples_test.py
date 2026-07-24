@@ -37,12 +37,20 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 
 def test_samples_non_negative(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    series = frame(size=2_000).select(s=Exponential(rate=2.0).samples(size=8, seed=seed))["s"].arr.explode()
+    series = (
+        frame(size=2_000)
+        .select(s=Exponential(rate=2.0).samples(size=8, seed=seed))["s"]
+        .arr.explode(empty_as_null=False)
+    )
     assert (series >= 0.0).all()
 
 
 def test_samples_mean_close_to_inverse_rate(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    series = frame(size=4_000).select(s=Exponential(rate=2.0).samples(size=16, seed=seed))["s"].arr.explode()
+    series = (
+        frame(size=4_000)
+        .select(s=Exponential(rate=2.0).samples(size=16, seed=seed))["s"]
+        .arr.explode(empty_as_null=False)
+    )
     mean = cast("float", series.mean())
     assert abs(mean - 0.5) < 0.03 * 0.5
 
