@@ -60,18 +60,11 @@ fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
 
 /// Element-wise continuous Uniform sampler over `[min, max)`.
 ///
-/// `inputs[0]` carries the lower bound, `inputs[1]` the upper bound, and `inputs[2]` a per-row
-/// index used to derive a per-row sub-seed, so the function is genuinely elementwise: chunking
-/// and threading cannot change the output. With `seed=None`, a fresh root seed is drawn once per
-/// call.
-///
-/// Per-row validation:
-///   * `null` (in any input) propagates;
-///   * `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
-///     (surfaces as a `ComputeError`),
-///     consistent with how every distribution reports an invalid parameterisation.
-///
-/// Returns a `Float64` series.
+/// `inputs[0]` carries the lower bound, `inputs[1]` the upper bound, `inputs[2]` the per-row
+/// index each row's sub-seed derives from, so chunking and threading cannot change the output;
+/// `seed=None` draws a fresh root seed once per call. Per row, `null` propagates and an invalid
+/// parameterisation (`max <= min`, non-finite bounds, or a width overflowing `f64`) raises via
+/// [`build_dist`]. Returns `Float64`.
 #[polars_expr(output_type=Float64)]
 fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let min = inputs[0].cast(&DataType::Float64)?;
@@ -107,16 +100,13 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
 }
 
 sample_scalar_plugin! {
-    /// Static parameters for the constant-bounds sampler fast path: when both bounds are Python
-    /// scalars, they travel here as kwargs instead of as two full-length `pl.repeat` columns
-    /// re-validated on every row.
+    /// Static `(min, max)` for the constant-bounds sampler fast path: validated once, passed as
+    /// kwargs instead of full-length columns.
     struct UniformScalarKwargs { min: f64, max: f64 }
 
-    /// Constant-bounds Uniform sampler over `[min, max)`: [`uniform_sample`] for the all-scalar
-    /// case. The bounds are validated once (same error contract as `uniform_range`; the built
-    /// distribution is intentionally unused, see [`draw_half_open`]) and only the per-row index
-    /// travels as an input; seeding and the draw are unchanged, so output matches
-    /// `uniform_sample` for the same `(seed, index, min, max)`.
+    /// Constant-bounds Uniform sampler over `[min, max)`: [`uniform_sample`] with the bounds
+    /// validated once (the built distribution is intentionally unused, see [`draw_half_open`]);
+    /// seeding and draw unchanged, so output is bit-identical for the same inputs.
     fn uniform_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = uniform_samples_scalar as UniformSamplesScalarKwargs -> samples_f64_output;
@@ -125,16 +115,13 @@ sample_scalar_plugin! {
     draw = |(lo, hi), rng| draw_half_open(lo, hi, rng);
 }
 
-/// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one
-/// call.
+/// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one call,
+/// the bounds validated once per row.
 ///
-/// The column-parameter counterpart of [`uniform_samples_scalar`], replacing `samples`' former
-/// construction of `k` [`uniform_sample`] calls glued by `concat_arr`: the bounds are validated
-/// once per row instead of once per draw. Row `i`'s draws come from the one stream seeded
-/// `(seed, i)` via the shared [`draw_half_open`], so output is bit-identical to the scalar path
-/// for the same bounds (the seeding is positional, parameters never enter it, so equal-bound
-/// rows still draw independently). Null/error contract follows [`uniform_sample`] per row; a
-/// null row yields a null array element. Returns `Array(Float64, size)`.
+/// Seeding is positional (see [`samples_per_row`]) and the draw is the shared
+/// [`draw_half_open`], so output is bit-identical to [`uniform_samples_scalar`] for the same
+/// bounds. Null/error contract follows [`uniform_sample`] per row; a null row yields a null
+/// array element. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let min = inputs[0].cast(&DataType::Float64)?;

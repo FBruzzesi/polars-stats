@@ -170,11 +170,9 @@ pub(crate) use value_keyed_per_row;
 ///   parameter and name after it; Uniform's width names after the first).
 ///
 /// Two arms that differ only in arity: a binary one (`normal_sigma`, `lognormal_sigma`,
-/// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`). The
-/// unary arm landed with the second one-parameter distribution (Exponential), the trigger the
-/// umbrella names for extracting it; before that `bernoulli_proba` was the lone hand-written unary
-/// validator. A unary validator's `output_name` is always `inputs[0]` (its only input). Call sites
-/// are the distribution modules (`polars::prelude::*` in scope).
+/// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`).
+/// A unary validator's `output_name` is always `inputs[0]` (its only input). Call sites are the
+/// distribution modules (`polars::prelude::*` in scope).
 macro_rules! param_validator {
     (
         $(#[$meta:meta])*

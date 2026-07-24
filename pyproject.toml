@@ -4,9 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "polars-stats"
-description = "Probability distributions in polars"
+description = "Probability distributions as Polars expressions"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "MIT"
 authors = [{ name = "Francesco Bruzzesi"}]
 requires-python = ">=3.10"
 classifiers = [
@@ -29,12 +29,13 @@ dependencies = [
     "polars>=1.15.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/FBruzzesi/polars-stats"
+Documentation = "https://fbruzzesi.github.io/polars-stats/"
+Issues = "https://github.com/FBruzzesi/polars-stats/issues"
+
 [tool.maturin]
 module-name = "polars_stats._internal"
-
-[[tool.mypy.overrides]]
-module = "polars.utils.udfs"
-ignore_missing_imports = true
 
 [dependency-groups]
 dev = [

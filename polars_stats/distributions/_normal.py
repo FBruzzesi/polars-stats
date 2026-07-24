@@ -55,12 +55,10 @@ class Normal(ContinuousDistribution):
 
     @property
     def _checked_params(self) -> pl.Expr:
-        """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation."""
-        # Mirrors ``Uniform.range`` / ``Bernoulli._checked_p``: the closed-form moments derive from this
-        # FFI round-trip, so they report an invalid parameterisation (``sigma <= 0``, or a non-finite parameter) as a
-        # ``ComputeError`` consistently with the value-keyed methods. Null in either parameter propagates to null, so a
-        # moment built on this nulls when either input is null.
-        # `_checked` validates once for scalar parameters (length-1 inputs) and per-row for columns.
+        """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation.
+
+        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
+        """
         return self._checked("normal_sigma", self._sigma)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:

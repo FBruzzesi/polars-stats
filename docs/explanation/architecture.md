@@ -21,7 +21,7 @@ questions, see [Design notes](design.md).
 
 The method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, `isf`, the `log_*` family, `mean`, `variance`, `std`, `median`,
 `entropy`, `sample`, `samples`) is defined on the abstract base classes `ContinuousDistribution` and
-`DiscreteDistribution`. The catalogue and the full table live in the [API reference](reference/index.md#method-surface).
+`DiscreteDistribution`. The catalogue and the full table live in the [API reference](../reference/index.md#method-surface).
 
 **Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`,
 applies `propagate_null`, then delegates the maths to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses
@@ -44,11 +44,11 @@ Every distribution `__init__` coerces each parameter with a single shared helper
 
 | Input | Coercion |
 |---|---|
-| `float`, `int` | `pl.repeat(value, n=pl.len(), dtype=Float64)` (row-aligned, keeps `is_elementwise=True` valid under `over` / `group_by`) |
+| `float` (`int` for count parameters like Binomial's `n`, via `coerce_n`) | `pl.repeat(value, n=pl.len(), dtype=...)` (row-aligned, keeps `is_elementwise=True` valid under `over` / `group_by`) |
 | `pl.Expr` | passed through |
 | `pl.Series` | `pl.lit(series)` |
 | `str` | `pl.col(name)` |
-| other | `TypeError` |
+| other (including `int` for a float parameter, `bool` anywhere) | `TypeError` |
 
 A scalar is expanded to a length-`N` expression (not `pl.lit`) on purpose: the plugin always receives a row-aligned
 input, so it stays elementwise and `over` / `group_by` invoke it once per partition rather than as an aggregation.
@@ -69,14 +69,16 @@ expression engine. Methods that go through `statrs` (sampling, transcendental `p
 **Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so to enforce the invalid-parameter contract
 a closed-form distribution routes its parameters through one small validating plugin that raises on a bad row and
 returns a reused quantity. `Uniform.range` returns `max - min` and raises on `max <= min`; `Bernoulli` validates `p` in
-`[0, 1]`; `Normal` validates `std_dev > 0`. Every closed-form method derives from that quantity, so even a pure-math
+`[0, 1]`; `Normal` validates `sigma > 0`. Every closed-form method derives from that quantity, so even a pure-math
 `mean` performs one FFI round-trip and reports an invalid parameterisation consistently. This trades a little throughput
 for a uniform error surface.
 
 ## Sampling
 
 `sample(seed)` returns one draw per row from the row-specific distribution; `samples(size, seed)` returns an
-`Array(inner=..., shape=size)`, implemented in the base by calling `sample` `size` times with derived sub-seeds.
+`Array(inner=..., shape=size)`, drawn as one native multi-draw plugin call per frame: row `i`'s `size` draws are
+consecutive values from the one per-row stream keyed `(seed, i)`, so `samples(size=1)` matches `sample` bit for bit
+and growing `size` extends each row's array without changing existing draws.
 
 **Per-row seeding**: the root seed is resolved once per plugin call (`OsRng` when `seed=None`), then each row derives
 its own `Pcg64Mcg` generator from `(root_seed, row_index)` via two splitmix64 mixing draws. The row index arrives as a
@@ -95,20 +97,18 @@ non-null index straight into the typed output. Each distribution declares its fa
 `sample_scalar_plugin!` macro in `rng.rs` (kwargs struct, output dtype, one-time `build`, per-row `draw`), which
 generates the kwargs struct and the plugin function, so a new distribution cannot drift from the pattern. It reuses
 the same `(root_seed, row_index)` seeding and the same draw as the per-row path, so output is byte-identical for the
-same seed (a property test pins that equality); column-valued parameters still take the general per-row plugin. This
-is what moves the sampler from slower than scipy at small frames to faster from roughly 100k rows up, where the
-per-element draw dominates the fixed `int_range` row-index cost.
+same seed (a property test pins that equality); column-valued parameters still take the general per-row plugin.
 
 !!! info "Earlier `ChaCha20` design (removed)"
 
     A previous design advanced a single `ChaCha20Rng` once per row in iteration order, which coupled rows across chunks
-    and was not streaming-safe. The naive fix, constructing a `ChaCha20Rng` per row, regressed sampling 10 to 20x (a key
-    schedule plus a keystream block per draw). Per-row `Pcg64Mcg` is both correct and cheap and replaced it; `statrs`'s
-    sampling traits consume it directly.
+    and was not streaming-safe. The naive fix, constructing a `ChaCha20Rng` per row, made sampling markedly slower (a
+    key schedule plus a keystream block per draw). Per-row `Pcg64Mcg` is both correct and cheap and replaced it;
+    `statrs`'s sampling traits consume it directly.
 
 ## Null and error contract
 
-The full table is in [User guide / Nulls and errors](user-guide/nulls-and-errors.md). The rule: an invalid parameter value
+The full table is in [User guide / Nulls and errors](../user-guide/nulls-and-errors.md). The rule: an invalid parameter value
 raises a `ComputeError` and fails the evaluation; `null` is reserved for `null` *inputs*. Construction rejects only
 wrong *types*. There is no early Python validation of parameter values, so a bad scalar and a bad column row surface
 identically.
@@ -132,8 +132,9 @@ polars-stats/
 │       └── _<name>.py        # one Python class per distribution
 ├── tests/
 │   ├── distributions/<name>/ # one folder per distribution, one file per method
+│   ├── property/             # hypothesis-based invariant tests
 │   └── scipy_parity/         # scipy reference-oracle tests
-├── benchmarks/               # manual polars_stats vs scipy comparison report
+├── benchmarks/               # internal benchmark harness (not part of the docs)
 └── docs/                     # this documentation
 ```
 
@@ -141,7 +142,7 @@ polars-stats/
 
 The math runs on `statrs` 0.18; the plugin glue is `pyo3-polars` over `pyo3` (abi3); per-row seeded RNG is `rand_pcg`
 (`Pcg64Mcg`), with `rand` for `OsRng`; `serde` deserialises the static `seed` kwarg. The full dependency rationale and
-the deliberately-excluded crates are in [Contributing / Stack](contributing.md#stack).
+the deliberately-excluded crates are in [Contributing / Stack](../contributing.md#stack).
 
 ## Compatibility and release
 

@@ -14,19 +14,21 @@ nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "User guide" = [
+    { "Home" = "user-guide/index.md" },
     { "Column-valued parameters" = "user-guide/column-parameters.md" },
     { "Lazy pipelines" = "user-guide/lazy-pipelines.md" },
     { "Sampling" = "user-guide/sampling.md" },
     { "Nulls and errors" = "user-guide/nulls-and-errors.md" },
   ] },
   { "API reference" = [
-    { "Overview" = "reference/index.md" },
+    { "Home" = "reference/index.md" },
     { "Continuous" = "reference/continuous.md" },
     { "Discrete" = "reference/discrete.md" },
   ] },
   { "Explanation" = [
-    { "Architecture" = "architecture.md" },
-    { "Design notes" = "design.md" },
+    { "Home" = "explanation/index.md" },
+    { "Architecture" = "explanation/architecture.md" },
+    { "Design notes" = "explanation/design.md" },
   ] },
   { "Contributing" = "contributing.md" },
 ]
@@ -77,7 +79,6 @@ features = [
     "navigation.instant",
     "navigation.instant.prefetch",
     "navigation.path",
-    "navigation.sections",
     "navigation.top",
     "navigation.tracking",
     "search.highlight",
@@ -113,6 +114,9 @@ toggle.name = "Switch to light mode"
 [project.markdown_extensions.md_in_html]
 [project.markdown_extensions.toc]
 permalink = true
+# Keep "On this page" to three levels: the API reference renders every method as an h4, which
+# otherwise floods the sidebar (prose pages top out at h3, so nothing else is affected).
+toc_depth = 3
 [project.markdown_extensions.pymdownx.arithmatex]
 generic = true
 [project.markdown_extensions.pymdownx.betterem]
@@ -148,6 +152,9 @@ paths = ["."]
 inventories = ["https://docs.python.org/3/objects.inv"]
 
 [project.plugins.mkdocstrings.handlers.python.options]
+# Classes render at h3 (nested under each page's h2 sections), so members land at h4, below the
+# toc_depth = 3 cutoff: "On this page" lists the classes, not every method.
+heading_level = 3
 docstring_style = "google"
 docstring_section_style = "table"
 show_root_heading = true

@@ -39,9 +39,9 @@ stable across releases and platforms, so seeded results stay reproducible. The r
 (`OsRng` when `seed=None`); each row then derives its own generator from `(root_seed, row_index)`.
 
 This replaced an earlier "single `ChaCha20Rng` advanced once per row in iteration order" design, which coupled rows
-across chunks (order-dependent, not streaming-safe). The naive fix, a `ChaCha20Rng` per row, regressed sampling 10 to
-20x. A one-shot hash-to-uniform would be cheaper still but only serves distributions needing a single uniform per draw,
-so it is deliberately not the foundation.
+across chunks (order-dependent, not streaming-safe). The naive fix, a `ChaCha20Rng` per row, made sampling markedly
+slower (a key schedule plus a keystream block per draw). A one-shot hash-to-uniform would be cheaper still but only
+serves distributions needing a single uniform per draw, so it is deliberately not the foundation.
 
 ### Constant parameters take a sampler fast path
 
@@ -49,14 +49,13 @@ so it is deliberately not the foundation.
 sampler is built for the differentiator (column-valued parameters), but it makes the common constant-parameter case pay
 for machinery it does not use: each scalar is expanded to a full-length `pl.repeat` column, marshalled across FFI, and
 re-validated on every row, and the distribution is rebuilt per row. For a cheap draw (uniform is one multiply-add) that
-fixed overhead dominates, leaving the sampler slower than scipy until well past 100k rows.
+fixed overhead dominates the draw itself.
 
 The fast path passes the constant parameters in `kwargs`, validates and builds the distribution once, and sends only the
 row index as an input. It keeps the exact `(root_seed, row_index)` seeding and the same draw, so its output is
 byte-identical to the per-row path for any seed; that equality is the contract, pinned by a property test
-(`test_sample_scalar_fast_path_matches_per_row`) rather than left implicit. The result is a 2 to 9x speedup over scipy
-at 100k+ rows across distributions, and lower peak memory (no constant columns), with reproducibility and the chunk- and
-thread-invariance guarantees untouched.
+(`test_sample_scalar_fast_path_matches_per_row`) rather than left implicit. The result is less per-row work and lower
+peak memory (no constant columns), with reproducibility and the chunk- and thread-invariance guarantees untouched.
 
 It is the one deliberate exception to "parameters travel in `inputs`, not `kwargs`": admissible precisely because the
 path is selected only when the parameters are known scalars, so nothing column-valued is ever forced into `kwargs`.
@@ -64,8 +63,9 @@ path is selected only when the parameters are known scalars, so nothing column-v
 ### Constant parameters validate once, not per row
 
 The closed-form moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods of `Uniform` / `Bernoulli`
-do not build a distribution; they compute a Polars expression. But they still route their *validation* through a small
-Rust plugin (`normal_std_dev`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`) so an invalid
+/ `Exponential` do not build a distribution; they compute a Polars expression. But they still route their *validation*
+through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`,
+`exponential_rate`, `beta_params`) so an invalid
 parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a
 nonsense moment (see "Invalid parameters raise"). On the general path that plugin runs over the full-length `pl.repeat`
 parameter columns, validating the *same constant* on every row.
@@ -103,7 +103,7 @@ does not go through `statrs`; every value-keyed method (`pmf`, `cdf`, `ppf`, ...
 
 ### Invalid parameters raise, they never silently null
 
-An invalid parameter value, scalar or one bad column row (`std_dev <= 0`, `max <= min`, `p` outside `[0, 1]`, a
+An invalid parameter value, scalar or one bad column row (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, a
 non-finite bound), maps the `statrs` constructor error through a `ComputeError` and fails the whole evaluation.
 
 This reverses an earlier "produce null, keep the pipeline running" decision. Silently nulling hides a modelling error: a
