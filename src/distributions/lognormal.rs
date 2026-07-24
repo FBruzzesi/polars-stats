@@ -70,7 +70,7 @@ value_keyed_per_row! {
 param_validator! {
     /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
     ///
-    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `normal_std_dev` / `uniform_range`: the
+    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `normal_sigma` / `uniform_range`: the
     /// closed-form moments (`mean`, `variance`, `median`, `entropy`) are computed in Python and all
     /// derive from this single FFI round-trip, so they report an invalid parameterisation
     /// identically to the value-keyed methods that build the distribution directly. `null` in

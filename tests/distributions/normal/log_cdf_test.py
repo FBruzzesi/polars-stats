@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def test_log_cdf_equals_log_of_cdf(value_grid: Callable[[float, float], list[float]]) -> None:
     mean, std = 1.0, 2.0
     xs = value_grid(mean, std)
-    n = Normal(mean=mean, std_dev=std)
+    n = Normal(mu=mean, sigma=std)
     result = pl.DataFrame({"x": xs}).select(diff=n.log_cdf(pl.col("x")) - n.cdf(pl.col("x")).log())["diff"]
     expected = pl.Series("diff", [0.0] * result.len(), dtype=pl.Float64)
     assert_series_equal(result, expected, rel_tol=0.0, abs_tol=1e-12)

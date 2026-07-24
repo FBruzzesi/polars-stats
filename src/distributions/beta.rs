@@ -29,7 +29,7 @@ fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
 param_validator! {
     /// Validate the `(a, b)` parameterisation and return the validated `b`.
     ///
-    /// `inputs[0]` is `a`, `inputs[1]` is `b`. Mirrors `normal_std_dev` / `binomial_params`: the
+    /// `inputs[0]` is `a`, `inputs[1]` is `b`. Mirrors `normal_sigma` / `binomial_params`: the
     /// closed-form moments (`mean = a / (a + b)`, `variance = a * b / ((a + b)^2 * (a + b + 1))`)
     /// are computed from Polars expressions and gated on this single FFI round-trip, so they report
     /// an invalid parameterisation identically to the value-keyed methods that build the
@@ -96,7 +96,7 @@ where
 ///
 /// The draw keeps `statrs` (two `O(1)`-amortised Gamma draws, normalised); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class it uses (unlike the
-/// binomial draw, see DESIGN.md). Returns a `Float64` series.
+/// binomial draw, see docs/design.md). Returns a `Float64` series.
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let a = inputs[0].cast(&DataType::Float64)?;

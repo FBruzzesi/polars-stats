@@ -51,7 +51,7 @@ def test_samples_mean_close_to_p_for_large_total(
 ) -> None:
     n, size, p = 4_000, 16, 0.3
     tolerance = 0.01
-    result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"].arr.explode()
+    result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"].arr.explode(empty_as_null=False)
     mean = cast("float", result.mean())
     assert abs(mean - p) < tolerance
 

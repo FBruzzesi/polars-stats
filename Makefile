@@ -1,11 +1,9 @@
 SHELL=/bin/bash
 
+.PHONY: lint test benchmark typing install install-release
+
 lint:
-	uvx ruff version
-	uvx ruff format .
-	uvx ruff check . --fix
-	uvx ruff clean
-	uvx rumdl check .
+	uvx prek run --all-files ruff-format ruff-check rumdl ryl
 	cargo +nightly fmt --all --check
 	cargo clippy --all-features
 

@@ -323,7 +323,7 @@ value_keyed_scalar_plugins! {
 param_validator! {
     /// Validate the `(n, p)` parameterisation and return the validated `p`.
     ///
-    /// `inputs[0]` is `n`, `inputs[1]` is `p`. Mirrors `normal_std_dev` / `bernoulli_proba`: the
+    /// `inputs[0]` is `n`, `inputs[1]` is `p`. Mirrors `normal_sigma` / `bernoulli_proba`: the
     /// closed-form moments (`mean = n * p`, `variance = n * p * (1 - p)`) are computed from Polars
     /// expressions and gated on this single FFI round-trip, so they report an invalid
     /// parameterisation identically to the value-keyed methods that build the distribution

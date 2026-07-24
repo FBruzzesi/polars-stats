@@ -13,8 +13,10 @@ Shipped today:
 
 | Distribution | Kind | scipy equivalent |
 |---|---|---|
-| `Normal(mean, std_dev)` | continuous | `norm(loc=mean, scale=std_dev)` |
+| `Beta(a, b)` | continuous | `beta(a, b)` |
+| `Exponential(rate)` | continuous | `expon(scale=1 / rate)` |
 | `LogNormal(mu, sigma)` | continuous | `lognorm(s=sigma, scale=exp(mu))` |
+| `Normal(mu, sigma)` | continuous | `norm(loc=mu, scale=sigma)` |
 | `Uniform(min, max)` | continuous | `uniform(loc=min, scale=max - min)` |
 | `Bernoulli(p)` | discrete | `bernoulli(p)` |
 | `Binomial(n, p)` | discrete | `binom(n, p)` |
@@ -106,8 +108,8 @@ name (`str`), or a `pl.Expr`; argument-free statistics take none. All return a `
 | `sample(seed=None)` | yes | yes | one variate per row |
 | `samples(size, seed=None)` | yes | yes | a width-`size` `Array` per row |
 
-Where a more accurate closed form is available (a native `sf`, `ln_pdf`, or `median`), a distribution binds it;
-otherwise the composing defaults apply (`sf = 1 - cdf`, `log_pdf = pdf().log()`, `median = ppf(0.5)`).
+Where a more accurate closed form is available (a native `sf`, `ln_pdf`, or a stable `log_sf`), a distribution binds
+it; otherwise the composing defaults apply (`sf = 1 - cdf`, `log_pdf = pdf().log()`, `median = ppf(0.5)`).
 
 Every method is a `pl.Expr`, so it works the same whether the parameters are scalars or per-row columns. See:
 

@@ -10,7 +10,7 @@ The `sample(seed)` method draws one variate per row from that row's distribution
 import polars as pl
 import polars_stats as ps
 
-dist = ps.Normal(mean="mu", std_dev="sigma")
+dist = ps.Normal(mu="mu", sigma="sigma")
 df = pl.DataFrame({"mu": [0.0, 10.0], "sigma": [1.0, 2.0]})
 
 print(df.with_columns(draw=dist.sample(seed=42)))
@@ -32,8 +32,8 @@ The sample element dtype is per distribution and is not normalised to `Float64`:
 | Distribution | Sample dtype |
 |---|---|
 | `Bernoulli` | `Boolean` |
-| `Normal`, `LogNormal`, `Uniform` | `Float64` |
-| `Binomial` (and other discrete) | `UInt64` |
+| `Beta`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
+| `Binomial` | `UInt64` |
 
 ## Seeding and reproducibility
 

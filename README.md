@@ -15,7 +15,7 @@ Polars expressions, with two properties that `scipy` and `numpy` do not give you
     import polars as pl
     import polars_stats as ps
 
-    norm = ps.Normal(mean=pl.col("mu"), std_dev=pl.col("sigma"))
+    norm = ps.Normal(mu=pl.col("mu"), sigma=pl.col("sigma"))
     norm.cdf(pl.col("x"))
     ```
 
@@ -53,7 +53,7 @@ readings = pl.LazyFrame(
     }
 )
 
-norm = ps.Normal(mean="mu", std_dev="sigma")
+norm = ps.Normal(mu="mu", sigma="sigma")
 
 anomalies = (
     readings.with_columns(upper_tail=norm.sf("value"))
@@ -77,12 +77,31 @@ shape: (2, 4)
 
 Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, without leaving the lazy engine.
 
+## Installation
+
+```bash
+pip install polars-stats
+```
+
+Runtime needs `polars>=1.15` and Python `>=3.10`.
+
 ## Documentation
 
 Full docs at [fbruzzesi.github.io/polars-stats](https://fbruzzesi.github.io/polars-stats/): the
 [API reference](https://fbruzzesi.github.io/polars-stats/reference/) with the distribution catalogue and method
 surface, and the [architecture](https://fbruzzesi.github.io/polars-stats/architecture/) and
 [design notes](https://fbruzzesi.github.io/polars-stats/design/).
+
+## A note on the Rust code
+
+**I am not a Rust expert, and a good part of the Rust layer was written with AI assistance.**
+
+What I vouch for is the behaviour, which is pinned by an extensive test suite: parity against `scipy.stats` on every
+method, property-based invariants, and bit-identity between the constant-parameter fast paths and the general
+per-row paths.
+
+Treat the Rust idioms with the appropriate skepticism: if you spot something that should be written differently,
+an issue or PR is very welcome.
 
 ## License
 

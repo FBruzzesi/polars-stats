@@ -28,7 +28,7 @@ baselines = pl.LazyFrame(
 
 anomalies = (
     readings.join(baselines, on="sensor")
-    .with_columns(score=ps.Normal(mean="mu", std_dev="sigma").sf("reading"))
+    .with_columns(score=ps.Normal(mu="mu", sigma="sigma").sf("reading"))
     .filter(pl.col("score") < 0.01)
     .collect()
 )
@@ -56,7 +56,7 @@ df = pl.DataFrame(
         "x": [0.0, 1.0, 5.0],
     }
 )
-dist = ps.Normal(mean="mu", std_dev="sigma")
+dist = ps.Normal(mu="mu", sigma="sigma")
 print(
     df.with_columns(
         density=dist.pdf("x"),

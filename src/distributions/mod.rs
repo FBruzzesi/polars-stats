@@ -165,11 +165,11 @@ pub(crate) use value_keyed_per_row;
 ///   the continuous parameters are `Float64`/`.f64()`); the matched values bind to `<name>`;
 /// * `build`: the constructor (`build_dist`), validating per row (`?` is available);
 /// * `returns`: the `Float64` to emit, an expression over the parameter names (a parameter itself,
-///   e.g. `std_dev`, or a derived width, e.g. `max - min`);
+///   e.g. `sigma`, or a derived width, e.g. `max - min`);
 /// * `output_name = inputs[i]`: which input column names the output (most return the second
 ///   parameter and name after it; Uniform's width names after the first).
 ///
-/// Two arms that differ only in arity: a binary one (`normal_std_dev`, `lognormal_sigma`,
+/// Two arms that differ only in arity: a binary one (`normal_sigma`, `lognormal_sigma`,
 /// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`). The
 /// unary arm landed with the second one-parameter distribution (Exponential), the trigger the
 /// umbrella names for extracting it; before that `bernoulli_proba` was the lone hand-written unary

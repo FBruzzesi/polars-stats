@@ -55,7 +55,7 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 # should raise. `int` `n` for binomial keeps its `Int64` column dtype.
 # id -> (scalar factory, column factory, should_raise)
 _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _UnivariateDistribution], bool]] = {
-    "normal mean=nan": (lambda: Normal(_NAN, 1.0), lambda: Normal(_col(_NAN), _col(1.0)), True),
+    "normal mu=nan": (lambda: Normal(_NAN, 1.0), lambda: Normal(_col(_NAN), _col(1.0)), True),
     "normal std=0": (lambda: Normal(0.0, 0.0), lambda: Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (lambda: Normal(0.0, -1.0), lambda: Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (lambda: Normal(0.0, _NAN), lambda: Normal(_col(0.0), _col(_NAN)), True),
@@ -109,7 +109,7 @@ def test_scalar_fast_path_validates_on_empty_input() -> None:
     """
     empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
 
-    with pytest.raises(pl.exceptions.ComputeError, match="std_dev must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
         empty.select(r=Normal(0.0, -1.0).pdf(pl.col("x")))
 
     per_row = empty.select(r=Normal(_col(0.0), _col(-1.0)).pdf(pl.col("x")))

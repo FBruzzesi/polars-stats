@@ -306,7 +306,7 @@ where
         })
 }
 
-/// Two-parameter counterpart of [`binary_param_rows`] (e.g. `(mean, std_dev)`, `(n, p)`): zip both
+/// Two-parameter counterpart of [`binary_param_rows`] (e.g. `(mu, sigma)`, `(n, p)`): zip both
 /// parameter columns with the row index and, on a fully-non-null row, run `build` once. The two
 /// parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial) fits.
 pub(crate) fn ternary_param_rows<'a, A, B, S, F>(

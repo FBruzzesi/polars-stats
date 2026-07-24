@@ -15,54 +15,53 @@ if TYPE_CHECKING:
 
     from polars_stats._typing import IntoExprColumn
 
-
 _TWO_PI_E = math.tau * math.e
-"""2 * pi * e, the constant inside the normal's differential entropy `0.5 * log(2 * pi * e * std_dev^2)`"""
+"""2 * pi * e, the constant inside the normal's differential entropy `0.5 * log(2 * pi * e * sigma^2)`"""
 
 
 class Normal(ContinuousDistribution):
-    """Normal (Gaussian) distribution with location ``mean`` and scale ``std_dev``.
+    """Normal (Gaussian) distribution with location ``mu`` and scale ``sigma``.
 
-    Equivalent to ``scipy.stats.norm(loc=mean, scale=std_dev)``. The standard normal is the default parameterisation
-    (``mean=0``, ``std_dev=1``); it is handled by the same code path as any other, not special-cased.
+    Equivalent to ``scipy.stats.norm(loc=mu, scale=sigma)``. The standard normal is the default parameterisation
+    (``mu=0``, ``sigma=1``); it is handled by the same code path as any other, not special-cased.
 
     Arguments:
-        mean: Location parameter. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or
+        mu: Location parameter. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or
             column name ``str``) carrying one location per row.
-        std_dev: Scale parameter, with ``std_dev > 0``. Same accepted types as ``mean``.
+        sigma: Scale parameter, with ``sigma > 0``. Same accepted types as ``mu``.
 
-    An invalid scale (``std_dev <= 0`` or a non-finite parameter) is not checked at construction;
+    An invalid scale (``sigma <= 0`` or a non-finite parameter) is not checked at construction;
     it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
 
     Null parameters propagate to null.
     """
 
-    _mean: pl.Expr
-    _std_dev: pl.Expr
+    _mu: pl.Expr
+    _sigma: pl.Expr
     _plugin_prefix: ClassVar[str] = "normal"
 
     def __init__(
         self,
-        mean: float | IntoExprColumn = 0.0,
-        std_dev: float | IntoExprColumn = 1.0,
+        mu: float | IntoExprColumn = 0.0,
+        sigma: float | IntoExprColumn = 1.0,
     ) -> None:
-        self._mean = coerce_param(mean, name="mean")
-        self._std_dev = coerce_param(std_dev, name="std_dev")
-        self._scalar_kwargs = scalar_kwargs(mean=scalar_float(mean), std_dev=scalar_float(std_dev))
+        self._mu = coerce_param(mu, name="mu")
+        self._sigma = coerce_param(sigma, name="sigma")
+        self._scalar_kwargs = scalar_kwargs(mu=scalar_float(mu), sigma=scalar_float(sigma))
 
     @property
     def _param_exprs(self) -> tuple[pl.Expr, ...]:
-        return (self._mean, self._std_dev)
+        return (self._mu, self._sigma)
 
     @property
     def _checked_params(self) -> pl.Expr:
-        """``std_dev`` validated in Rust against the full ``(mean, std_dev)`` parameterisation."""
+        """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation."""
         # Mirrors ``Uniform.range`` / ``Bernoulli._checked_p``: the closed-form moments derive from this
-        # FFI round-trip, so they report an invalid parameterisation (``std_dev <= 0``, or a non-finite parameter) as a
+        # FFI round-trip, so they report an invalid parameterisation (``sigma <= 0``, or a non-finite parameter) as a
         # ``ComputeError`` consistently with the value-keyed methods. Null in either parameter propagates to null, so a
         # moment built on this nulls when either input is null.
         # `_checked` validates once for scalar parameters (length-1 inputs) and per-row for columns.
-        return self._checked("normal_std_dev", self._std_dev)
+        return self._checked("normal_sigma", self._sigma)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Density via native ``statrs`` ``Continuous::pdf``."""
@@ -77,7 +76,7 @@ class Normal(ContinuousDistribution):
         return self._value_plugin("normal_cdf", value)
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """Log-cdf via the native stable ``ln_erfc`` form (finite past ~38 std_dev, unlike ``cdf().log()``)."""
+        """Log-cdf via the native stable ``ln_erfc`` form (finite past ~38 sigma, unlike ``cdf().log()``)."""
         return self._value_plugin("normal_ln_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
@@ -88,7 +87,7 @@ class Normal(ContinuousDistribution):
         return self._value_plugin("normal_sf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """Log-sf via the native stable ``ln_erfc`` form (finite past ~38 std_dev, unlike ``sf().log()``).
+        """Log-sf via the native stable ``ln_erfc`` form (finite past ~38 sigma, unlike ``sf().log()``).
 
         The flagship anomaly-scoring path: ``sf`` for a many-sigma event underflows to ``0`` and its log to
         ``-inf``; this stays finite (``scipy.stats.norm.logsf``-equivalent).
@@ -104,17 +103,17 @@ class Normal(ContinuousDistribution):
         return self._value_plugin("normal_ppf", quantile)
 
     def mean(self) -> pl.Expr:
-        """Expected value, the ``mean`` location parameter."""
-        return self._moment(self._mean)
+        """Expected value, the ``mu`` location parameter."""
+        return self._moment(self._mu)
 
     def variance(self) -> pl.Expr:
-        """Variance, ``std_dev ** 2``."""
-        return self._moment(self._std_dev**2)
+        """Variance, ``sigma ** 2``."""
+        return self._moment(self._sigma**2)
 
     def median(self) -> pl.Expr:
-        """Median, equal to the ``mean`` location parameter."""
-        return self._moment(self._mean)
+        """Median, equal to the ``mu`` location parameter."""
+        return self._moment(self._mu)
 
     def entropy(self) -> pl.Expr:
-        """Differential entropy, ``0.5 * log(2 * pi * e * std_dev ** 2)``."""
-        return self._moment(0.5 * (_TWO_PI_E * self._std_dev**2).log())
+        """Differential entropy, ``0.5 * log(2 * pi * e * sigma ** 2)``."""
+        return self._moment(0.5 * (_TWO_PI_E * self._sigma**2).log())

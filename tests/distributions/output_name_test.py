@@ -24,7 +24,7 @@ _FRAME = pl.DataFrame({"p": [0.5, 0.5], "mu": [0.0, 0.0], "n": [5, 5]})
 _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
     "bernoulli": Bernoulli(p=0.5),
     "binomial": Binomial(n=5, p=0.5),
-    "normal": Normal(mean=0.0, std_dev=1.0),
+    "normal": Normal(mu=0.0, sigma=1.0),
     "lognormal": LogNormal(mu=0.0, sigma=1.0),
     "uniform": Uniform(min=0.0, max=1.0),
     "exponential": Exponential(rate=1.0),
@@ -35,7 +35,7 @@ _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
 _COLUMN_PARAMS: dict[str, tuple[_UnivariateDistribution, str]] = {
     "bernoulli": (Bernoulli(p=pl.col("p")), "p"),
     "binomial": (Binomial(n=pl.col("n"), p=0.5), "n"),
-    "normal": (Normal(mean=pl.col("mu"), std_dev=1.0), "mu"),
+    "normal": (Normal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "lognormal": (LogNormal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "uniform": (Uniform(min=pl.col("mu"), max=1.0), "mu"),
     # `mu` is all-zero (an invalid rate); the rate column reads the positive `p` column instead.

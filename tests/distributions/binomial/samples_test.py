@@ -40,7 +40,11 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 def test_samples_mean_close_to_np_for_large_total(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     n_rows, size, p = 4_000, 16, 0.3
     tolerance = 0.05
-    result = frame(n_rows).select(s=Binomial(N_TRIALS, p).samples(size=size, seed=seed))["s"].arr.explode()
+    result = (
+        frame(n_rows)
+        .select(s=Binomial(N_TRIALS, p).samples(size=size, seed=seed))["s"]
+        .arr.explode(empty_as_null=False)
+    )
     mean = cast("float", result.mean())
     assert abs(mean - N_TRIALS * p) < tolerance
 
