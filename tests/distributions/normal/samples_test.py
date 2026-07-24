@@ -38,7 +38,7 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_moments_close(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mean, std = 2.0, 1.5
-    result = frame(size=4_000).select(s=Normal(mean=mean, std_dev=std).samples(size=16, seed=seed))["s"].arr.explode()
+    result = frame(size=4_000).select(s=Normal(mu=mean, sigma=std).samples(size=16, seed=seed))["s"].arr.explode()
     _mean, _std = cast("float", result.mean()), cast("float", result.std())
     assert abs(_mean - mean) < 0.05 * std
     assert abs(_std - std) < 0.05 * std
@@ -56,7 +56,7 @@ def test_samples_null_param_row_is_null_array(seed: int) -> None:
         {"mu": [0.0, None, 1.0], "sigma": [1.0, 2.0, 3.0]},
         schema={"mu": pl.Float64, "sigma": pl.Float64},
     )
-    result = dframe.select(s=Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).samples(size=size, seed=seed))["s"]
+    result = dframe.select(s=Normal(mu=pl.col("mu"), sigma=pl.col("sigma")).samples(size=size, seed=seed))["s"]
     assert result.dtype == pl.Array(pl.Float64, size)
     # A null param row yields a null array, not an array of inner-null elements.
     assert_series_equal(result.is_null(), pl.Series("s", [False, True, False]))
@@ -64,5 +64,5 @@ def test_samples_null_param_row_is_null_array(seed: int) -> None:
 
 def test_samples_non_positive_std_raises(seed: int) -> None:
     dframe = pl.DataFrame({"mu": [0.0, 1.0], "sigma": [1.0, -2.0]})  # row 1: sigma = -2.0
-    with pytest.raises(pl.exceptions.ComputeError, match="std_dev must be finite and strictly positive"):
-        dframe.select(s=Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).samples(size=4, seed=seed))
+    with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
+        dframe.select(s=Normal(mu=pl.col("mu"), sigma=pl.col("sigma")).samples(size=4, seed=seed))

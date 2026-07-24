@@ -11,7 +11,7 @@ and you can mix them freely:
 import polars as pl
 import polars_stats as ps
 
-ps.Normal(mean=pl.col("mu"), std_dev=1.0)  # column mean, scalar scale
+ps.Normal(mu=pl.col("mu"), sigma=1.0)  # column mean, scalar scale
 ps.LogNormal(mu=0.0, sigma=1.0)  # all scalar
 ps.Uniform(min="min", max="max")  # column names as strings
 ps.Binomial(n=pl.col("size"), p=pl.col("probas"))  # all expressions
@@ -32,7 +32,7 @@ df = pl.DataFrame(
     }
 )
 
-result = df.with_columns(p=ps.Normal(mean="mu", std_dev="sigma").pdf("x"))
+result = df.with_columns(p=ps.Normal(mu="mu", sigma="sigma").pdf("x"))
 print(result)
 ```
 

@@ -67,7 +67,7 @@ def _coerce(
 
 
 def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
-    """Coerce a float distribution parameter (e.g. `mean`, `sigma`, `p`) into a row-aligned `pl.Expr`.
+    """Coerce a float distribution parameter (e.g. `mu`, `sigma`, `p`) into a row-aligned `pl.Expr`.
 
     Accepts a strict Python `float` or an `IntoExprColumn`; an `int` or `bool` raises `TypeError`
     (a probability or scale is a float, not a count). See `_coerce` for the row-alignment rationale.
@@ -324,8 +324,8 @@ class _UnivariateDistribution(ABC):
     def _checked(self, plugin_name: str, validated: pl.Expr) -> pl.Expr:
         """A parameter-validating plugin call: per-row for column params, validated **once** for scalars.
 
-        The validating plugins (`normal_std_dev`, `uniform_range`, `bernoulli_proba`, ...) are
-        elementwise and return the quantity they are named for (the validated `std_dev`, the width
+        The validating plugins (`normal_sigma`, `uniform_range`, `bernoulli_proba`, ...) are
+        elementwise and return the quantity they are named for (the validated `sigma`, the width
         `max - min`, the validated `p`, ...). Called on the length-n `pl.repeat` parameter columns
         they run `build_dist` once per row purely to re-check constants. This factors the two paths,
         byte-identical for the same parameters:
@@ -335,7 +335,7 @@ class _UnivariateDistribution(ABC):
         * **All-scalar parameters**: the same plugin is called once on length-1 `pl.lit` inputs, so it
           validates a single time and still raises the same `ComputeError` on an invalid constant.
           `validated` (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
-          `self._std_dev` or `self._max - self._min`) is returned behind the length-1 validity gate;
+          `self._sigma` or `self._max - self._min`) is returned behind the length-1 validity gate;
           `pl.when` broadcasts the length-1 condition, so the result stays length-n and equals the
           per-row output element for element. Only the per-row revalidation is removed.
         """

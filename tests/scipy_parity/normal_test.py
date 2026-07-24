@@ -53,16 +53,16 @@ def test_method_matches_scipy(case: Case[Normal], mean: float, std: float) -> No
     """
     assert_case_matches_scipy(
         case,
-        dist=Normal(mean=mean, std_dev=std),
+        dist=Normal(mu=mean, sigma=std),
         scipy_frozen=scipy_norm(loc=mean, scale=std),
         value_grid=_value_grid(mean, std),
         quantiles=_QUANTILES,
     )
 
 
-# Deviations (in std_dev units) spanning the direct-erfc band, the `ln_erfc` branch crossover
+# Deviations (in sigma units) spanning the direct-erfc band, the `ln_erfc` branch crossover
 # (`t = 25`, i.e. `z = 25 * sqrt(2) ~ 35.36`, bracketed by 35 and 36), and the far tail past the
-# ~38 std_dev point where `sf` / `cdf` underflow to `0` and the naive `sf().log()` / `cdf().log()`
+# ~38 sigma point where `sf` / `cdf` underflow to `0` and the naive `sf().log()` / `cdf().log()`
 # return `-inf`. Both signs, so each method covers its active tail and the near-one opposite side.
 _TAIL_HALF = (5.0, 10.0, 20.0, 30.0, 35.0, 36.0, 37.0, 38.0, 40.0, 50.0, 100.0)
 _TAIL_Z = (*(-z for z in _TAIL_HALF), *_TAIL_HALF)
@@ -75,10 +75,10 @@ def test_log_tail_matches_scipy(mean: float, std: float) -> None:
     The regime C1 targets (anomaly scoring on many-sigma events) and the exemplar every future
     distribution with a genuine tail must reproduce: probe *beyond* the underflow threshold, not
     merely `sf ~ 1e-300` where the naive path is still finite. `test_method_matches_scipy` stops at
-    3 std_dev and never reaches here.
+    3 sigma and never reaches here.
     """
     xs = [mean + std * z for z in _TAIL_Z]
-    dist = Normal(mean=mean, std_dev=std)
+    dist = Normal(mu=mean, sigma=std)
     frozen = scipy_norm(loc=mean, scale=std)
 
     got = pl.DataFrame({"x": xs}).select(
@@ -96,11 +96,11 @@ def test_log_near_one_side_keeps_relative_precision(mean: float, std: float) -> 
     """The near-certain side matches scipy in *relative* terms (``atol=0``), not just within slack.
 
     ``log_cdf`` far above the mean (and ``log_sf`` far below) is a tiny negative number, e.g.
-    ``-7.6e-24`` at 10 std_dev; the erfc reflection ``2 - erfc(t)`` would round it to exactly
+    ``-7.6e-24`` at 10 sigma; the erfc reflection ``2 - erfc(t)`` would round it to exactly
     ``0.0``, an error invisible to the ``atol``-padded tail test above. Pins the ``log1p`` branch.
     """
     zs = [1.0, 5.0, 10.0, 20.0, 30.0]
-    dist = Normal(mean=mean, std_dev=std)
+    dist = Normal(mu=mean, sigma=std)
     frozen = scipy_norm(loc=mean, scale=std)
 
     upper = [mean + std * z for z in zs]

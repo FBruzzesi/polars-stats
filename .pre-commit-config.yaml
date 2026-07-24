@@ -5,7 +5,7 @@ repos:
     hooks:
       - id: ruff-format
         pass_filenames: false
-      - id: ruff
+      - id: ruff-check
         pass_filenames: false
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.11.26
@@ -49,7 +49,6 @@ repos:
                 tests/scipy_parity/_harness.py
             )$
       - id: end-of-file-fixer
-      - id: requirements-txt-fixer
       - id: no-commit-to-branch
       - id: check-json
       - id: check-yaml

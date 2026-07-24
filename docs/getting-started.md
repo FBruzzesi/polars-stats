@@ -4,7 +4,7 @@ icon: lucide/rocket
 
 # Getting started
 
-<!-- ## Installation
+## Installation
 
 ```bash
 pip install polars-stats
@@ -12,19 +12,18 @@ pip install polars-stats
 
 Runtime needs only `polars>=1.15` and Python `>=3.10`. To build from source, see
 [Contributing](contributing.md).
--->
 
 ## Construct a distribution
 
 Import `polars-stats`, pick a distribution class, and parameterise it.
 Each class names its parameters after the distribution's conventional parameters
-(`mean` / `std_dev`, `min` / `max`, ...); the class docstring gives the `scipy.stats` equivalent.
+(`mu` / `sigma`, `min` / `max`, ...); the class docstring gives the `scipy.stats` equivalent.
 
 ```python exec="yes" source="above" session="getting-started"
 import polars as pl
 import polars_stats as ps
 
-dist = ps.Normal(mean=0.0, std_dev=1.0)
+dist = ps.Normal(mu=0.0, sigma=1.0)
 ```
 
 ## Evaluate a method

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 # Per-row column-parameterised instances; each reads its parameters from `FRAME`.
 DISTRIBUTIONS: list[tuple[_UnivariateDistribution, str]] = [
-    (Normal(mean="mu", std_dev="sigma"), "Normal"),
+    (Normal(mu="mu", sigma="sigma"), "Normal"),
     (LogNormal(mu="mu", sigma="sigma"), "LogNormal"),
     (Uniform(min="lo", max="hi"), "Uniform"),
     (Bernoulli(p="p"), "Bernoulli"),

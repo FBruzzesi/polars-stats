@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 def test_cdf_is_half_at_mean(params: tuple[float, float]) -> None:
     mean, std = params
-    result = pl.DataFrame({"x": [mean]}).select(r=Normal(mean=mean, std_dev=std).cdf(pl.col("x")))["r"].item()
+    result = pl.DataFrame({"x": [mean]}).select(r=Normal(mu=mean, sigma=std).cdf(pl.col("x")))["r"].item()
     assert result == pytest.approx(0.5, abs=1e-12)
 
 
@@ -23,14 +23,14 @@ def test_cdf_is_monotone_non_decreasing(
 ) -> None:
     mean, std = params
     xs = value_grid(mean, std)
-    result = pl.DataFrame({"x": xs}).select(r=Normal(mean=mean, std_dev=std).cdf(pl.col("x")))["r"]
+    result = pl.DataFrame({"x": xs}).select(r=Normal(mu=mean, sigma=std).cdf(pl.col("x")))["r"]
     assert result.is_sorted()
     assert result.is_between(0.0, 1.0).all()
 
 
 def test_cdf_column_params() -> None:
     df = pl.DataFrame({"mu": [0.0, 5.0], "sigma": [1.0, 2.0], "x": [0.0, 5.0]})
-    result = df.select(r=Normal(mean=pl.col("mu"), std_dev=pl.col("sigma")).cdf(pl.col("x")))["r"]
+    result = df.select(r=Normal(mu=pl.col("mu"), sigma=pl.col("sigma")).cdf(pl.col("x")))["r"]
     expected = pl.Series("r", [0.5, 0.5], dtype=pl.Float64)
     assert_series_equal(result, expected)
 

@@ -17,41 +17,39 @@ use crate::rng::{
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::Normal::new` rejects a non-finite `mean`, a `NaN` `std_dev`, or `std_dev <= 0`.
+/// `statrs::Normal::new` rejects a non-finite `mu`, a `NaN` `sigma`, or `sigma <= 0`.
 /// We surface that as `InvalidOperation` so an invalid scale fails the whole evaluation,
 /// rather than silently nulling the row.
 /// Validation lives here so every method that builds a distribution reports an invalid scale identically.
-fn build_dist(mean: f64, std_dev: f64) -> PolarsResult<Normal> {
-    Normal::new(mean, std_dev).map_err(|e| {
+fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
+    Normal::new(mu, sigma).map_err(|e| {
         PolarsError::InvalidOperation(
-            format!(
-                "std_dev must be finite and strictly positive, got mean={mean}, std_dev={std_dev}: {e}"
-            )
-            .into(),
+            format!("sigma must be finite and strictly positive, got mu={mu}, sigma={sigma}: {e}")
+                .into(),
         )
     })
 }
 
 param_validator! {
-    /// Validate the `(mean, std_dev)` parameterisation and return the validated `std_dev`.
+    /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
     ///
-    /// `inputs[0]` is `mean`, `inputs[1]` is `std_dev`. Mirrors `uniform_range`: the closed-form
+    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. Mirrors `uniform_range`: the closed-form
     /// moments (`mean`, `variance`, `median`, `entropy`) all derive from this single FFI
     /// round-trip, so they report an invalid parameterisation identically to the value-keyed
     /// methods that build the distribution directly. `null` in either input propagates; a `NaN`
-    /// mean or a non-positive / `NaN` `std_dev` raises `InvalidOperation` via [`build_dist`].
-    fn normal_std_dev;
-    params = (mean: DataType::Float64 => f64, std_dev: DataType::Float64 => f64);
+    /// mu or a non-positive / `NaN` `sigma` raises `InvalidOperation` via [`build_dist`].
+    fn normal_sigma;
+    params = (mu: DataType::Float64 => f64, sigma: DataType::Float64 => f64);
     build = build_dist;
-    returns = std_dev;
+    returns = sigma;
     output_name = inputs[1];
 }
 
 value_keyed_per_row! {
-    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mean, std_dev)`.
+    /// Apply a value-keyed function `f(dist, value)` element-wise over `(value, mu, sigma)`.
     ///
-    /// `inputs[0]` is the evaluation point, `inputs[1]` is `mean`, `inputs[2]` is `std_dev`. `null`
-    /// in any input propagates to `null`; an invalid `std_dev` raises via [`build_dist`]. `f`
+    /// `inputs[0]` is the evaluation point, `inputs[1]` is `mu`, `inputs[2]` is `sigma`. `null`
+    /// in any input propagates to `null`; an invalid `sigma` raises via [`build_dist`]. `f`
     /// returns an `Option` so a method can null a row on its own terms (e.g. `ppf` outside
     /// `[0, 1]`). Shared by `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`.
     fn value_keyed(&Normal);
@@ -61,21 +59,21 @@ value_keyed_per_row! {
 
 /// Element-wise Normal sampler.
 ///
-/// `inputs[0]` carries `mean`, `inputs[1]` `std_dev`, and `inputs[2]` a per-row index used to derive
+/// `inputs[0]` carries `mu`, `inputs[1]` `sigma`, and `inputs[2]` a per-row index used to derive
 /// a per-row sub-seed, so the function is genuinely element-wise: chunking and threading cannot
 /// change the output. With `seed=None`, a fresh root seed is drawn once per call.
 ///
 /// Per-row validation:
 ///   * `null` (in any input) propagates;
-///   * a `NaN` `mean`, or a non-positive / `NaN` `std_dev`, raises `InvalidOperation`.
+///   * a `NaN` `mu`, or a non-positive / `NaN` `sigma`, raises `InvalidOperation`.
 ///
 /// Returns a `Float64` series.
 #[polars_expr(output_type=Float64)]
 fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let mean = inputs[0].cast(&DataType::Float64)?;
-    let mean_ca = mean.f64()?;
-    let std_dev = inputs[1].cast(&DataType::Float64)?;
-    let std_dev_ca = std_dev.f64()?;
+    let mu = inputs[0].cast(&DataType::Float64)?;
+    let mu_ca = mu.f64()?;
+    let sigma = inputs[1].cast(&DataType::Float64)?;
+    let sigma_ca = sigma.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
@@ -83,11 +81,11 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
     let rngs = kwargs.row_rngs();
 
     let ca: Float64Chunked = try_ternary_elementwise(
-        mean_ca,
-        std_dev_ca,
+        mu_ca,
+        sigma_ca,
         index_ca,
-        |mean_opt, std_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (mean_opt, std_opt, i_opt) {
+        |mu_opt, sigma_opt, i_opt| -> PolarsResult<Option<f64>> {
+            match (mu_opt, sigma_opt, i_opt) {
                 (Some(m), Some(s), Some(i)) => {
                     let dist = build_dist(m, s)?;
                     let mut rng = rngs.rng(i);
@@ -103,20 +101,20 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
 }
 
 sample_scalar_plugin! {
-    /// Static parameters for the constant-parameter sampler fast path: when both `mean` and
-    /// `std_dev` are Python scalars, they travel here as kwargs instead of as two full-length
+    /// Static parameters for the constant-parameter sampler fast path: when both `mu` and
+    /// `sigma` are Python scalars, they travel here as kwargs instead of as two full-length
     /// `pl.repeat` columns re-validated on every row.
-    struct NormalScalarKwargs { mean: f64, std_dev: f64 }
+    struct NormalScalarKwargs { mu: f64, sigma: f64 }
 
     /// Constant-parameter Normal sampler: [`normal_sample`] for the all-scalar case. The
     /// distribution is validated and built once, and only the per-row index travels as an input;
     /// seeding and the draw are unchanged, so output matches `normal_sample` for the same
-    /// `(seed, index, mean, std_dev)`.
+    /// `(seed, index, mu, sigma)`.
     fn normal_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = normal_samples_scalar as NormalSamplesScalarKwargs -> samples_f64_output;
 
-    build = |kw| build_dist(kw.mean, kw.std_dev)?;
+    build = |kw| build_dist(kw.mu, kw.sigma)?;
     draw = |dist, rng| RandDistribution::sample(&dist, rng);
 }
 
@@ -131,12 +129,12 @@ sample_scalar_plugin! {
 /// null array element. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let mean = inputs[0].cast(&DataType::Float64)?;
-    let std_dev = inputs[1].cast(&DataType::Float64)?;
+    let mu = inputs[0].cast(&DataType::Float64)?;
+    let sigma = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
 
-    let rows = ternary_param_rows(mean.f64()?, std_dev.f64()?, index.u64()?, build_dist);
+    let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
     samples_per_row::<Float64Type, _, _, _, _>(
         name,
@@ -192,7 +190,7 @@ fn ln_erfc(t: f64) -> f64 {
 /// `ln(0.5 * erfc(s))` with full relative precision on both sides: [`ln_erfc`] for the small half
 /// (`s >= 0`), `ln_1p` for the near-one half (`s < 0`, where `erfc(s) = 2 - erfc(-s)` rounds to `2`
 /// and the direct log collapses to `0` instead of the true tiny negative, e.g. `-7.6e-24` at
-/// 10 std_dev; scipy's `log_ndtr` takes the same branch).
+/// 10 sigma; scipy's `log_ndtr` takes the same branch).
 fn ln_half_erfc(s: f64) -> f64 {
     if s >= 0.0 {
         -LN_2 + ln_erfc(s)
@@ -201,12 +199,12 @@ fn ln_half_erfc(s: f64) -> f64 {
     }
 }
 
-/// Standardise `x` into the `erfc` argument `t = (x - mean) / (std_dev * sqrt(2))`, so that
+/// Standardise `x` into the `erfc` argument `t = (x - mu) / (sigma * sqrt(2))`, so that
 /// `cdf(x) = 0.5 * erfc(-t)` and `sf(x) = 0.5 * erfc(t)` (statrs' own `cdf` / `sf` definition).
 fn erfc_arg(dist: &Normal, x: f64) -> f64 {
-    let mean = dist.mean().expect("Normal always has a mean");
-    let std_dev = dist.std_dev().expect("Normal always has a std_dev");
-    (x - mean) / (std_dev * SQRT_2)
+    let mu = dist.mean().expect("Normal always has a mean");
+    let sigma = dist.std_dev().expect("Normal always has a std_dev");
+    (x - mu) / (sigma * SQRT_2)
 }
 
 /// Native log-cdf via `ln(0.5 * erfc(-t))`: finite in the left tail (no `cdf().ln()` underflow) and
@@ -290,9 +288,9 @@ value_keyed_scalar_plugins! {
     /// scalars, the Python layer routes them here as kwargs instead of expanding each into a
     /// full-length column re-validated on every row. The distribution is validated and built once;
     /// only the evaluation-point column travels as an input.
-    struct NormalParamsKwargs { mean: f64, std_dev: f64 }
+    struct NormalParamsKwargs { mu: f64, sigma: f64 }
 
-    build = |kw| build_dist(kw.mean, kw.std_dev)?;
+    build = |kw| build_dist(kw.mu, kw.sigma)?;
 
     methods {
         /// Constant-parameter pdf; same body as [`normal_pdf`] via [`pdf_value`], dist built once.

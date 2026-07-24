@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 SEED = 42
 DEFAULT_SIZE = 1000
 
-# `(mean, std_dev)` grid exposed through the `params` fixture so no test file redeclares it.
+# `(mu, sigma)` grid exposed through the `params` fixture so no test file redeclares it.
 PARAMS = [(0.0, 1.0), (1.0, 2.0), (-3.0, 0.5), (10.0, 5.0), (0.0, 1e-3)]
 
 
@@ -21,9 +21,9 @@ def seed() -> int:
     return SEED
 
 
-@pytest.fixture(params=PARAMS, ids=[f"mean={m},std={s}" for m, s in PARAMS])
+@pytest.fixture(params=PARAMS, ids=[f"mu={m},sigma={s}" for m, s in PARAMS])
 def params(request: pytest.FixtureRequest) -> tuple[float, float]:
-    """A `(mean, std_dev)` pair. Requesting this fixture parametrises the test over `PARAMS`."""
+    """A `(mu, sigma)` pair. Requesting this fixture parametrises the test over `PARAMS`."""
     return request.param  # type: ignore[no-any-return]
 
 
@@ -46,7 +46,7 @@ def frame() -> Callable[..., pl.DataFrame]:
 
 @pytest.fixture
 def value_grid() -> Callable[[float, float], list[float]]:
-    """Evaluation points for a `(mean, std_dev)` distribution, spanning both tails through the centre."""
+    """Evaluation points for a `(mu, sigma)` distribution, spanning both tails through the centre."""
 
     def _make(mean: float, std: float) -> list[float]:
         return [mean - 3 * std, mean - std, mean - 0.25 * std, mean, mean + 0.25 * std, mean + std, mean + 3 * std]

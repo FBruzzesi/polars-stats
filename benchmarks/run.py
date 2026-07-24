@@ -34,7 +34,7 @@ _MultiMethod = Annotated[list[Method], Parameter(consume_multiple=True)]
 # One row per distribution: the polars_stats instance and the matching frozen scipy distribution,
 # reparameterised to scipy's convention. Adding a distribution is one entry here.
 REGISTRY: dict[str, Comparison] = {
-    "normal": Comparison("normal", Normal(mean=0.0, std_dev=1.0), norm(loc=0.0, scale=1.0)),
+    "normal": Comparison("normal", Normal(mu=0.0, sigma=1.0), norm(loc=0.0, scale=1.0)),
     "lognormal": Comparison("lognormal", LogNormal(mu=0.0, sigma=1.0), lognorm(s=1.0, scale=exp(0.0))),
     "uniform": Comparison("uniform", Uniform(min=0.0, max=1.0), uniform(loc=0.0, scale=1.0)),
     "exponential": Comparison("exponential", Exponential(rate=1.0), expon(scale=1.0)),

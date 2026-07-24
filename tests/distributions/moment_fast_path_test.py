@@ -1,7 +1,7 @@
 """Validation contract of the constant-parameter moment fast path (validate-once).
 
 The closed-form moments (`mean` / `variance` / `std` / `entropy`) and the closed forms of `Uniform`
-/ `Bernoulli` route their *validation* through a small Rust plugin (`normal_std_dev`, `uniform_range`,
+/ `Bernoulli` route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`,
 `bernoulli_proba`, `binomial_params`, `lognormal_sigma`, `beta_params`, plus the `binomial_entropy` /
 `beta_entropy` parameter-keyed formulas). For
 all-scalar parameters that plugin is called once on length-1 `pl.lit` inputs instead of per row.
@@ -51,7 +51,7 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 # via `_moment`, Uniform via `range`, Bernoulli via `_checked_p`). The accepted-`inf` cases guard that
 # the fast path does not reject a parameterisation the per-row path accepts.
 _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]] = {
-    "normal mean=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0)), True),
+    "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0)), True),
     "normal std=0": (Normal(0.0, 0.0), Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (Normal(0.0, -1.0), Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (Normal(0.0, _NAN), Normal(_col(0.0), _col(_NAN)), True),

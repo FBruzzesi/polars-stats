@@ -52,7 +52,7 @@ param_validator! {
 ///
 /// The draw keeps `statrs` (`O(1)` ziggurat: `sample_exp_1(rng) / rate`); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class `statrs` uses (unlike
-/// the binomial draw, see DESIGN.md). Returns a `Float64` series.
+/// the binomial draw, see docs/design.md). Returns a `Float64` series.
 #[polars_expr(output_type=Float64)]
 fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;

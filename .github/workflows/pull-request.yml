@@ -37,31 +37,28 @@ jobs:
     steps:
       - run: 'true'
 
-  ruff:
-    name: lint / ruff
+  # Runs every hook pinned in .pre-commit-config.yaml (ruff-format, ruff-check, uv-lock, rumdl,
+  # ryl, codespell, typos, blacken-docs, whitespace/EOF/AST checks, tests naming), so CI lints at
+  # exactly the same versions as local runs. `no-commit-to-branch` is commit-stage-only, hence
+  # skipped. Rust lints stay in the dedicated `rust-lint` job (toolchain + cache concerns).
+  prek:
+    name: lint / prek
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-      - name: ruff format
-        run: uvx ruff format --check .
-      - name: ruff check
-        run: uvx ruff check --no-fix .
-
-  rumdl:
-    name: lint / rumdl
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Cache hook environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-      - name: rumdl check
-        run: uvx rumdl check .
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: prek run
+        run: uvx prek run --all-files --show-diff-on-failure
+        env:
+          SKIP: no-commit-to-branch
 
   rust-lint:
     name: lint / cargo fmt + clippy

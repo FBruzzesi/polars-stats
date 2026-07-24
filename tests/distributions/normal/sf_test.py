@@ -14,14 +14,14 @@ if TYPE_CHECKING:
 
 def test_sf_is_half_at_mean(params: tuple[float, float]) -> None:
     mean, std = params
-    result = pl.DataFrame({"x": [mean]}).select(r=Normal(mean=mean, std_dev=std).sf(pl.col("x")))["r"].item()
+    result = pl.DataFrame({"x": [mean]}).select(r=Normal(mu=mean, sigma=std).sf(pl.col("x")))["r"].item()
     assert result == pytest.approx(0.5, abs=1e-12)
 
 
 def test_sf_complements_cdf(params: tuple[float, float], value_grid: Callable[[float, float], list[float]]) -> None:
     mean, std = params
     xs = value_grid(mean, std)
-    n = Normal(mean=mean, std_dev=std)
+    n = Normal(mu=mean, sigma=std)
     result = pl.DataFrame({"x": xs}).select(total=n.cdf(pl.col("x")) + n.sf(pl.col("x")))["total"]
     expected = pl.Series("total", [1.0] * result.len(), dtype=pl.Float64)
     assert_series_equal(result, expected, rel_tol=0.0, abs_tol=1e-12)
