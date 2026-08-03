@@ -5,6 +5,10 @@ the deliberate default names `"sample"` / `"samples"` (rather than leaking an in
 name). With column-valued parameters the output keeps polars root-name semantics: it is named after
 the first parameter expression, which is what lets multi-column parameters (`pl.col("p1", "p2")`)
 and `.name.*` modifiers work.
+
+Value-keyed methods are named after the evaluation column: `propagate_null_and_nan` re-aliases its
+output to `value`'s resolved name, since its leading `pl.lit(None)` branch would otherwise name
+every value-keyed output `"literal"`.
 """
 
 from __future__ import annotations
@@ -67,6 +71,10 @@ def test_samples_with_column_params_keeps_root_name(dist: _UnivariateDistributio
 
 @pytest.mark.parametrize("dist", _SCALAR_PARAMS.values(), ids=list(_SCALAR_PARAMS))
 def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution) -> None:
-    """`cdf(pl.col("p"))` is named `"p"`, so `.name.*` modifiers work on value-keyed outputs."""
+    """`cdf(pl.col("p"))` is named `"p"` via the guard's alias.
+
+    Only the output name is pinned: how a downstream `.name.*` modifier resolves it is polars'
+    call and differs across supported versions (old polars resolves the *root* name, which for the
+    closed-form hooks is the `pl.len()` inside a scalar parameter's `pl.repeat` expansion).
+    """
     assert _FRAME.select(dist.cdf(pl.col("p"))).columns == ["p"]
-    assert _FRAME.select(dist.cdf(pl.col("p")).name.suffix("_cdf")).columns == ["p_cdf"]

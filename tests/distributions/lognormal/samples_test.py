@@ -7,6 +7,7 @@ import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import LogNormal
+from tests._polars_compat import arr_explode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,12 +39,7 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_log_moments_close(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mu, sigma = 0.5, 0.75
-    logs = (
-        frame(size=4_000)
-        .select(s=LogNormal(mu=mu, sigma=sigma).samples(size=16, seed=seed))["s"]
-        .arr.explode(empty_as_null=False)
-        .log()
-    )
+    logs = arr_explode(frame(size=4_000).select(s=LogNormal(mu=mu, sigma=sigma).samples(size=16, seed=seed))["s"]).log()
     _mean, _std = cast("float", logs.mean()), cast("float", logs.std())
     assert abs(_mean - mu) < 0.05 * sigma
     assert abs(_std - sigma) < 0.05 * sigma
