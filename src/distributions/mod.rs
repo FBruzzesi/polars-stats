@@ -23,6 +23,16 @@ use polars::prelude::*;
 /// into `f` through a pre-built `dist`. So a null `value` propagates to null, and `f` returning
 /// `None` nulls the row on the method's own terms (e.g. `ppf` outside `[0, 1]`), matching the
 /// per-row path element for element.
+///
+/// `NaN` contract: a `NaN` evaluation point short-circuits to `NaN` (scipy semantics) before `f`
+/// runs, for every method including `ppf`. The short-circuit is central — here and in
+/// [`value_keyed_per_row!`] — rather than per body, because two bodies genuinely need it and none
+/// may be forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`
+/// (aborting the whole query), and binomial's support mapping saturates (`NaN.floor() as u64` is
+/// `0`), returning a confident `P(X <= 0)`. The Python-side `propagate_null_and_nan` guard cannot
+/// substitute: polars evaluates every `when`/`then`/`otherwise` branch over the full column, so a
+/// plugin runs on the `NaN` rows even though the guard discards their output. Pinned by
+/// `tests/distributions/plugin_nan_test.py`.
 pub(crate) fn value_keyed_scalar<F>(value: &Series, f: F) -> PolarsResult<Series>
 where
     F: Fn(f64) -> Option<f64>,
@@ -31,7 +41,9 @@ where
     let value_ca = value.f64()?;
     let name = value_ca.name().clone();
 
-    let ca: Float64Chunked = unary_elementwise(value_ca, |opt| opt.and_then(&f));
+    let ca: Float64Chunked = unary_elementwise(value_ca, |opt| {
+        opt.and_then(|v| if v.is_nan() { Some(f64::NAN) } else { f(v) })
+    });
     Ok(ca.with_name(name).into_series())
 }
 
@@ -107,9 +119,12 @@ pub(crate) use value_keyed_scalar_plugins;
 ///   invalid parameterisation (`?` is available inside the closure).
 ///
 /// `f` is the same named per-method body the scalar fast path applies, so the two paths share one
-/// body and cannot drift. Only the 2-parameter (ternary) arm exists today, since every current
-/// distribution takes two parameters; a 1-parameter distribution would add a `try_binary_elementwise`
-/// arm here. Call sites are the distribution modules (`polars::prelude::*` in scope).
+/// body and cannot drift. A `NaN` evaluation point short-circuits to `NaN` after the distribution
+/// is built, so an invalid parameterisation still raises on a `NaN` row; see [`value_keyed_scalar`]
+/// for why the guard lives in the shared drivers. Only the 2-parameter (ternary) arm exists today,
+/// since every current distribution takes two parameters; a 1-parameter distribution would add a
+/// `try_binary_elementwise` arm here. Call sites are the distribution modules
+/// (`polars::prelude::*` in scope).
 macro_rules! value_keyed_per_row {
     (
         $(#[$meta:meta])*
@@ -137,8 +152,9 @@ macro_rules! value_keyed_per_row {
                 |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
                     match (value_opt, p1_opt, p2_opt) {
                         (Some(v), Some(a), Some(b)) => {
+                            // Build first so an invalid parameterisation raises on a `NaN` row.
                             let dist = $build(a, b)?;
-                            Ok(f(&dist, v))
+                            Ok(if v.is_nan() { Some(f64::NAN) } else { f(&dist, v) })
                         },
                         _ => Ok(None),
                     }

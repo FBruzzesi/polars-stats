@@ -172,6 +172,10 @@ fn ln_pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.ln_pdf(v))
 }
 
+// `cdf` / `sf` rely on the shared drivers' `NaN` short-circuit (see `value_keyed_scalar` in
+// `mod.rs`): unlike `pdf` / `ln_pdf`, which compute through to `NaN`, the regularized incomplete
+// beta behind them panics on a `NaN` evaluation point, which would abort the whole query.
+
 fn cdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.cdf(v))
 }
@@ -207,14 +211,16 @@ fn beta_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 /// Element-wise cdf via `statrs` `ContinuousCDF::cdf` (regularized incomplete beta); `0` below the
-/// support, `1` at/above `1`.
+/// support, `1` at/above `1`, `NaN` for a `NaN` value (short-circuited in the shared drivers:
+/// statrs panics on it).
 #[polars_expr(output_type=Float64)]
 fn beta_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, cdf_value)
 }
 
 /// Element-wise survival function via native `ContinuousCDF::sf` (accurate in the upper tail);
-/// `1` below the support, `0` at/above `1`.
+/// `1` below the support, `0` at/above `1`, `NaN` for a `NaN` value (short-circuited in the shared
+/// drivers: statrs panics on it).
 #[polars_expr(output_type=Float64)]
 fn beta_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)

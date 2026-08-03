@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -30,14 +31,20 @@ def _eval(expr: pl.Expr, xs: Iterable[float]) -> pl.Series:
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_cdf_bounded_and_monotone(spec: DistSpec, data: st.DataObject) -> None:
-    """`0 <= cdf(x) <= 1` and `cdf` is non-decreasing in `x`, across the parameter space."""
+    """`0 <= cdf(x) <= 1` and `cdf` is non-decreasing in `x`, across the parameter space.
+
+    A trailing `NaN` evaluation point must propagate as `NaN` (scipy semantics) rather than collapse
+    into a bounds branch; the finite-grid assertions exclude it.
+    """
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
     xs = linear_space(lo, hi, _GRID_SIZE)
 
-    cdf = _eval(dist.cdf(pl.col("x")), xs)
+    cdf = _eval(dist.cdf(pl.col("x")), [*xs, float("nan")])
 
+    assert math.isnan(cdf.item(_GRID_SIZE))
+    cdf = cdf.head(_GRID_SIZE)
     assert not cdf.is_nan().any()
     assert cdf.is_between(0.0, 1.0).all()
     # Allow only float noise against strict monotonicity, not a real decrease.

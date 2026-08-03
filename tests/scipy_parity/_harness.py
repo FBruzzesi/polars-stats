@@ -60,15 +60,16 @@ def assert_case_matches_scipy(
 ) -> None:
     """Assert one `Case` reproduces its scipy oracle across the grid selected by `case.kind`.
 
-    Boolean outputs (a discrete `ppf`/`isf`/`median`) are cast to `0.0`/`1.0` before comparison, so the
-    same helper serves discrete and continuous distributions. `value_grid` / `quantiles` are owned by
-    the calling test module because their support spans are distribution-specific.
+    `value_grid` / `quantiles` are owned by the calling test module because their support spans are
+    distribution-specific.
     """
     if case.kind == "scalar":
         result = pl.DataFrame({"_": [0]}).select(r=case.pl_fn(dist, pl.lit(0.0)))["r"]
         expected = [getattr(scipy_frozen, case.scipy_attr)()]
     else:
-        xs = list(value_grid if case.kind == "value" else quantiles)
+        # scipy propagates a NaN evaluation point as NaN for every value- and quantile-keyed
+        # method; appending it here pins that contract for every method of every distribution.
+        xs = [*(value_grid if case.kind == "value" else quantiles), float("nan")]
         result = pl.DataFrame({"x": xs}).select(r=case.pl_fn(dist, pl.col("x")))["r"]
         expected = getattr(scipy_frozen, case.scipy_attr)(xs)
 

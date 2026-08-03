@@ -158,17 +158,19 @@ def register_plugin(
     )
 
 
-def propagate_null(value: pl.Expr, result: pl.Expr) -> pl.Expr:
-    """Return `result`, overridden to null on rows where `value` is null.
+def propagate_null_and_nan(value: pl.Expr, result: pl.Expr) -> pl.Expr:
+    """Return `result`, overridden to null where `value` is null and to `NaN` where it is `NaN`.
 
-    A null predicate in `pl.when` collapses to the `otherwise` branch, so a method whose `otherwise` is a non-null
-    constant (e.g. `pdf` returning `0.0` outside the support) would silently emit that constant for a null input.
+    Applied by every public value-keyed wrapper (scipy semantics: null in, null out; `NaN` in,
+    `NaN` out). The closed-form hooks cannot guarantee this themselves: a null or `NaN` evaluation
+    point sorts into a `pl.when` branch (polars orders `NaN` greater than every float) and returns
+    that branch's constant, e.g. `Uniform.cdf(NaN) = 1.0`. The Rust plugins propagate both
+    natively (`NaN` short-circuited centrally in the shared drivers, `src/distributions/mod.rs`).
 
-    Guarding on `value.is_null()` first makes every value-keyed method propagate input nulls uniformly.
-
-    The null literal is untyped so the output dtype follows `result`.
+    `is_nan` runs on `value` as-is: `False` for integer dtypes on every supported polars, raises
+    for non-numeric ones (both pinned by `tests/property/value_dtype_test.py`).
     """
-    return pl.when(value.is_null()).then(pl.lit(None)).otherwise(result)
+    return pl.when(value.is_null()).then(pl.lit(None)).when(value.is_nan()).then(float("nan")).otherwise(result)
 
 
 class _UnivariateDistribution(ABC):
@@ -345,18 +347,18 @@ class _UnivariateDistribution(ABC):
         return pl.when(validated_once.is_not_null()).then(validated)
 
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Cumulative distribution function, `P(X <= value)`. Nulls in `value` are propagated."""
+        """Cumulative distribution function, `P(X <= value)`. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._cdf(v))
+        return propagate_null_and_nan(v, self._cdf(v))
 
     @abstractmethod
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """Core cdf formula on a coerced expr; null handling is applied by `cdf`."""
 
     def log_cdf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Natural logarithm of the cdf. Nulls in `value` are propagated."""
+        """Natural logarithm of the cdf. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._log_cdf(v))
+        return propagate_null_and_nan(v, self._log_cdf(v))
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
         """Default `log(cdf)`; underflows to `-inf` once `cdf` rounds to `0` deep in the left tail.
@@ -368,18 +370,18 @@ class _UnivariateDistribution(ABC):
         return self._cdf(value).log()
 
     def sf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Survival function, `P(X > value) = 1 - cdf(value)`. Nulls in `value` are propagated."""
+        """Survival function, `P(X > value) = 1 - cdf(value)`. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._sf(v))
+        return propagate_null_and_nan(v, self._sf(v))
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Default `1 - cdf`; subclasses override when a closed form is more accurate in the upper tail."""
         return 1 - self._cdf(value)
 
     def log_sf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Natural logarithm of the survival function. Nulls in `value` are propagated."""
+        """Natural logarithm of the survival function. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._log_sf(v))
+        return propagate_null_and_nan(v, self._log_sf(v))
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         """Default `log(sf)`; underflows to `-inf` once `sf` rounds to `0` deep in the right tail.
@@ -393,21 +395,21 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        `quantile` is expected to lie in `[0, 1]`; nulls are propagated. Behaviour for out-of-range quantiles is
-        implementation-defined and should not be relied on; callers are responsible for bounding `quantile` upstream
-        when the source allows invalid values.
+        `quantile` is expected to lie in `[0, 1]`; nulls are propagated and a `NaN` quantile yields `NaN`
+        (matching scipy). Behaviour for other out-of-range quantiles is implementation-defined and should not be
+        relied on; callers are responsible for bounding `quantile` upstream when the source allows invalid values.
         """
         q = as_expr(quantile)
-        return propagate_null(q, self._ppf(q))
+        return propagate_null_and_nan(q, self._ppf(q))
 
     @abstractmethod
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """Core inverse-cdf formula on a coerced expr; null handling is applied by `ppf`."""
 
     def isf(self, quantile: float | IntoExprColumn) -> pl.Expr:
-        """Inverse survival function, `ppf(1 - quantile)`. Nulls in `quantile` are propagated."""
+        """Inverse survival function, `ppf(1 - quantile)`. Nulls in `quantile` are propagated; `NaN` yields `NaN`."""
         q = as_expr(quantile)
-        return propagate_null(q, self._isf(q))
+        return propagate_null_and_nan(q, self._isf(q))
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
         return self._ppf(1 - quantile)
@@ -464,18 +466,18 @@ class DiscreteDistribution(_UnivariateDistribution, ABC):
     """Abstract base class for discrete univariate distributions."""
 
     def pmf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Probability mass function, `P(X = value)`. Nulls in `value` are propagated."""
+        """Probability mass function, `P(X = value)`. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._pmf(v))
+        return propagate_null_and_nan(v, self._pmf(v))
 
     @abstractmethod
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """Core pmf formula on a coerced expr; null handling is applied by `pmf`."""
 
     def log_pmf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Natural logarithm of the pmf. Nulls in `value` are propagated."""
+        """Natural logarithm of the pmf. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._log_pmf(v))
+        return propagate_null_and_nan(v, self._log_pmf(v))
 
     def _log_pmf(self, value: pl.Expr) -> pl.Expr:
         return self._pmf(value).log()
@@ -485,18 +487,18 @@ class ContinuousDistribution(_UnivariateDistribution, ABC):
     """Abstract base class for continuous univariate distributions."""
 
     def pdf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Probability density function evaluated at `value`. Nulls in `value` are propagated."""
+        """Probability density function evaluated at `value`. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._pdf(v))
+        return propagate_null_and_nan(v, self._pdf(v))
 
     @abstractmethod
     def _pdf(self, value: pl.Expr) -> pl.Expr:
         """Core pdf formula on a coerced expr; null handling is applied by `pdf`."""
 
     def log_pdf(self, value: float | IntoExprColumn) -> pl.Expr:
-        """Natural logarithm of the pdf. Nulls in `value` are propagated."""
+        """Natural logarithm of the pdf. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
-        return propagate_null(v, self._log_pdf(v))
+        return propagate_null_and_nan(v, self._log_pdf(v))
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
         return self._pdf(value).log()

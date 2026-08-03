@@ -178,6 +178,11 @@ fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Se
 // Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
 // share one definition each and cannot drift (the property test pinning their bit-equality only
 // samples parameterisations; sharing the body makes it structural).
+//
+// The bodies never see a `NaN` value: the shared drivers short-circuit it to `NaN` first (see
+// `value_keyed_scalar` in `mod.rs`). That guard is load-bearing here: `NaN < 0.0` is false and
+// `NaN.floor() as u64` saturates to `0`, so an unguarded body would confidently return
+// `P(X <= 0)` (and `pmf` a confident `0.0`) instead of propagating `NaN` (scipy semantics).
 
 fn pmf_value(dist: &Binomial, v: f64) -> Option<f64> {
     Some(support_point(v).map_or(0.0, |k| dist.pmf(k)))
@@ -204,28 +209,29 @@ fn sf_value(dist: &Binomial, v: f64) -> Option<f64> {
 }
 
 /// Element-wise pmf via `statrs` `Discrete::pmf`; zero off the integer support (`value < 0`,
-/// non-integer, or `value > n`). See [`value_keyed`] for the null/error contract.
+/// non-integer, or `value > n`), `NaN` for a `NaN` value. See [`value_keyed`] for the null/error
+/// contract.
 #[polars_expr(output_type=Float64)]
 fn binomial_pmf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, pmf_value)
 }
 
 /// Element-wise log-pmf via native `Discrete::ln_pmf` (more accurate than `pmf().ln()`);
-/// `-inf` off the integer support.
+/// `-inf` off the integer support, `NaN` for a `NaN` value.
 #[polars_expr(output_type=Float64)]
 fn binomial_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ln_pmf_value)
 }
 
 /// Element-wise cdf `P(X <= floor(value))` via `statrs` `DiscreteCDF::cdf`; `0` for `value < 0`,
-/// `1` for `value >= n`.
+/// `1` for `value >= n`, `NaN` for a `NaN` value.
 #[polars_expr(output_type=Float64)]
 fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, cdf_value)
 }
 
 /// Element-wise survival function `P(X > floor(value))` via native `DiscreteCDF::sf` (accurate in
-/// the upper tail); `1` for `value < 0`, `0` for `value >= n`.
+/// the upper tail); `1` for `value < 0`, `0` for `value >= n`, `NaN` for a `NaN` value.
 #[polars_expr(output_type=Float64)]
 fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
