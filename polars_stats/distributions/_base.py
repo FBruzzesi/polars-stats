@@ -159,18 +159,13 @@ def register_plugin(
 
 
 def propagate_null_and_nan(value: pl.Expr, result: pl.Expr) -> pl.Expr:
-    """Return `result`, overridden to null where `value` is null and to `NaN` where it is `NaN`.
+    """Return `result`, overridden to null/NaN where `value` is null/NaN respectively.
 
-    Applied by every public value-keyed wrapper (scipy semantics: null in, null out; `NaN` in,
-    `NaN` out). The closed-form hooks cannot guarantee this themselves: a null or `NaN` evaluation
-    point sorts into a `pl.when` branch (polars orders `NaN` greater than every float) and returns
-    that branch's constant, e.g. `Uniform.cdf(NaN) = 1.0`. The Rust plugins propagate both
-    natively (`NaN` short-circuited centrally in the shared drivers, `src/distributions/mod.rs`).
-
-    `is_nan` runs on `value` as-is: `False` for integer dtypes on every supported polars, raises
-    for non-numeric ones (both pinned by `tests/property/value_dtype_test.py`).
+    Applied by every public value-keyed wrapper (scipy semantics: null in, null out; `NaN` in, `NaN` out).
     """
-    return pl.when(value.is_null()).then(pl.lit(None)).when(value.is_nan()).then(float("nan")).otherwise(result)
+    guarded = pl.when(value.is_null()).then(pl.lit(None)).when(value.is_nan()).then(float("nan")).otherwise(result)
+    name = value.meta.output_name(raise_if_undetermined=False)
+    return guarded if name is None else guarded.alias(name)
 
 
 class _UnivariateDistribution(ABC):

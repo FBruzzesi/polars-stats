@@ -1,4 +1,4 @@
-"""Output-name contract of `sample` / `samples`.
+"""Output-name contract of `sample` / `samples` and the value-keyed methods.
 
 With all-constant parameters there is no input column to inherit a name from, so the samplers get
 the deliberate default names `"sample"` / `"samples"` (rather than leaking an internal expression
@@ -63,3 +63,10 @@ def test_sample_with_column_params_keeps_root_name(dist: _UnivariateDistribution
 @pytest.mark.parametrize(("dist", "root"), _COLUMN_PARAMS.values(), ids=list(_COLUMN_PARAMS))
 def test_samples_with_column_params_keeps_root_name(dist: _UnivariateDistribution, root: str) -> None:
     assert _FRAME.select(dist.samples(size=3, seed=0)).columns == [root]
+
+
+@pytest.mark.parametrize("dist", _SCALAR_PARAMS.values(), ids=list(_SCALAR_PARAMS))
+def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution) -> None:
+    """`cdf(pl.col("p"))` is named `"p"`, so `.name.*` modifiers work on value-keyed outputs."""
+    assert _FRAME.select(dist.cdf(pl.col("p"))).columns == ["p"]
+    assert _FRAME.select(dist.cdf(pl.col("p")).name.suffix("_cdf")).columns == ["p_cdf"]
