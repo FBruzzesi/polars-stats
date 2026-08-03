@@ -33,6 +33,31 @@ To preview these docs locally:
 uv run --group docs zensical serve
 ```
 
+## Repository layout
+
+```text
+polars-stats/
+├── Cargo.toml
+├── pyproject.toml
+├── rust-toolchain.toml
+├── src/
+│   ├── lib.rs                # pymodule entry + global allocator
+│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_scalar_plugin! fast path)
+│   └── distributions/        # one Rust file per distribution
+├── polars_stats/
+│   ├── __init__.py           # public exports
+│   ├── _lib.py               # plugin path resolution
+│   └── distributions/
+│       ├── _base.py          # ABCs + coercion / null helpers
+│       └── _<name>.py        # one Python class per distribution
+├── tests/
+│   ├── distributions/<name>/ # one folder per distribution, one file per method
+│   ├── property/             # hypothesis-based invariant tests
+│   └── scipy_parity/         # scipy reference-oracle tests
+├── benchmarks/               # internal benchmark harness (not part of the docs)
+└── docs/                     # this documentation, one directory per Diataxis quadrant
+```
+
 ## Stack
 
 ### Rust runtime

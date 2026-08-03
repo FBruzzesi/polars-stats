@@ -13,15 +13,18 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
-  { "User guide" = [
-    { "Home" = "user-guide/index.md" },
-    { "Column-valued parameters" = "user-guide/column-parameters.md" },
-    { "Lazy pipelines" = "user-guide/lazy-pipelines.md" },
-    { "Sampling" = "user-guide/sampling.md" },
-    { "Nulls and errors" = "user-guide/nulls-and-errors.md" },
+  { "Tutorial" = "tutorial.md" },
+  { "How-to guides" = [
+    { "Home" = "how-to/index.md" },
+    { "Use column-valued parameters" = "how-to/column-parameters.md" },
+    { "Compose in lazy pipelines" = "how-to/lazy-pipelines.md" },
+    { "Sample reproducibly" = "how-to/sampling.md" },
+    { "Handle nulls and errors" = "how-to/nulls-and-errors.md" },
+    { "Migrate from scipy.stats" = "how-to/migrate-from-scipy.md" },
   ] },
   { "API reference" = [
     { "Home" = "reference/index.md" },
+    { "Parameters and contracts" = "reference/parameters-and-contracts.md" },
     { "Continuous" = "reference/continuous.md" },
     { "Discrete" = "reference/discrete.md" },
   ] },
