@@ -7,6 +7,7 @@ import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import Uniform
+from tests._polars_compat import arr_explode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,20 +39,12 @@ def test_samples_columns_are_not_all_equal(frame: Callable[..., pl.DataFrame], s
 
 def test_samples_within_bounds(frame: Callable[..., pl.DataFrame], seed: int) -> None:
     mn, mx = -3.0, 2.0
-    series = (
-        frame(size=2_000)
-        .select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"]
-        .arr.explode(empty_as_null=False)
-    )
+    series = arr_explode(frame(size=2_000).select(s=Uniform(min=mn, max=mx).samples(size=8, seed=seed))["s"])
     assert series.is_between(mn, mx).all()
 
 
 def test_samples_mean_close_to_midpoint(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    series = (
-        frame(size=4_000)
-        .select(s=Uniform(min=2.0, max=5.0).samples(size=16, seed=seed))["s"]
-        .arr.explode(empty_as_null=False)
-    )
+    series = arr_explode(frame(size=4_000).select(s=Uniform(min=2.0, max=5.0).samples(size=16, seed=seed))["s"])
     mean = cast("float", series.mean())
     assert abs(mean - 3.5) < 0.01 * 3.0
 

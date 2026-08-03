@@ -24,9 +24,10 @@ The method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, `isf`, the `log_*` family, 
 `DiscreteDistribution`. The catalogue and the full table live in the [API reference](../reference/index.md#method-surface).
 
 **Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`,
-applies `propagate_null`, then delegates the maths to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses
+applies `propagate_null_and_nan`, then delegates the maths to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses
 implement and override the `_x` hooks, never the public methods.** The hook receives an already-coerced `pl.Expr` and
-returns the formula with no null handling; the base guarantees the null contract and input coercion uniformly.
+returns the formula with no null or NaN handling; the base guarantees the input contract uniformly (null in, null out;
+`NaN` in, `NaN` out, matching scipy) along with input coercion.
 
 Composing defaults live in the base and call the other hooks:
 

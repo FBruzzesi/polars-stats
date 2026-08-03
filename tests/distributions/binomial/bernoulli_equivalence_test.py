@@ -33,7 +33,6 @@ def test_scalar_methods_match_bernoulli(p: float, method: str, unit_frame: pl.Da
 @pytest.mark.parametrize("p", [0.2, 0.5, 0.8])
 @pytest.mark.parametrize("q", _QUANTILES)
 def test_ppf_matches_bernoulli(p: float, q: float, unit_frame: pl.DataFrame) -> None:
-    # Bernoulli ppf is Boolean {False, True}; Binomial ppf is the integer support {0.0, 1.0}.
     binom = unit_frame.select(r=Binomial(1, p).ppf(q)).item(0, "r")
     bern = unit_frame.select(r=Bernoulli(p).ppf(q)).item(0, "r")
-    assert binom == float(bern)
+    assert binom == bern

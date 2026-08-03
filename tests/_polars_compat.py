@@ -10,6 +10,10 @@ forwarded untouched.
 
 `linear_space` backfills `polars.linear_space`, which is missing on older supported polars; the implementation here
 reproduces its evenly spaced, inclusive-endpoint grid on every supported version.
+
+`arr_explode` wraps `Series.arr.explode`: polars 1.36 added the `empty_as_null` flag and 1.42 deprecated its
+default (a warning `filterwarnings = ["error"]` escalates), so newer polars needs the explicit kwarg while older
+supported polars does not accept it.
 """
 
 from __future__ import annotations
@@ -24,12 +28,26 @@ from polars.testing import assert_series_equal as _assert_series_equal
 if TYPE_CHECKING:
     from polars import DataFrame, LazyFrame, Series
 
-__all__ = ("assert_frame_equal", "assert_series_equal", "linear_space")
+__all__ = ("arr_explode", "assert_frame_equal", "assert_series_equal", "linear_space")
 
 PL_VERSION = Version(pl.__version__)
 _NEEDS_RENAMING = Version("1.32.3") > PL_VERSION
 _REL_NAME = "rtol" if _NEEDS_RENAMING else "rel_tol"
 _ABS_NAME = "atol" if _NEEDS_RENAMING else "abs_tol"
+_EXPLODE_HAS_EMPTY_AS_NULL = Version("1.36.0") <= PL_VERSION
+
+
+def arr_explode(series: Series) -> Series:
+    """Version-agnostic `Series.arr.explode` with empty-as-empty semantics.
+
+    Passes `empty_as_null=False` where the kwarg exists (polars >= 1.36; from 1.42 omitting it warns
+    about the default flipping, which the suite's `filterwarnings = ["error"]` escalates) and calls
+    plain `explode` on older supported polars, which has no kwarg and no warning. Every call site
+    explodes an `Array` column, whose rows are never empty, so the two paths return identical output.
+    """
+    if _EXPLODE_HAS_EMPTY_AS_NULL:
+        return series.arr.explode(empty_as_null=False)
+    return series.arr.explode()
 
 
 def linear_space(start: float, end: float, num_samples: int) -> Series:

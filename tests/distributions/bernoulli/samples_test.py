@@ -7,6 +7,7 @@ import pytest
 from polars.testing import assert_series_equal
 
 from polars_stats import Bernoulli
+from tests._polars_compat import arr_explode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,7 +52,7 @@ def test_samples_mean_close_to_p_for_large_total(
 ) -> None:
     n, size, p = 4_000, 16, 0.3
     tolerance = 0.01
-    result = frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"].arr.explode(empty_as_null=False)
+    result = arr_explode(frame(n).select(s=Bernoulli(p=p).samples(size=size, seed=seed))["s"])
     mean = cast("float", result.mean())
     assert abs(mean - p) < tolerance
 

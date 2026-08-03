@@ -31,10 +31,10 @@ if TYPE_CHECKING:
 
 _GRID_SIZE = 64
 
-_PPF_EDGE_QUANTILES = (-0.5, 0.0, 1.0, 1.5, None)
+_PPF_EDGE_QUANTILES = (-0.5, 0.0, 1.0, 1.5, None, float("nan"))
 """Out-of-range quantiles exercise ppf's null path; the closed endpoints exercise its boundary mapping.
 
-A null in the value column must propagate on both paths.
+A null or NaN in the value column must propagate on both paths.
 """
 
 
@@ -57,7 +57,7 @@ def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.D
     per_row = spec.make_columns(params)
 
     lo, hi = spec.eval_range(params)
-    values = pl.DataFrame({"x": [*linear_space(lo, hi, _GRID_SIZE), None]}, schema={"x": pl.Float64})
+    values = pl.DataFrame({"x": [*linear_space(lo, hi, _GRID_SIZE), None, float("nan")]}, schema={"x": pl.Float64})
     quantiles = pl.DataFrame(
         {"q": [*linear_space(1e-3, 1.0 - 1e-3, _GRID_SIZE), *_PPF_EDGE_QUANTILES]},
         schema={"q": pl.Float64},

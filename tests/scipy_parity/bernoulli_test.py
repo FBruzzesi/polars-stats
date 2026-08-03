@@ -10,7 +10,7 @@ from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 # of the per-method functional tests under `tests/distributions/bernoulli`.
 _PROBS = [0.0, 0.25, 0.5, 0.75, 1.0]
 # Interior quantiles only: scipy's discrete ppf/isf return the below-support sentinel -1 at the
-# exact endpoints q in {0, 1}, which the Boolean-valued `ppf` here (range {False, True}) does not
+# exact endpoints q in {0, 1}, which the support-clamped `ppf` here (range {0.0, 1.0}) does not
 # reproduce. The interior is where the two definitions agree.
 _QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
 # Bernoulli support is {0, 1}; the grid spans below, both support points, a non-integer, and above.
@@ -41,7 +41,7 @@ def test_method_matches_scipy(case: Case[Bernoulli], p: float) -> None:
 
     Table-driven: adding a method is one row in `_CASES`. `ppf`/`isf` use interior quantiles only,
     since scipy's discrete inverse returns the below-support sentinel -1 at `q` in `{0, 1}`, which
-    the Boolean-valued `ppf` here does not reproduce. Method-specific behaviour (support handling,
+    the support-clamped `ppf` here does not reproduce. Method-specific behaviour (support handling,
     null propagation) is asserted in the per-method test files.
     """
     assert_case_matches_scipy(

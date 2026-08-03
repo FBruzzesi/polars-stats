@@ -56,8 +56,13 @@ class Bernoulli(DiscreteDistribution):
         return pl.when(value.lt(0)).then(0.0).when(value.lt(1)).then(1 - self._checked_p).otherwise(1.0)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """Smallest ``x`` with ``cdf(x) >= quantile``: ``0`` if ``quantile <= 1 - p`` else ``1`` (``Boolean``)."""
-        return quantile > 1 - self._checked_p
+        """Smallest ``x`` with ``cdf(x) >= quantile``: ``0.0`` if ``quantile <= 1 - p`` else ``1.0``.
+
+        The comparison's ``Boolean`` is cast to ``Float64`` so ``ppf`` / ``isf`` / ``median`` return the
+        support point numerically, matching scipy and every other distribution and leaving the wrapper's
+        ``NaN -> NaN`` contract representable (``Boolean`` has no ``NaN``).
+        """
+        return (quantile > 1 - self._checked_p).cast(pl.Float64())
 
     def mean(self) -> pl.Expr:
         """Expected value, ``p``."""

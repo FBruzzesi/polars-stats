@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -30,14 +31,20 @@ def _eval(expr: pl.Expr, xs: Iterable[float]) -> pl.Series:
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_density_non_negative(spec: DistSpec, data: st.DataObject) -> None:
-    """`pdf(x) >= 0` (continuous) / `pmf(x) >= 0` (discrete), across the parameter space."""
+    """`pdf(x) >= 0` (continuous) / `pmf(x) >= 0` (discrete), across the parameter space.
+
+    A trailing `NaN` evaluation point must propagate as `NaN` (scipy semantics) rather than collapse
+    into the zero-density branch; the finite-grid assertions exclude it.
+    """
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
     xs = linear_space(lo, hi, _GRID_SIZE)
 
-    density = _eval(spec.density(dist, pl.col("x")), xs)
+    density = _eval(spec.density(dist, pl.col("x")), [*xs, float("nan")])
 
+    assert math.isnan(density.item(_GRID_SIZE))
+    density = density.head(_GRID_SIZE)
     assert not density.is_nan().any()
     assert density.ge(0.0).all()
 
