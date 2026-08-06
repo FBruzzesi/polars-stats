@@ -22,8 +22,8 @@ _TWO_PI_E = math.tau * math.e
 class Normal(ContinuousDistribution):
     """Normal (Gaussian) distribution with location ``mu`` and scale ``sigma``.
 
-    Equivalent to ``scipy.stats.norm(loc=mu, scale=sigma)``. The standard normal is the default parameterisation
-    (``mu=0``, ``sigma=1``); it is handled by the same code path as any other, not special-cased.
+    Equivalent to ``scipy.stats.norm(loc=mu, scale=sigma)``. The standard normal (``mu=0``, ``sigma=1``) is the
+    default parameterisation.
 
     Arguments:
         mu: Location parameter. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or
@@ -87,8 +87,8 @@ class Normal(ContinuousDistribution):
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         """Log-sf via the native stable ``ln_erfc`` form (finite past ~38 sigma, unlike ``sf().log()``).
 
-        The flagship anomaly-scoring path: ``sf`` for a many-sigma event underflows to ``0`` and its log to
-        ``-inf``; this stays finite (``scipy.stats.norm.logsf``-equivalent).
+        ``sf`` for a many-sigma event underflows to ``0`` and its log to ``-inf``; this stays finite
+        (``scipy.stats.norm.logsf``-equivalent).
         """
         return self._value_plugin("normal_ln_sf", value)
 

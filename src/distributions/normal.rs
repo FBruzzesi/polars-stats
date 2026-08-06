@@ -17,10 +17,8 @@ use crate::rng::{
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::Normal::new` rejects a non-finite `mu`, a `NaN` `sigma`, or `sigma <= 0`.
-/// We surface that as `InvalidOperation` so an invalid scale fails the whole evaluation,
-/// rather than silently nulling the row.
-/// Validation lives here so every method that builds a distribution reports an invalid scale identically.
+/// `statrs::Normal::new` rejects a non-finite `mu`, a `NaN` `sigma`, or `sigma <= 0`. That surfaces as
+/// `InvalidOperation`, so an invalid scale fails the whole evaluation rather than silently nulling the row.
 fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
     Normal::new(mu, sigma).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -52,12 +50,10 @@ value_keyed_per_row! {
     build = build_dist;
 }
 
-/// Element-wise Normal sampler.
+/// Element-wise Normal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
-/// `inputs[0]` carries `mu`, `inputs[1]` `sigma`, `inputs[2]` the per-row index each row's
-/// sub-seed derives from, so chunking and threading cannot change the output; `seed=None` draws a
-/// fresh root seed once per call. Per row, `null` propagates and an invalid parameterisation
-/// raises via [`build_dist`]. Returns `Float64`.
+/// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
+/// and chunk-invariance follow [`SampleKwargs::row_rngs`].
 #[polars_expr(output_type=Float64)]
 fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -91,12 +87,9 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
 }
 
 sample_scalar_plugin! {
-    /// Static `(mu, sigma)` for the constant-parameter sampler fast path: validated once, passed
-    /// as kwargs instead of full-length columns.
     struct NormalScalarKwargs { mu: f64, sigma: f64 }
 
-    /// Constant-parameter Normal sampler: [`normal_sample`] with the distribution built once;
-    /// seeding and draw unchanged, so output is bit-identical for the same inputs.
+    /// Constant-parameter fast path for [`normal_sample`].
     fn normal_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = normal_samples_scalar as NormalSamplesScalarKwargs -> samples_f64_output;
@@ -106,12 +99,9 @@ sample_scalar_plugin! {
 }
 
 /// Element-wise multi-draw Normal sampler: `size` draws per row in one call, the distribution
-/// built once per row.
+/// built once per row. Returns `Array(Float64, size)`.
 ///
-/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
-/// [`normal_samples_scalar`] for the same parameters. Null/error contract follows
-/// [`normal_sample`] per row; a null row yields a null array element.
-/// Returns `Array(Float64, size)`.
+/// Seeding and the null/error contract follow [`samples_per_row`] and [`normal_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -130,9 +120,7 @@ fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Seri
     )
 }
 
-// Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
-// share one definition each and cannot drift (the property test pinning their bit-equality only
-// samples parameterisations; sharing the body makes it structural).
+// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
 fn pdf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
@@ -160,7 +148,7 @@ const LN_ERFC_ASYMPTOTIC_MIN: f64 = 25.0;
 /// / `log_sf` exist to serve. Past [`LN_ERFC_ASYMPTOTIC_MIN`] we switch to the asymptotic expansion
 /// `erfc(t) = exp(-t^2) / (t * sqrt(pi)) * (1 - 1/(2t^2) + 3/(4t^4) - 15/(8t^6) + ...)`, whose log is a
 /// large finite negative number; below it, statrs `erfc` holds full relative precision so the direct
-/// form is exact. The two branches agree to ~1e-13 at the crossover, so the join is seamless.
+/// form is exact. The two branches agree to ~1e-13 at the crossover.
 fn ln_erfc(t: f64) -> f64 {
     if t < LN_ERFC_ASYMPTOTIC_MIN {
         erf::erfc(t).ln()
@@ -267,32 +255,17 @@ fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 value_keyed_scalar_plugins! {
-    /// Static `(mu, sigma)` for the constant-parameter value-keyed fast paths (`<method>_scalar`):
-    /// validated and built once, only the evaluation-point column crosses FFI.
     struct NormalParamsKwargs { mu: f64, sigma: f64 }
 
     build = |kw| build_dist(kw.mu, kw.sigma)?;
 
     methods {
-        /// Constant-parameter pdf; same body as [`normal_pdf`] via [`pdf_value`], dist built once.
         fn normal_pdf_scalar => pdf_value;
-
-        /// Constant-parameter log-pdf; same body as [`normal_ln_pdf`] via [`ln_pdf_value`], dist built once.
         fn normal_ln_pdf_scalar => ln_pdf_value;
-
-        /// Constant-parameter cdf; same body as [`normal_cdf`] via [`cdf_value`], dist built once.
         fn normal_cdf_scalar => cdf_value;
-
-        /// Constant-parameter sf; same body as [`normal_sf`] via [`sf_value`], dist built once.
         fn normal_sf_scalar => sf_value;
-
-        /// Constant-parameter log-cdf; same body as [`normal_ln_cdf`] via [`ln_cdf_value`], dist built once.
         fn normal_ln_cdf_scalar => ln_cdf_value;
-
-        /// Constant-parameter log-sf; same body as [`normal_ln_sf`] via [`ln_sf_value`], dist built once.
         fn normal_ln_sf_scalar => ln_sf_value;
-
-        /// Constant-parameter ppf; same body as [`normal_ppf`] via [`ppf_value`], dist built once.
         fn normal_ppf_scalar => ppf_value;
     }
 }

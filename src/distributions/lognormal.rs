@@ -15,10 +15,9 @@ use crate::rng::{
 
 /// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::LogNormal::new` rejects a `NaN` `mu`, a `NaN` `sigma`, or `sigma <= 0`. We surface that
-/// as `InvalidOperation` so an invalid parameterisation fails the whole evaluation, rather than
-/// silently nulling the row. Validation lives here so every method that builds a distribution
-/// reports it identically.
+/// `statrs::LogNormal::new` rejects a `NaN` `mu`, a `NaN` `sigma`, or `sigma <= 0`. That surfaces as
+/// `InvalidOperation`, so an invalid parameterisation fails the whole evaluation rather than silently
+/// nulling the row.
 fn build_dist(mu: f64, sigma: f64) -> PolarsResult<LogNormal> {
     LogNormal::new(mu, sigma).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -77,12 +76,10 @@ param_validator! {
     output_name = inputs[1];
 }
 
-/// Element-wise LogNormal sampler.
+/// Element-wise LogNormal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
-/// `inputs[0]` carries `mu`, `inputs[1]` `sigma`, `inputs[2]` the per-row index each row's
-/// sub-seed derives from, so chunking and threading cannot change the output; `seed=None` draws a
-/// fresh root seed once per call. Per row, `null` propagates and an invalid parameterisation
-/// raises via [`build_dist`]. Returns `Float64`.
+/// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
+/// and chunk-invariance follow [`SampleKwargs::row_rngs`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -116,12 +113,9 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
 }
 
 sample_scalar_plugin! {
-    /// Static `(mu, sigma)` for the constant-parameter sampler fast path: validated once, passed
-    /// as kwargs instead of full-length columns.
     struct LogNormalScalarKwargs { mu: f64, sigma: f64 }
 
-    /// Constant-parameter LogNormal sampler: [`lognormal_sample`] with the distribution built
-    /// once; seeding and draw unchanged, so output is bit-identical for the same inputs.
+    /// Constant-parameter fast path for [`lognormal_sample`].
     fn lognormal_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = lognormal_samples_scalar as LogNormalSamplesScalarKwargs -> samples_f64_output;
@@ -131,12 +125,9 @@ sample_scalar_plugin! {
 }
 
 /// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call, the distribution
-/// built once per row.
+/// built once per row. Returns `Array(Float64, size)`.
 ///
-/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
-/// [`lognormal_samples_scalar`] for the same parameters. Null/error contract follows
-/// [`lognormal_sample`] per row; a null row yields a null array element.
-/// Returns `Array(Float64, size)`.
+/// Seeding and the null/error contract follow [`samples_per_row`] and [`lognormal_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
@@ -155,9 +146,7 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
     )
 }
 
-// Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
-// share one definition each and cannot drift (the property test pinning their bit-equality only
-// samples parameterisations; sharing the body makes it structural).
+// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
 fn pdf_value(dist: &LogNormal, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
@@ -254,26 +243,15 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 value_keyed_scalar_plugins! {
-    /// Static `(mu, sigma)` for the constant-parameter value-keyed fast paths (`<method>_scalar`):
-    /// validated and built once, only the evaluation-point column crosses FFI.
     struct LogNormalParamsKwargs { mu: f64, sigma: f64 }
 
     build = |kw| build_dist(kw.mu, kw.sigma)?;
 
     methods {
-        /// Constant-parameter pdf; same body as [`lognormal_pdf`] via [`pdf_value`], dist built once.
         fn lognormal_pdf_scalar => pdf_value;
-
-        /// Constant-parameter log-pdf; same body as [`lognormal_ln_pdf`] via [`ln_pdf_value`], dist built once.
         fn lognormal_ln_pdf_scalar => ln_pdf_value;
-
-        /// Constant-parameter cdf; same body as [`lognormal_cdf`] via [`cdf_value`], dist built once.
         fn lognormal_cdf_scalar => cdf_value;
-
-        /// Constant-parameter sf; same body as [`lognormal_sf`] via [`sf_value`], dist built once.
         fn lognormal_sf_scalar => sf_value;
-
-        /// Constant-parameter ppf; same body as [`lognormal_ppf`] via [`ppf_value`], dist built once.
         fn lognormal_ppf_scalar => ppf_value;
     }
 }
@@ -290,10 +268,7 @@ value_keyed_scalar_plugins! {
     build = |kw| build_underlying_normal(kw.mu, kw.sigma)?;
 
     methods {
-        /// Constant-parameter log-cdf; same body as [`lognormal_ln_cdf`] via [`ln_cdf_value`], normal built once.
         fn lognormal_ln_cdf_scalar => ln_cdf_value;
-
-        /// Constant-parameter log-sf; same body as [`lognormal_ln_sf`] via [`ln_sf_value`], normal built once.
         fn lognormal_ln_sf_scalar => ln_sf_value;
     }
 }

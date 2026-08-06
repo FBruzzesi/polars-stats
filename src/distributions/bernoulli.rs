@@ -30,12 +30,10 @@ param_validator! {
     output_name = inputs[0];
 }
 
-/// Element-wise Bernoulli sampler.
+/// Element-wise Bernoulli sampler over `(p, row_index)`, returning `Boolean`.
 ///
-/// `inputs[0]` carries the success probability (one per row), `inputs[1]` the per-row index each
-/// row's sub-seed derives from, so chunking and threading cannot change the output; `seed=None`
-/// draws a fresh root seed once per call. Per row, `null` propagates and an invalid `p` raises
-/// via [`build_dist`]. Returns `Boolean`.
+/// Per row, `null` propagates and an invalid `p` raises via [`build_dist`]. Seeding and
+/// chunk-invariance follow [`SampleKwargs::row_rngs`].
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
@@ -67,12 +65,9 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
 }
 
 sample_scalar_plugin! {
-    /// Static `p` for the constant-parameter sampler fast path: validated once, passed as a kwarg
-    /// instead of a full-length column.
     struct BernoulliScalarKwargs { p: f64 }
 
-    /// Constant-probability Bernoulli sampler: [`bernoulli_sample`] with the distribution built
-    /// once; seeding and draw unchanged, so output is bit-identical for the same inputs.
+    /// Constant-parameter fast path for [`bernoulli_sample`].
     fn bernoulli_sample_scalar(output_type = Boolean, physical = BooleanType);
 
     samples = bernoulli_samples_scalar as BernoulliSamplesScalarKwargs -> samples_bool_output;
@@ -82,12 +77,9 @@ sample_scalar_plugin! {
 }
 
 /// Element-wise multi-draw Bernoulli sampler: `size` draws per row in one call, the distribution
-/// built once per row.
+/// built once per row. Returns `Array(Boolean, size)`.
 ///
-/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
-/// [`bernoulli_samples_scalar`] for the same `p`. Null/error contract follows
-/// [`bernoulli_sample`] per row; a null row yields a null array element.
-/// Returns `Array(Boolean, size)`.
+/// Seeding and the null/error contract follow [`samples_per_row`] and [`bernoulli_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;

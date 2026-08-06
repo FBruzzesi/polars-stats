@@ -14,10 +14,8 @@ use crate::rng::{
 
 /// Construct a `statrs::Beta`, mapping the invalid-parameter case to a `ComputeError`.
 ///
-/// `statrs::Beta::new(shape_a, shape_b)` rejects a `NaN`, infinite, or non-positive shape.
-/// We surface that as `InvalidOperation` so an invalid shape fails the whole evaluation
-/// rather than silently nulling the row.
-/// Validation lives here so every method that builds a distribution reports an invalid shape identically.
+/// `statrs::Beta::new(shape_a, shape_b)` rejects a `NaN`, infinite, or non-positive shape. That surfaces as
+/// `InvalidOperation`, so an invalid shape fails the whole evaluation rather than silently nulling the row.
 fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
     Beta::new(a, b).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -79,16 +77,14 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Element-wise Beta sampler.
+/// Element-wise Beta sampler over `(a, b, row_index)`, returning `Float64`.
 ///
-/// `inputs[0]` carries `a`, `inputs[1]` `b`, `inputs[2]` the per-row index each row's sub-seed
-/// derives from, so chunking and threading cannot change the output; `seed=None` draws a fresh
-/// root seed once per call. Per row, `null` propagates and an invalid shape raises via
-/// [`build_dist`].
+/// Per row, `null` propagates and an invalid shape raises via [`build_dist`]. Seeding and
+/// chunk-invariance follow [`SampleKwargs::row_rngs`].
 ///
 /// The draw keeps `statrs` (two `O(1)`-amortised Gamma draws, normalised); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class it uses (unlike the
-/// binomial draw, see docs/explanation/design.md). Returns a `Float64` series.
+/// binomial draw, see docs/explanation/design.md).
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let a = inputs[0].cast(&DataType::Float64)?;
@@ -122,12 +118,9 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
 }
 
 sample_scalar_plugin! {
-    /// Static `(a, b)` for the constant-parameter sampler fast path: validated once, passed as
-    /// kwargs instead of full-length columns.
     struct BetaScalarKwargs { a: f64, b: f64 }
 
-    /// Constant-parameter Beta sampler: [`beta_sample`] with the distribution built once; seeding
-    /// and draw unchanged, so output is bit-identical for the same inputs.
+    /// Constant-parameter fast path for [`beta_sample`].
     fn beta_sample_scalar(output_type = Float64, physical = Float64Type);
 
     samples = beta_samples_scalar as BetaSamplesScalarKwargs -> samples_f64_output;
@@ -137,11 +130,9 @@ sample_scalar_plugin! {
 }
 
 /// Element-wise multi-draw Beta sampler: `size` draws per row in one call, the distribution built
-/// once per row.
+/// once per row. Returns `Array(Float64, size)`.
 ///
-/// Seeding is positional (see [`samples_per_row`]), so output is bit-identical to
-/// [`beta_samples_scalar`] for the same parameters. Null/error contract follows [`beta_sample`]
-/// per row; a null row yields a null array element. Returns `Array(Float64, size)`.
+/// Seeding and the null/error contract follow [`samples_per_row`] and [`beta_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let a = inputs[0].cast(&DataType::Float64)?;
@@ -160,9 +151,7 @@ fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series
     )
 }
 
-// Per-method bodies, named so the per-row plugins and the constant-parameter `*_scalar` twins
-// share one definition each and cannot drift (the property test pinning their bit-equality only
-// samples parameterisations; sharing the body makes it structural).
+// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
 fn pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
@@ -234,26 +223,15 @@ fn beta_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 value_keyed_scalar_plugins! {
-    /// Static `(a, b)` for the constant-parameter value-keyed fast paths (`<method>_scalar`):
-    /// validated and built once, only the evaluation-point column crosses FFI.
     struct BetaParamsKwargs { a: f64, b: f64 }
 
     build = |kw| build_dist(kw.a, kw.b)?;
 
     methods {
-        /// Constant-parameter pdf; same body as [`beta_pdf`] via [`pdf_value`], dist built once.
         fn beta_pdf_scalar => pdf_value;
-
-        /// Constant-parameter log-pdf; same body as [`beta_ln_pdf`] via [`ln_pdf_value`], dist built once.
         fn beta_ln_pdf_scalar => ln_pdf_value;
-
-        /// Constant-parameter cdf; same body as [`beta_cdf`] via [`cdf_value`], dist built once.
         fn beta_cdf_scalar => cdf_value;
-
-        /// Constant-parameter sf; same body as [`beta_sf`] via [`sf_value`], dist built once.
         fn beta_sf_scalar => sf_value;
-
-        /// Constant-parameter ppf; same body as [`beta_ppf`] via [`ppf_value`], dist built once.
         fn beta_ppf_scalar => ppf_value;
     }
 }
