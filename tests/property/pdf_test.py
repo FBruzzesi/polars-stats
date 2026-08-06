@@ -18,9 +18,12 @@ if TYPE_CHECKING:
     from tests.property._specs import DistSpec
 
 _GRID_SIZE = 64
-# Dense grid for the trapezoidal mass check. A coarser grid understates the gaussian tails; finer adds
-# little. The integral is an approximation, so `1e-3` is the honest tolerance (exact for uniform).
-_INTEGRATION_GRID_SIZE = 4096
+# Grid and tolerance for the trapezoidal mass check. Normal, Uniform and Exponential integrate to
+# ~1e-6 or better here; the binding case is a density still well above zero at a support endpoint,
+# where the rule drops the final half-cell. Beta with one shape at 1 and the other at `s` is the
+# worst of those, with error almost exactly `s / (2 * (grid - 1))`. Shapes are capped at 10 in
+# `_specs.py`, so grid 4096 gives 1.2e-3 and fails the tolerance; 16384 gives 3.1e-4, a ~3x margin.
+_INTEGRATION_GRID_SIZE = 16384
 _INTEGRATION_TOL = 1e-3
 
 
