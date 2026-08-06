@@ -176,7 +176,7 @@ search_path = ["."]
 [tool.rumdl]
 line-length = 120
 flavor = "mkdocs"
-include = ["docs/**", "README.md", "AGENTS.md"]
+include = ["docs/**", "polars_stats/**", "src/**", "tests/**",  "README.md", "AGENTS.md"]
 disable = [
   # NOTE: These look like either false positives or unsupported case
   # TODO(FBruzzesi): Report upstream
