@@ -91,9 +91,8 @@ class LogNormal(ContinuousDistribution):
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         """Log-sf via the underlying normal's stable ``ln_erfc`` form; ``0`` for ``value <= 0``.
 
-        Finite far into the right tail, unlike ``sf().log()``. The flagship anomaly-scoring path for a
-        heavy-tailed positive quantity: ``sf`` for a far-tail value underflows to ``0`` and its log to
-        ``-inf``; this stays finite.
+        Finite far into the right tail, unlike ``sf().log()``: ``sf`` for a far-tail value underflows
+        to ``0`` and its log to ``-inf``.
         """
         return self._value_plugin("lognormal_ln_sf", value)
 

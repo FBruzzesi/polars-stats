@@ -54,9 +54,8 @@ class Uniform(ContinuousDistribution):
         Validated in Rust so an invalid parameterisation (``max <= min``, a non-finite bound, or a
         width overflowing ``float64``) raises rather than silently yielding a non-positive or
         infinite width. Every closed-form method (moments and pdf/cdf/ppf) derives from this, so they
-        all validate consistently. Null bounds propagate. `_checked` validates once for scalar bounds
-        (length-1 inputs) and per-row for columns; on the scalar path the width is recomputed in
-        Polars as ``max - min`` (bit-identical to the Rust ``hi - lo``) behind the validity gate.
+        all validate consistently; null bounds propagate. See ``_checked`` for the scalar-vs-column
+        routing.
         """
         return self._checked("uniform_range", self._max - self._min)
 

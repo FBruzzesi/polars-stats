@@ -2,10 +2,14 @@
 icon: lucide/workflow
 ---
 
-# Lazy pipelines
+# Compose in lazy pipelines
 
-Every method returns a `pl.Expr`, so it slots into a `LazyFrame` pipeline under the query optimiser, with no
-materialisation and no exit from the engine. A per-row anomaly score is one `with_columns` away.
+Keep the statistics inside the query: no `collect()` in the middle, no `to_numpy()`, no Python callback.
+
+## Score inside a lazy query
+
+Every method returns a `pl.Expr`, so it slots into a `LazyFrame` plan and runs under the optimiser. Join the
+parameters, score, filter, and collect once:
 
 ```python exec="yes" source="above" session="lazy-pipelines" result="python"
 import polars as pl
@@ -35,17 +39,13 @@ anomalies = (
 print(anomalies)
 ```
 
-Each reading is scored against the baseline distribution carried on its own row, the upper-tail probability is filtered
-in the same lazy plan, and the whole thing collects once.
+Each reading is scored against the baseline carried on its own row, the tail probability is filtered in the same plan,
+and the whole thing collects once.
 
-## `over` and `group_by`
+## Aggregate a density within a window
 
-Methods are elementwise by contract, so they behave correctly under `over` and `group_by`: the expression is invoked
-once per partition, not as an aggregation. A distribution parameterised per group scores each row within its group.
-
-Because the density is elementwise, it composes inside a window expression: compute it per row, then aggregate within
-each group with `over`. Here each row's density is divided by its group's total to give a within-group share, kept
-aligned to the frame:
+Methods are elementwise, so they compose inside a window expression: compute per row, then aggregate with `over`. Here
+each row's density is divided by its group's total to give a within-group share, kept aligned to the frame:
 
 ```python exec="yes" source="above" session="lazy-pipelines" result="python"
 df = pl.DataFrame(
@@ -65,12 +65,19 @@ print(
 )
 ```
 
+## Collect per-group values with `group_by`
+
 Under `group_by(...).agg(...)` the same elementwise call collects into one list per group rather than reducing:
 
 ```python exec="yes" source="above" session="lazy-pipelines" result="python"
 print(df.group_by("group", maintain_order=True).agg(density=dist.pdf("x")))
 ```
 
-This is what the scalar-to-column coercion buys: a Python `float` parameter is expanded to a row-aligned expression, so
-the plugin always receives a length-matched input and stays elementwise under partitioning. See
-[Architecture / Column-valued parameters](../explanation/architecture.md#column-valued-parameters) for the mechanics.
+Wrap it in an aggregation if you want a single number per group, for example
+`agg(mean_density=dist.pdf("x").mean())`.
+
+## Related
+
+* [Use column-valued parameters](column-parameters.md): where those `mu` / `sigma` columns come from.
+* [Explanation / Architecture](../explanation/architecture.md#column-valued-parameters): why a scalar parameter is
+    expanded to a row-aligned expression, and why that keeps these methods elementwise under partitioning.

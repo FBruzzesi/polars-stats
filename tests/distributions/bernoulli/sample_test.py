@@ -172,7 +172,7 @@ def test_sample_returns_full_length_boolean(
 def test_sample_in_group_by_draws_per_group(seed: int) -> None:
     # Under genuine elementwise semantics, draws depend only on (seed, row index, p).
     # With a constant p and a constant seed, every group sees the same per-row indices
-    # 0..n-1 and so produces an identical bit pattern — variability across groups now
+    # 0..n-1 and so produces an identical bit pattern; variability across groups now
     # comes from p varying per row. We test:
     #   * `sum_p05` (constant p): all groups produce the same sum (deterministic);
     #   * `sum_probas` (per-row p): groups differ;

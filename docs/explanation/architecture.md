@@ -41,17 +41,12 @@ binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails.
 
 ## Column-valued parameters
 
-Every distribution `__init__` coerces each parameter with a single shared helper, `coerce_param`:
+Every distribution `__init__` coerces each parameter with a single shared helper, `coerce_param` (`coerce_n` for count
+parameters like Binomial's `n`). The accepted inputs and their coercions are tabulated in
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs).
 
-| Input | Coercion |
-|---|---|
-| `float` (`int` for count parameters like Binomial's `n`, via `coerce_n`) | `pl.repeat(value, n=pl.len(), dtype=...)` (row-aligned, keeps `is_elementwise=True` valid under `over` / `group_by`) |
-| `pl.Expr` | passed through |
-| `pl.Series` | `pl.lit(series)` |
-| `str` | `pl.col(name)` |
-| other (including `int` for a float parameter, `bool` anywhere) | `TypeError` |
-
-A scalar is expanded to a length-`N` expression (not `pl.lit`) on purpose: the plugin always receives a row-aligned
+A scalar is expanded with `pl.repeat(value, n=pl.len())`, a length-`N` expression rather than `pl.lit`, on purpose: the
+plugin always receives a row-aligned
 input, so it stays elementwise and `over` / `group_by` invoke it once per partition rather than as an aggregation.
 
 On the Rust side, a plugin function receives `inputs: &[Series]` of `(value, param_1, ..., param_k)`, casts each to
@@ -67,12 +62,14 @@ scalar).
 expression engine. Methods that go through `statrs` (sampling, transcendental `pdf`/`pmf`, `cdf`, `inverse_cdf`, native
 `ln_pdf`/`ln_pmf`, native `sf`) get a Rust plugin function.
 
-**Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so to enforce the invalid-parameter contract
-a closed-form distribution routes its parameters through one small validating plugin that raises on a bad row and
-returns a reused quantity. `Uniform.range` returns `max - min` and raises on `max <= min`; `Bernoulli` validates `p` in
-`[0, 1]`; `Normal` validates `sigma > 0`. Every closed-form method derives from that quantity, so even a pure-math
-`mean` performs one FFI round-trip and reports an invalid parameterisation consistently. This trades a little throughput
-for a uniform error surface.
+**Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so any method computed in Python routes its
+parameters through one small validating plugin that raises on a bad row and returns a reused quantity. For a
+closed-form distribution that covers the whole surface: `Uniform.range` returns `max - min` and raises on `max <= min`,
+`Bernoulli` validates `p` in `[0, 1]`, `Exponential` validates `rate > 0`. For a statrs-backed distribution it covers
+the closed-form moments only, since the value-keyed methods already validate inside their own plugin: `normal_sigma`
+validates `sigma > 0`, so `Normal.mean()` raises exactly as `Normal.pdf()` does. Either way a pure-math `mean` makes
+one FFI round-trip and reports an invalid parameterisation consistently, trading a little throughput for a uniform
+error surface.
 
 ## Sampling
 
@@ -109,46 +106,16 @@ same seed (a property test pins that equality); column-valued parameters still t
 
 ## Null and error contract
 
-The full table is in [User guide / Nulls and errors](../user-guide/nulls-and-errors.md). The rule: an invalid parameter value
-raises a `ComputeError` and fails the evaluation; `null` is reserved for `null` *inputs*. Construction rejects only
-wrong *types*. There is no early Python validation of parameter values, so a bad scalar and a bad column row surface
-identically.
-
-## Repository layout
-
-```text
-polars-stats/
-├── Cargo.toml
-├── pyproject.toml
-├── rust-toolchain.toml
-├── src/
-│   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_scalar_plugin! fast path)
-│   └── distributions/        # one Rust file per distribution
-├── polars_stats/
-│   ├── __init__.py           # public exports
-│   ├── _lib.py               # plugin path resolution
-│   └── distributions/
-│       ├── _base.py          # ABCs + coercion / null helpers
-│       └── _<name>.py        # one Python class per distribution
-├── tests/
-│   ├── distributions/<name>/ # one folder per distribution, one file per method
-│   ├── property/             # hypothesis-based invariant tests
-│   └── scipy_parity/         # scipy reference-oracle tests
-├── benchmarks/               # internal benchmark harness (not part of the docs)
-└── docs/                     # this documentation
-```
+The full table is in
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors). An invalid
+parameter value raises a `ComputeError` and fails the evaluation; `null` is reserved for `null` *inputs*.
+Construction rejects only wrong *types*. There is no early Python validation of parameter values, so a bad scalar and a
+bad column row surface identically.
 
 ## Stack
 
 The math runs on `statrs` 0.18; the plugin glue is `pyo3-polars` over `pyo3` (abi3); per-row seeded RNG is `rand_pcg`
 (`Pcg64Mcg`), with `rand` for `OsRng`; `serde` deserialises the static `seed` kwarg. The full dependency rationale and
-the deliberately-excluded crates are in [Contributing / Stack](../contributing.md#stack).
-
-## Compatibility and release
-
-| Dimension | Values |
-|---|---|
-| OS | Wheels target Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64. |
-| Python | 3.10 to 3.14 (per `requires-python`), single abi3 wheel. |
-| Polars | `>=1.15` (the `pyo3-polars` ABI floor). |
+the deliberately-excluded crates are in [Contributing / Stack](../contributing.md#stack), and the repository layout is
+in [Contributing / Repository layout](../contributing.md#repository-layout). Supported Python, Polars, and OS versions
+are in [Reference / Compatibility](../reference/index.md#compatibility).

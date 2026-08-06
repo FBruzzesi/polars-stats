@@ -251,20 +251,14 @@ class _UnivariateDistribution(ABC):
         return out.alias("samples") if self._scalar_kwargs is not None else out
 
     def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
-        """Draw `size` random variates per row.
+        """Route the multi-draw call, returning a column of `Array(inner=..., shape=size)`.
 
-        Returns polars Expr evaluating to a column of `Array(inner=..., shape=size)`.
-
-        Row ``i``'s ``size`` draws are consecutive values from one per-row stream keyed ``(seed, i)``, the same
-        stream ``sample`` takes its single draw from. So ``samples(size=1)`` matches ``sample`` bit for bit for
-        the same seed, and growing ``size`` extends each row's array without changing the existing draws (both
-        pinned by property tests). With ``seed=None``, a fresh root seed resolves once per call.
-
-        Both parameter shapes run as one native multi-draw plugin call returning the ``Array`` column directly:
-        all-constant parameters route to ``<name>_samples_scalar`` (parameters validated once, in kwargs), column
-        parameters to the per-row ``<name>_samples`` twin via `_samples_columns` (distribution rebuilt once per
-        row, not once per draw). Seeding is positional on both paths, so their output is bit-identical (pinned by
-        ``test_samples_scalar_fast_path_matches_per_row``).
+        The draw semantics are documented on the public `samples`. Both parameter shapes run as one
+        native plugin call returning the `Array` column directly: all-constant parameters route to
+        `<name>_samples_scalar` (parameters validated once, in kwargs), column parameters to the
+        per-row `<name>_samples` twin via `_samples_columns` (distribution rebuilt once per row, not
+        once per draw). Seeding is positional on both paths, so their output is bit-identical
+        (pinned by `test_samples_scalar_fast_path_matches_per_row`).
         """
         if self._scalar_kwargs is not None:
             return register_plugin(
@@ -306,14 +300,12 @@ class _UnivariateDistribution(ABC):
         """The constant parameters as length-1 `pl.lit` exprs, in `_param_exprs` order.
 
         Only meaningful when every parameter is constant (`_scalar_kwargs is not None`); the callers
-        guard on that. Passing these length-1 literals to a validating or computing plugin makes its
-        elementwise closure run **once**, not once per frame row, which is the whole point of the
-        constant-parameter moment fast path (see `_checked`).
+        guard on that. Passing length-1 literals to a validating or computing plugin makes its
+        elementwise closure run **once**, not once per frame row (see `_checked`).
 
-        The order follows `_scalar_kwargs` insertion order, and every subclass builds `_scalar_kwargs`
-        in `_param_exprs` order (the same order the per-row plugin reads its inputs positionally), so
-        the once-call and the per-row call validate the identical parameterisation. A drift there
-        surfaces in the moment / value-keyed property tests.
+        Every subclass builds `_scalar_kwargs` in `_param_exprs` order, the same order the per-row
+        plugin reads its inputs positionally, so the once-call and the per-row call validate the
+        identical parameterisation.
         """
         assert self._scalar_kwargs is not None  # noqa: S101  # guarded by every caller
         return [pl.lit(value) for value in self._scalar_kwargs.values()]
@@ -323,18 +315,16 @@ class _UnivariateDistribution(ABC):
 
         The validating plugins (`normal_sigma`, `uniform_range`, `bernoulli_proba`, ...) are
         elementwise and return the quantity they are named for (the validated `sigma`, the width
-        `max - min`, the validated `p`, ...). Called on the length-n `pl.repeat` parameter columns
-        they run `build_dist` once per row purely to re-check constants. This factors the two paths,
-        byte-identical for the same parameters:
+        `max - min`, the validated `p`, ...). Both paths are byte-identical for the same parameters:
 
-        * **Column parameters**: the per-row plugin over `_param_exprs` (unchanged behaviour); it
-          validates each row and propagates per-row nulls.
-        * **All-scalar parameters**: the same plugin is called once on length-1 `pl.lit` inputs, so it
-          validates a single time and still raises the same `ComputeError` on an invalid constant.
-          `validated` (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
+        * **Column parameters**: the per-row plugin over `_param_exprs`, validating each row and
+          propagating per-row nulls.
+        * **All-scalar parameters**: the same plugin on length-1 `pl.lit` inputs, so it validates a
+          single time and still raises the same `ComputeError` on an invalid constant. `validated`
+          (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
           `self._sigma` or `self._max - self._min`) is returned behind the length-1 validity gate;
-          `pl.when` broadcasts the length-1 condition, so the result stays length-n and equals the
-          per-row output element for element. Only the per-row revalidation is removed.
+          `pl.when` broadcasts the condition, so the result stays length-n and equals the per-row
+          output element for element.
         """
         if self._scalar_kwargs is None:
             return register_plugin(plugin_name, self._param_exprs)
@@ -381,9 +371,9 @@ class _UnivariateDistribution(ABC):
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         """Default `log(sf)`; underflows to `-inf` once `sf` rounds to `0` deep in the right tail.
 
-        The flagship anomaly-scoring path (`log_sf` for many-sigma events); override it for any
-        distribution with a genuine tail. Same options as `_log_cdf`: a `log1p` / exact closed form
-        or a Rust special-function binding.
+        Override it for any distribution with a genuine tail, where `log_sf` of a many-sigma event
+        is the point. Same options as `_log_cdf`: a `log1p` / exact closed form or a Rust
+        special-function binding.
         """
         return self._sf(value).log()
 

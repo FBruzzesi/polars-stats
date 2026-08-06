@@ -73,13 +73,12 @@ parameter columns, validating the *same constant* on every row.
 For all-scalar parameters the same plugin is instead called on length-1 `pl.lit` inputs, so its elementwise closure runs
 once. The validated quantity (or, for `Binomial.entropy`, the support-sum value) is returned behind a `pl.when(...)`
 validity gate; the length-1 condition broadcasts, so the moment stays a length-n column byte-identical to the per-row
-path — and a length-1 collapse is deliberately *not* used, because it would break that path equality (column parameters
+path. A length-1 collapse is deliberately *not* used, because it would break that path equality (column parameters
 still yield length-n). This needs no new plugin and no kwargs: it reuses the existing validators, called on fewer rows.
 
 It is the same "constant parameters take a fast path" idea as the sampler, applied to validation: nothing leaves Rust,
-and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). So it is not a
-carve-out of "validation lives in Rust per row" so much as the observation that, for a constant, "per row" and "once"
-are the same check — and once is enough.
+and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). For a constant,
+"per row" and "once" are the same check.
 
 ### `samples` draws each row's array in one native call
 
@@ -123,4 +122,4 @@ governs distributions on the roadmap. Two cases, handled differently on purpose:
 * **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
   return `null`. A user sweeping a parameter across the threshold should not get an exception that breaks the sweep.
 
-Inconsistent on its face, defensible per case, and to be documented in each class as it lands.
+Inconsistent on its face, defensible per case. Each class will document which case applies as it lands.

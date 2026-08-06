@@ -129,8 +129,8 @@ _LOGNORMAL = DistSpec(
     name="lognormal",
     continuous=True,
     # `sigma` is capped at 0.9: the heavy right tail makes a uniform-grid trapezoidal integral lose
-    # accuracy as `sigma` grows, and past ~1.0 the 4096-point mass check drifts above the 1e-3
-    # tolerance. The functional and scipy-parity suites cover larger `sigma` directly.
+    # accuracy as `sigma` grows, and past ~1.2 the mass check drifts above the 1e-3 tolerance at the
+    # current `_INTEGRATION_GRID_SIZE`. The functional and scipy-parity suites cover larger `sigma`.
     params=st.tuples(_finite(-1.5, 1.5), _finite(0.1, 0.9)),
     make=lambda p: LogNormal(mu=p[0], sigma=p[1]),
     make_columns=lambda p: LogNormal(mu=_col(p[0]), sigma=_col(p[1])),
@@ -160,9 +160,11 @@ _EXPONENTIAL = DistSpec(
 _BETA = DistSpec(
     name="beta",
     continuous=True,
-    # Shapes are kept >= 1 so the density stays bounded at the support endpoints: a shape < 1
-    # diverges at its boundary, which the trapezoidal mass check cannot integrate. Shapes below 1
-    # are covered directly by the functional and scipy-parity suites.
+    # Shapes are kept >= 1 so the density is finite at the support endpoints: below 1 it diverges
+    # there, making `pdf(0)` or `pdf(1)` inf and the trapezoidal mass integral inf with it. Finite
+    # is not the same as accurately integrable: just above 1 the density stays high right up to the
+    # endpoint and the rule drops the final half-cell, which is what sizes `_INTEGRATION_GRID_SIZE`.
+    # Shapes below 1 are covered directly by the functional and scipy-parity suites.
     params=st.tuples(_finite(1.0, 10.0), _finite(1.0, 10.0)),
     make=lambda p: Beta(a=p[0], b=p[1]),
     make_columns=lambda p: Beta(a=_col(p[0]), b=_col(p[1])),

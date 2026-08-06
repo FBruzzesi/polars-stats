@@ -11,9 +11,9 @@
 //! makes it a safe default for any distribution, including rejection/Ziggurat samplers
 //! that consume an unbounded number of words per draw.
 //!
-//! Contrast with a one-shot hash-to-uniform: that only serves distributions needing a
-//! single uniform per draw (e.g. Bernoulli) and cannot back the general case, so it is
-//! deliberately not the foundation here.
+//! A one-shot hash-to-uniform would be cheaper but only serves distributions needing a
+//! single uniform per draw, so it is deliberately not the foundation; see
+//! `docs/explanation/design.md` for the alternatives that were rejected and why.
 
 use polars::prelude::*;
 use polars_arrow::bitmap::Bitmap;
@@ -64,9 +64,6 @@ fn row_rng(root_seed: u64, index: u64) -> Pcg64Mcg {
 /// A sampler's only static input is an optional root seed: the per-row index travels as
 /// a regular input `Series`, not a kwarg. So every distribution deserialises the *same*
 /// shape, and they share this one struct rather than each declaring an identical copy.
-///
-/// Only add a field here if it is universal to all samplers. A knob specific to one
-/// distribution belongs in that distribution's own kwargs type, not in this shared one.
 #[derive(Deserialize)]
 pub(crate) struct SampleKwargs {
     pub(crate) seed: Option<u64>,
@@ -464,11 +461,9 @@ pub(crate) use sample_scalar_plugin;
 
 /// Per-call source of per-row RNGs, all derived from one already-resolved root seed.
 ///
-/// The resolve-once step happens when this is constructed (via [`SampleKwargs::row_rngs`]),
-/// so holding it in a type makes the correct usage the only easy one: resolve per call,
-/// then derive per row. Every elementwise sampler depends on that invariant, and a fresh
-/// distribution gets it for free by writing `let rngs = kwargs.row_rngs();` once and
-/// calling `rngs.rng(index)` inside its closure.
+/// The resolve-once step happens at construction (via [`SampleKwargs::row_rngs`]), so the
+/// type enforces the invariant every elementwise sampler depends on: resolve per call,
+/// derive per row.
 pub(crate) struct RowRngs {
     root_seed: u64,
 }

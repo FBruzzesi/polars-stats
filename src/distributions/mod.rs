@@ -25,8 +25,8 @@ use polars::prelude::*;
 /// per-row path element for element.
 ///
 /// `NaN` contract: a `NaN` evaluation point short-circuits to `NaN` (scipy semantics) before `f`
-/// runs, for every method including `ppf`. The short-circuit is central — here and in
-/// [`value_keyed_per_row!`] — rather than per body, because two bodies genuinely need it and none
+/// runs, for every method including `ppf`. The short-circuit is central (here and in
+/// [`value_keyed_per_row!`]) rather than per body, because two bodies genuinely need it and none
 /// may be forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`
 /// (aborting the whole query), and binomial's support mapping saturates (`NaN.floor() as u64` is
 /// `0`), returning a confident `P(X <= 0)`. The Python-side `propagate_null_and_nan` guard cannot
@@ -63,7 +63,8 @@ where
 ///   call (`?` is available);
 /// * the `methods` list, each `fn <plugin_name> => <body>`, where `<body>` is the same named
 ///   per-method function the per-row `value_keyed` path applies (`pdf_value`, `ppf_value`, ...),
-///   so the scalar and per-row paths share one body and cannot drift.
+///   so the scalar and per-row paths share one body and cannot drift. The property test only
+///   samples parameterisations; sharing the body is what makes the bit-equality structural.
 ///
 /// Every value-keyed method returns `Float64` (a density, probability, or quantile), so the output
 /// dtype is fixed here; that is the structural difference from `sample_scalar_plugin!`, whose dtype

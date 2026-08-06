@@ -2,9 +2,8 @@
 
 Manual comparison against `scipy.stats`, on speed and peak memory.
 
-This is the routine whose output backs the comparison numbers in the project README/documentation benchmarks.
-
-It is **not** the CI regression guard.
+It is **not** the CI regression guard, and nothing it produces is published today: the README and the
+docs deliberately carry no performance claims.
 
 Two method families are compared:
 
@@ -51,8 +50,8 @@ Output formats:
 * `json`: machine-readable (environment, config, per-method timing and memory). Written to
   `benchmarks/results/<dist>.json`.
 
-`benchmarks/results/` is git-ignored: the files are machine-specific. Commit curated tables into the
-README or a docs page, not the raw per-run output.
+`benchmarks/results/` is git-ignored: the files are machine-specific. If numbers are ever published,
+commit a curated table rather than the raw per-run output.
 
 ## Build mode (important for fair numbers)
 
