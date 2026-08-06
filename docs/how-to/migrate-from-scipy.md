@@ -28,7 +28,7 @@ The `scipy` snippets on this page are shown for comparison and are not executed 
 ## Translate the parameters
 
 `scipy` parameterises through `loc` / `scale` shims; `polars-stats` uses each distribution's conventional parameters.
-Three of the seven translations are not identities, so check this table rather than guessing:
+Some of these translations are not identities, so check this table rather than guessing:
 
 | `scipy.stats` | `polars-stats` | Watch out |
 |---|---|---|
@@ -140,7 +140,7 @@ Polars defaults to `ddof=1`.
 * `fit` and other estimators: compute them as Polars expressions, as above.
 * `interval`, `moment(n)`, `stats(moments=...)`, `expect(...)`, `support()`: not implemented.
 * `loc` / `scale` shifting of arbitrary distributions: shift the input instead.
-* Distributions outside the [catalogue](../reference/index.md#catalogue): `polars-stats` ships seven.
+* Distributions outside the [catalogue](../reference/index.md#catalogue), which is short but growing.
 * Multivariate distributions, `rv_histogram`, and hypothesis tests: out of scope.
 
 Where a distribution or method is missing, `scipy` remains the right tool; the two libraries coexist in one project

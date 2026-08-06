@@ -43,8 +43,7 @@ binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails.
 
 Every distribution `__init__` coerces each parameter with a single shared helper, `coerce_param` (`coerce_n` for count
 parameters like Binomial's `n`). The accepted inputs and their coercions are tabulated in
-[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs); what matters here is
-the one non-obvious choice.
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs).
 
 A scalar is expanded with `pl.repeat(value, n=pl.len())`, a length-`N` expression rather than `pl.lit`, on purpose: the
 plugin always receives a row-aligned
@@ -108,8 +107,8 @@ same seed (a property test pins that equality); column-valued parameters still t
 ## Null and error contract
 
 The full table is in
-[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors). The rule: an
-invalid parameter value raises a `ComputeError` and fails the evaluation; `null` is reserved for `null` *inputs*.
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors). An invalid
+parameter value raises a `ComputeError` and fails the evaluation; `null` is reserved for `null` *inputs*.
 Construction rejects only wrong *types*. There is no early Python validation of parameter values, so a bad scalar and a
 bad column row surface identically.
 

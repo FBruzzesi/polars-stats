@@ -8,8 +8,8 @@ In this tutorial you build a working anomaly detector: one lazy Polars query tha
 the baseline distribution of *its own sensor*, ranks the outliers even when their probabilities underflow to zero, and
 turns an alarm rate into a physical reading limit.
 
-Along the way you use the four methods that carry most statistical work (`pdf`, `sf`, `log_sf`, `isf`) and the feature
-that makes `polars-stats` different from `scipy.stats`: parameters that are columns.
+Along the way you use the four methods that carry most statistical work (`pdf`, `sf`, `log_sf`, `isf`) and parameters
+that are columns rather than scalars.
 
 You need Python `>=3.10` and:
 
@@ -51,10 +51,10 @@ shared = ps.Normal(mu=10.0, sigma=0.5)
 print(readings.with_columns(upper_tail=shared.sf("reading")))
 ```
 
-Notice the argument: `sf("reading")` reads the column named `reading`. A bare string is always a column reference.
+`sf("reading")` reads the column named `reading`. A bare string is always a column reference.
 
-Notice the result too. Sensor `temp-a` is scored correctly, but every `temp-b` reading looks impossible, including the
-healthy ones, because they were scored against `temp-a`'s baseline. One distribution cannot serve both sensors.
+Sensor `temp-a` is scored correctly, but every `temp-b` reading looks impossible, including the healthy ones, because
+they were scored against `temp-a`'s baseline. One distribution cannot serve both sensors.
 
 ## Step 3: give every row its own baseline
 
@@ -83,7 +83,7 @@ print(scored)
 ```
 
 That single `baseline` object described a different `Normal` on every row: `Normal(10.0, 0.5)` on the `temp-a` rows and
-`Normal(100.0, 2.0)` on the `temp-b` rows. Both healthy readings now score around `0.2` to `0.7`, and only the two
+`Normal(100.0, 2.0)` on the `temp-b` rows. All four healthy readings now score between `0.2` and `0.7`, and only the two
 faults sit near zero.
 
 ## Step 4: flag the faults
@@ -149,8 +149,8 @@ alerts = (
 print(alerts)
 ```
 
-There it is: the two faults, each with the limit it broke and a severity score that survives the tails, from a query
-that never left the Polars engine and never converted anything to NumPy.
+Two faults, each with the limit it broke and a severity score that ranks them, from a query that never left the Polars
+engine.
 
 ## What you built
 

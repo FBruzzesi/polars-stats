@@ -16,12 +16,11 @@ subtly wrong in the tails.
 
 ## What scipy already does well
 
-It is worth being precise about what `scipy.stats` cannot do, because it is a smaller gap than it first appears.
-`scipy` broadcasts parameter arrays perfectly well: `stats.norm(loc=mu_array, scale=sigma_array).sf(x_array)` scores
-every element against its own distribution, vectorised, with no Python loop. Per-row parameters are not the missing
-piece.
+The gap is smaller than it first appears. `scipy` broadcasts parameter arrays perfectly well:
+`stats.norm(loc=mu_array, scale=sigma_array).sf(x_array)` scores every element against its own distribution,
+vectorised, with no Python loop. Per-row parameters are not the missing piece.
 
-What is missing is that the result is a NumPy array rather than a `pl.Expr`. That single difference is what costs you:
+What is missing is that the result is a NumPy array rather than a `pl.Expr`. That difference costs you four things:
 
 * **The round trip.** Every parameter column and every evaluation point is materialised to NumPy and the result is
     wrapped back into a `Series`. On a `LazyFrame` you must `collect()` first, so the query is cut in half.
@@ -42,10 +41,8 @@ and an invalid parameter raises rather than nulling. The math itself is delegate
 
 ## What it costs
 
-The trade is real and worth stating:
-
-* **A much smaller catalogue.** Seven distributions against scipy's hundred-plus, no multivariate distributions, and
-    no hypothesis tests.
+* **A much smaller catalogue.** A short list against scipy's hundred-plus, no multivariate distributions, and no
+    hypothesis tests. The [catalogue](../reference/index.md#catalogue) is what ships today, and it is still growing.
 * **No estimation API.** There is no `fit`; you write the estimator as a Polars expression.
 * **No `loc` / `scale` shims.** Shifting or scaling an arbitrary distribution is the caller's job.
 * **An FFI boundary per method call.** Even a closed-form `mean()` makes one round trip into Rust, to keep parameter

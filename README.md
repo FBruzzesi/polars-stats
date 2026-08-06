@@ -6,7 +6,10 @@
 
 `polars-stats` is a [Polars](https://pola.rs) expression plugin that exposes
 [`scipy.stats`](https://docs.scipy.org/doc/scipy/reference/stats.html)-style probability distributions natively inside
-Polars expressions, with two properties that `scipy` and `numpy` do not give you:
+Polars expressions:
+
+* **Lazy-native**: every method returns a `pl.Expr`, so a distribution composes inside a `LazyFrame` query under the
+  optimiser, with no materialisation.
 
 * **Column-valued parameters**: any distribution parameter can be a scalar *or* a Polars expression. A single instance
   describes a different distribution per row:
@@ -19,8 +22,17 @@ Polars expressions, with two properties that `scipy` and `numpy` do not give you
     norm.cdf(pl.col("x"))
     ```
 
-* **Lazy-compatible**: every method returns a `pl.Expr`, so it composes inside a `LazyFrame` query under the
-    optimiser, with no materialisation.
+* **Polars null and error semantics**: a `null` input gives a `null` result, and an invalid parameter raises a
+  `ComputeError` rather than silently returning `NaN`.
+
+* **Reproducible sampling**: every draw is keyed on `(seed, row index)`, so a seeded column repeats across runs,
+  chunkings, thread counts, and both engines.
+
+`scipy` already does the per-row maths: `stats.norm(loc=mu_array, scale=sigma_array).sf(x_array)` broadcasts parameter
+arrays and scores every element against its own distribution, vectorised, with no Python loop. The difference is where
+the result lands. `scipy` returns a NumPy array, so a `LazyFrame` has to `collect()` first, pushdown stops at that
+boundary, and realigning the result through later joins and filters is your problem. Here it stays a `pl.Expr` the
+planner can see. [Why polars-stats](https://fbruzzesi.github.io/polars-stats/explanation/) has the full comparison.
 
 The math runs in Rust on top of the [`statrs`](https://docs.rs/statrs) crate; the Python layer is a thin, typed surface
 of distribution classes.
@@ -33,13 +45,11 @@ Statistical work in Polars today means falling back to `.to_pandas()` / `.to_num
 * Python UDFs via `map_elements`, which are slow and hold the GIL,
 * hand-rolled per-distribution expressions, which are ad hoc and error-prone.
 
-None of them express *"the PDF of `x` under a Normal whose mean is column `mu` and standard deviation is column `sigma`"*.
-
-This row-varying, vectorised, lazy-native case is what `polars-stats` targets.
+The row-varying, vectorised, lazy-*native* case is what `polars-stats` targets.
 
 ## Quick example
 
-The flagship use case, per-row distribution parameters for anomaly scoring:
+Anomaly scoring, where each row carries its own baseline:
 
 ```python
 import polars as pl

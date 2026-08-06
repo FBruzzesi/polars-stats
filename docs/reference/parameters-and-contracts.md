@@ -71,8 +71,8 @@ Element dtype is per distribution and is not normalised to `Float64`:
 
 ## Nulls, NaNs and errors
 
-The rule: **`null` is reserved for missing inputs; an invalid parameter raises.** A silent null from a bad parameter
-would be indistinguishable from a legitimately missing input, and would propagate wrong answers downstream.
+**`null` is reserved for missing inputs; an invalid parameter raises.** A silent null from a bad parameter would be
+indistinguishable from a legitimately missing input, and would propagate wrong answers downstream.
 
 | Situation | When detected | Behaviour |
 |---|---|---|

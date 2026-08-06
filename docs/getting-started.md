@@ -37,14 +37,13 @@ print(
 )
 ```
 
-Two things to note. Parameters are named after the distribution's own convention (`mu` / `sigma`, `min` / `max`,
-`a` / `b`), and each class docstring gives the `scipy.stats` translation. A `str` argument such as `pdf("x")` is a
-column reference, identical to `pdf(pl.col("x"))`.
+Parameters are named after the distribution's own convention (`mu` / `sigma`, `min` / `max`, `a` / `b`), and each
+class docstring gives the `scipy.stats` translation. A `str` argument such as `pdf("x")` is a column reference,
+identical to `pdf(pl.col("x"))`.
 
 ## Parameters can be columns
 
-This is the part `scipy` and `numpy` cannot do. Any parameter accepts a column, so one instance describes a different
-distribution per row:
+Any parameter accepts a column, so one instance describes a different distribution per row:
 
 ```python exec="yes" source="above" session="getting-started" result="python"
 per_row = pl.DataFrame({"mu": [0.0, 10.0], "sigma": [1.0, 2.0], "x": [0.5, 11.2]})
@@ -52,7 +51,7 @@ per_row = pl.DataFrame({"mu": [0.0, 10.0], "sigma": [1.0, 2.0], "x": [0.5, 11.2]
 print(per_row.with_columns(density=ps.Normal(mu="mu", sigma="sigma").pdf("x")))
 ```
 
-Each row was scored against its own `Normal`, in one vectorised pass.
+Each row got its own `Normal`, and the density came back as an ordinary column you can filter, join, or aggregate on.
 
 ## Where to next
 

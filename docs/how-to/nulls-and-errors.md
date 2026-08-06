@@ -4,8 +4,8 @@ icon: lucide/triangle-alert
 
 # Handle nulls and errors
 
-One rule governs the whole surface: **a null input gives a null result; an invalid parameter raises.** This page shows
-how to work with that. For the exhaustive table of cases, see
+**A null input gives a null result; an invalid parameter raises.** That one rule governs the whole surface, and this
+page shows how to work with it. For the exhaustive table of cases, see
 [Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors).
 
 ## Let nulls flow through
