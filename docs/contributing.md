@@ -42,7 +42,7 @@ polars-stats/
 ├── rust-toolchain.toml
 ├── src/
 │   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # shared per-row RNG (SampleKwargs, RowRngs, sample_scalar_plugin! fast path)
+│   ├── rng.rs                # per-row RNG + sampler drivers (sample_by_index, samples_per_row, sample_scalar_plugin!)
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports
@@ -65,9 +65,10 @@ polars-stats/
 | Crate | Purpose |
 |---|---|
 | `polars` / `polars-arrow` | Series and expression types in Rust (pinned transitively by `pyo3-polars`) |
+| `polars-core` | `POOL` and its `rayon` re-export, so the multi-draw fill runs on the thread pool Polars itself uses |
 | `pyo3-polars` | the `#[polars_expr]` macro and FFI glue (source of ABI churn) |
 | `pyo3` | Python FFI, abi3 for forward compatibility |
-| `statrs` 0.18 | distribution math, and sampling except the binomial draw |
+| `statrs` 0.18 | distribution math, and sampling except the binomial and uniform draws |
 | `rand_distr` 0.4 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](explanation/design.md#binomial-sampling-uses-rand_distr-not-statrs) |
 | `rand` 0.8 | `RngCore` / `OsRng` for the unseeded root seed |
 | `rand_pcg` 0.3 | `Pcg64Mcg` per-row RNG for deterministic seeded sampling |
@@ -75,7 +76,8 @@ polars-stats/
 
 Deliberately excluded: `rand_chacha` (replaced by `rand_pcg`; per-row `ChaCha20`
 construction made sampling markedly slower, see [Design notes](explanation/design.md#sampling-derives-a-fresh-per-row-rng-from-root_seed-row_index)),
-`ndarray` (Polars is Arrow-native), `rayon` (Polars parallelises at the planner), `scirs2-stats` (pre-1.0).
+`ndarray` (Polars is Arrow-native), `scirs2-stats` (pre-1.0). There is no direct `rayon` dependency either: the
+multi-draw fill in `rng.rs` parallelises through the re-export in `polars-core`, on the same `POOL` Polars uses.
 
 ### Python runtime
 

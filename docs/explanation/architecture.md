@@ -63,12 +63,14 @@ scalar).
 expression engine. Methods that go through `statrs` (sampling, transcendental `pdf`/`pmf`, `cdf`, `inverse_cdf`, native
 `ln_pdf`/`ln_pmf`, native `sf`) get a Rust plugin function.
 
-**Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so to enforce the invalid-parameter contract
-a closed-form distribution routes its parameters through one small validating plugin that raises on a bad row and
-returns a reused quantity. `Uniform.range` returns `max - min` and raises on `max <= min`; `Bernoulli` validates `p` in
-`[0, 1]`; `Normal` validates `sigma > 0`. Every closed-form method derives from that quantity, so even a pure-math
-`mean` performs one FFI round-trip and reports an invalid parameterisation consistently. This trades a little throughput
-for a uniform error surface.
+**Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so any method computed in Python routes its
+parameters through one small validating plugin that raises on a bad row and returns a reused quantity. For a
+closed-form distribution that covers the whole surface: `Uniform.range` returns `max - min` and raises on `max <= min`,
+`Bernoulli` validates `p` in `[0, 1]`, `Exponential` validates `rate > 0`. For a statrs-backed distribution it covers
+the closed-form moments only, since the value-keyed methods already validate inside their own plugin: `normal_sigma`
+validates `sigma > 0`, so `Normal.mean()` raises exactly as `Normal.pdf()` does. Either way a pure-math `mean` makes
+one FFI round-trip and reports an invalid parameterisation consistently, trading a little throughput for a uniform
+error surface.
 
 ## Sampling
 
