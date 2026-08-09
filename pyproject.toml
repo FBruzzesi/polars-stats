@@ -43,6 +43,11 @@ dev = [
     "numpy>=2.2.6",
     "scipy>=1.15.3",
 ]
+# `tools/accuracy_audit.py` only (`make audit`). Deliberately not in `testing`: the suite proper must not
+# grow a dependency for a tool that is run by hand.
+audit = [
+    "mpmath>=1.3.0",
+]
 testing = [
     "covdefaults>=2.3.0",
     "hypothesis>=6.100.0",
@@ -60,6 +65,7 @@ typing = [
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
     "scipy-stubs>=1.15.3.0",
+    {include-group = "audit"},
     {include-group = "benchmarks"},
     {include-group = "testing"},
 ]
@@ -149,6 +155,11 @@ warn_unused_ignores = true
 pretty = true
 strict = true
 files = ["polars_stats", "tests"]
+# `make typing` passes `.` explicitly, which would otherwise pull in `tools/`. That directory is
+# hand-run operator tooling on top of `mpmath`, which ships no stubs, so `disallow_any_unimported`
+# reports every oracle as returning `Any`. pyright and pyrefly already scope themselves to the
+# same two packages below; this keeps mypy consistent with them.
+exclude = ["^tools/"]
 
 [tool.pyright]
 pythonPlatform = "All"

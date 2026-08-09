@@ -166,6 +166,63 @@ is canonical if it conflicts with this section.
       (scalar-vs-column validation contracts, including invalid-parameter cases).
 4. **Update the umbrella issue** when the change merges.
 
+## Numerical stability
+
+**Every method must be accurate in the regime it exists to serve.** `log_sf` exists for the deep tail, so a `log_sf`
+that returns `-inf` there does not work, even though every test passes. The base-class defaults `_cdf().log()`,
+`_sf().log()` and `_isf(q) = _ppf(1 - q)` are a convenience, not an implementation: inheriting one is a decision to
+justify. `_isf` is the sharpest case, because the loss happens *before* your code runs: `1 - q` resolves to `1.1e-16`
+absolute, so the tail mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve against
+`q` itself, via a symmetry, a closed form, or entering a two-sided solve from the other end.
+
+**A composed method inherits the weakest part's range, and the composition is often wider than the part.** `std()`
+defaults to `variance().sqrt()`, and a variance that legitimately overflows can hide a standard deviation that does
+not. Ask what the domain of the composed quantity is, not what the domain of its parts is.
+
+**Reassociate before reaching for log space or a branch.** Computing a density as `exp(log_pdf)` fixes the subnormal
+range but costs one to two orders of magnitude everywhere else, because `exp(log(rate))` does not round-trip to
+`rate`, so it needs a threshold and `when/then/otherwise` evaluates both sides. `(rate * exp(t / 2)) * exp(t / 2)` is
+the same product with no branch and no threshold constant. Rearrange so the single unavoidable rounding happens last.
+
+**The test suite cannot catch this for you.** Three structural blind spots, each of which has produced a real defect:
+
+* parity grids are finite and curated, so they never probe the extreme regime;
+* `scipy` is not a valid oracle in the tails: its own `logcdf` / `logsf` are naive for the incomplete-beta and
+    incomplete-gamma families, so parity *passes* while both libraries return `-inf`;
+* property tests assert shape, not accuracy: monotonicity and mass-integrates-to-one are satisfied by a value that is
+    relatively wrong by `1e-3`.
+
+**Choose the oracle deliberately, and say which one you used and why.** `scipy` where it is finite and known accurate;
+`mpmath` at high precision, or an exact closed-form identity, beyond that. Never assert against a `scipy` value that is
+itself saturated. An oracle for a *discrete* inverse needs exact rational arithmetic, since a rounding there becomes a
+jump between support points rather than a small error.
+
+**Two acceptable outcomes, and no third.** Fix the algorithm, or document the caveat in the class docstring, quantified
+with a regime and a magnitude ("relative error `~1.1e-16 / q`", not "may be inaccurate in the tails"). **A runtime
+warning is never the fix**: it cannot fire per-row from inside the engine, and a Python-side scalar-only warning would
+break the scalar/column symmetry the architecture guarantees.
+
+**Claim a tolerance and justify it.** `1e-12` for elementary closed forms, `1e-10` for special-function methods
+(`2e-10` through `erfc`, which is what `statrs` holds), `1e-9` for log-scale, `1e-8` for discrete log-mass and
+support-sum entropy, `1e-6` or integer-valued for a discrete binary-search `ppf`. A relaxed tolerance needs a one-line
+reason in the `Case`, not a shrug.
+
+**Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy_audit.py`. A
+distribution absent from the audit is unaudited, exactly as one absent from `tests/property/_specs.py` is untested.
+Never bound the sweep by what the implementation is known to be bad at: that is the defect's own shape used as a bound
+on the instrument. Sweep extreme *parameters* too, not only extreme inputs.
+
+**Ask what class a finding belongs to before closing it**, and treat "this method is exempt" as a hypothesis to probe
+rather than an argument to accept. Both rules were bought the same way: a `pdf`-in-log-space defect fixed once and
+found again elsewhere, and three distributions cleared from the `isf` fix by reasoning that each fell to the first
+probe aimed at it.
+
+**Where the recipes live.** `Exponential._log_sf` (an exact closed form), `Exponential._cdf` and `LogNormal.variance`
+(the `sinh` identity standing in for the `expm1` Polars does not expose), `Exponential._log_cdf` and
+`Uniform._log_cdf` (`log1p` on the near-certain side), `normal.rs`'s `ln_erfc` (a special function ported to log
+space, the pattern for the hard cases), and the `isf_value` bodies in `normal.rs` (a symmetry) and `lognormal.rs`
+(composing one).
+
 ## Conventions
 
 Prose, in PRs and docs: no em dashes or double hyphens (use commas, colons, or parentheses); lead with the answer;

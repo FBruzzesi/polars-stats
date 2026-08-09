@@ -679,6 +679,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mpmath"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/b0/6de8e78014ff1842a90cc9a56da6ccfb598a5390ed0257fcdb7d9680c18b/mpmath-1.4.1.tar.gz", hash = "sha256:efd6d1b75f09d69524a67609949812668b28e81ecbfe0ab449ced8c13e92642e", size = 2093211, upload-time = "2026-03-15T01:17:38.245Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/f2/abeec3db71d221ccd3cd89d206be1fabf5a3ee7178862f5fba23a59607e0/mpmath-1.4.1-py3-none-any.whl", hash = "sha256:dc4f0ea2304480d4a9a48a94c1020571558ade522b44a6912efac63a586e140f", size = 567787, upload-time = "2026-03-15T01:17:36.392Z" },
+]
+
+[[package]]
 name = "mypy"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1118,6 +1127,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+audit = [
+    { name = "mpmath" },
+]
 benchmarks = [
     { name = "cyclopts" },
     { name = "psutil" },
@@ -1148,6 +1160,7 @@ typing = [
     { name = "covdefaults" },
     { name = "cyclopts" },
     { name = "hypothesis" },
+    { name = "mpmath" },
     { name = "mypy" },
     { name = "packaging" },
     { name = "psutil" },
@@ -1165,6 +1178,7 @@ typing = [
 requires-dist = [{ name = "polars", specifier = ">=1.15.0" }]
 
 [package.metadata.requires-dev]
+audit = [{ name = "mpmath", specifier = ">=1.3.0" }]
 benchmarks = [
     { name = "cyclopts", specifier = ">=4.16.1" },
     { name = "psutil", specifier = ">=5.9" },
@@ -1191,6 +1205,7 @@ typing = [
     { name = "covdefaults", specifier = ">=2.3.0" },
     { name = "cyclopts", specifier = ">=4.16.1" },
     { name = "hypothesis", specifier = ">=6.100.0" },
+    { name = "mpmath", specifier = ">=1.3.0" },
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "psutil", specifier = ">=5.9" },

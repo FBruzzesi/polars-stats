@@ -380,9 +380,9 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        `quantile` is expected to lie in `[0, 1]`; nulls are propagated and a `NaN` quantile yields `NaN`
-        (matching scipy). Behaviour for other out-of-range quantiles is implementation-defined and should not be
-        relied on; callers are responsible for bounding `quantile` upstream when the source allows invalid values.
+        A `quantile` outside `[0, 1]` yields **null**.
+
+        Nulls are propagated and a `NaN` quantile yields `NaN`, matching scipy.
         """
         q = as_expr(quantile)
         return propagate_null_and_nan(q, self._ppf(q))
@@ -392,11 +392,30 @@ class _UnivariateDistribution(ABC):
         """Core inverse-cdf formula on a coerced expr; null handling is applied by `ppf`."""
 
     def isf(self, quantile: float | IntoExprColumn) -> pl.Expr:
-        """Inverse survival function, `ppf(1 - quantile)`. Nulls in `quantile` are propagated; `NaN` yields `NaN`."""
+        """Inverse survival function, the value `x` with `sf(x) == quantile`.
+
+        Same domain contract as `ppf`, with the endpoints reversed: `quantile` outside `[0, 1]` yields
+        null, nulls propagate, `NaN` yields `NaN`.
+        """
         q = as_expr(quantile)
         return propagate_null_and_nan(q, self._isf(q))
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """Fallback `ppf(1 - quantile)`, correct only where `quantile` is not tiny.
+
+        `1 - quantile` resolves to `1.1e-16` absolute, so the tail mass a subclass is asked to invert
+        is quantised to `1.1e-16 / quantile` relative before the inverse ever runs. Like `_cdf().log()`
+        for `_log_cdf`, this is convenience rather than an implementation: inheriting it is a decision
+        to justify. The forms that worked here are a closed form (`Uniform`, `Bernoulli`, `Exponential`),
+        a symmetry (`Normal`, and `LogNormal` by composing it), and entering an existing two-sided
+        solve from the other tail.
+
+        Being integer-valued or piecewise-linear does *not* make a distribution safe here, which was
+        the tempting wrong conclusion: `Bernoulli(1e-17).isf(1e-20)` answered `0.0` where the answer
+        is `1.0`, and `Uniform(-1, 0).isf(1e-17)` answered `0.0` against a true `-1e-17`. Prove the
+        override unnecessary against `make audit`, with the parameter regime that would expose it,
+        before skipping it. See docs/contributing.md, "Numerical stability".
+        """
         return self._ppf(1 - quantile)
 
     @property

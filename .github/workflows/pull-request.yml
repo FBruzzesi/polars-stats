@@ -121,11 +121,11 @@ jobs:
           name: wheel
           path: dist
       - name: Sync project dependencies
-        run: uv sync --group typing --group testing --no-install-project
+        run: uv sync --group typing --no-install-project
       - name: Install built wheel
         run: uv pip install dist/*.whl
       - name: Show resolved dependencies
-        run: uv export --no-annotate --no-hashes --group typing --group testing
+        run: uv export --no-annotate --no-hashes --group typing
       - name: pyrefly
         run: uv run --no-sync pyrefly check .
       - name: pyright

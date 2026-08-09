@@ -82,7 +82,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | `null` parameter on a row | per row | `null` on that row, no error |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
 | Non-numeric column as an argument or parameter | evaluation | Polars raises `InvalidOperationError` |
-| `q` outside `[0, 1]` in `ppf` / `isf` | per row | implementation-defined; `null` for most distributions, do not rely on it |
+| `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |
 | Deep-tail underflow (`sf` of a 60-sigma event) | per row | `0.0`; use `log_sf` to keep resolution |

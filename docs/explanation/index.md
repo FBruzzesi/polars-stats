@@ -58,6 +58,8 @@ Where a distribution or a method is missing, `scipy` remains the right tool, and
     to the Rust plugins: the layer split, plugin granularity, the constant-parameter fast paths, and sampling.
 * [Design notes](design.md): the *why* behind those choices and the questions still open, one decision per section,
     with the trade-offs spelled out.
+* [Numerical accuracy](accuracy.md): how accuracy is checked against a high-precision oracle, the tolerance each kind
+    of method claims, and the limits worth knowing before relying on a tail.
 
 If instead you want to build, test, or extend the project, the practical entry point is
 [Contributing](../contributing.md).
