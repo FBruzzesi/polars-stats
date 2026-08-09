@@ -98,8 +98,8 @@ Only `polars>=1.15`. No other runtime dependencies.
 ## Adding a distribution
 
 Copy an existing pair, modify, repeat. Use `Uniform` (`_uniform.py` / `uniform.rs`) as the canonical continuous example
-and `Bernoulli` as the discrete one. The issue tracker has one file per distribution with the exact checklist; the issue
-is canonical if it conflicts with this section.
+and `Bernoulli` as the discrete one. Each distribution opened up for contribution gets a GitHub issue carrying its
+exact spec and checklist; that issue is canonical if it conflicts with this section.
 
 1. **Rust.** Add `src/distributions/<name>.rs`, register it in `src/distributions/mod.rs`, and implement a
    `#[polars_expr]` only for methods that need it:
@@ -197,10 +197,12 @@ the same product with no branch and no threshold constant. Rearrange so the sing
 itself saturated. An oracle for a *discrete* inverse needs exact rational arithmetic, since a rounding there becomes a
 jump between support points rather than a small error.
 
-**Two acceptable outcomes, and no third.** Fix the algorithm, or document the caveat in the class docstring, quantified
-with a regime and a magnitude ("relative error `~1.1e-16 / q`", not "may be inaccurate in the tails"). **A runtime
-warning is never the fix**: it cannot fire per-row from inside the engine, and a Python-side scalar-only warning would
-break the scalar/column symmetry the architecture guarantees.
+**Two acceptable outcomes, and no third.** Fix the algorithm, or document the caveat in
+[Numerical accuracy](explanation/accuracy.md), quantified with a regime and a magnitude ("relative error
+`~1.1e-16 / q`", not "may be inaccurate in the tails"). That page is the single home for accuracy caveats: no
+per-class docstring blocks, no restating the same limit in several places. **A runtime warning is never the fix**: it
+cannot fire per-row from inside the engine, and a Python-side scalar-only warning would break the scalar/column
+symmetry the architecture guarantees.
 
 **Claim a tolerance and justify it.** `1e-12` for elementary closed forms, `1e-10` for special-function methods
 (`2e-10` through `erfc`, which is what `statrs` holds), `1e-9` for log-scale, `1e-8` for discrete log-mass and

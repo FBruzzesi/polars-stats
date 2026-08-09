@@ -91,8 +91,11 @@ Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, 
 
 The maths runs on [`statrs`](https://docs.rs/statrs), and `make audit` sweeps every method against
 an [`mpmath`](https://mpmath.org) oracle at 50 digits, including inputs many decades past where
-`scipy` itself saturates. Use `log_cdf` / `log_sf` rather than the linear pair for tail work, and
-`isf(q)` rather than `ppf(1 - q)`. The known limits are listed in
+`scipy` itself saturates. For tail work on `Normal`, `LogNormal` and the closed-form distributions
+(`Uniform`, `Exponential`, `Bernoulli`), use `log_cdf` / `log_sf` rather than the linear pair, and
+`isf(q)` rather than `ppf(1 - q)`. `Beta` and `Binomial` inherit several documented `statrs`-side
+limits in this release: there the log methods underflow with the linear ones, and the extreme lower
+tail of `ppf` misbehaves. Every known limit is listed with a regime and a magnitude in
 [Numerical accuracy](https://fbruzzesi.github.io/polars-stats/explanation/accuracy/).
 
 ## Installation
