@@ -1,0 +1,74 @@
+---
+name: Documentation
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+# Pages allows one deployment at a time. Queue rather than cancel, so a merge train
+# does not abort a deploy that is already uploading.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Wheel cache private to this workflow, keyed on the build sources: a docs-only
+      # push to main restores the previous wheel instead of compiling its own. Pull
+      # request CI does not read it (docs-strict-build gets its wheel as a job artifact
+      # from the build job instead).
+      - name: Restore built wheel
+        id: wheel-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: dist
+          key: >-
+            wheel-${{ runner.os }}-${{ hashFiles('src/**', 'polars_stats/**', 'Cargo.toml',
+            'Cargo.lock', 'rust-toolchain.toml', 'pyproject.toml') }}
+      # rust-toolchain.toml pins the toolchain; rustup picks it up on first cargo call.
+      - name: Set up Rust
+        if: steps.wheel-cache.outputs.cache-hit != 'true'
+        run: rustup show
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: steps.wheel-cache.outputs.cache-hit != 'true'
+        with:
+          key: build-wheel
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      # markdown_exec executes every `exec="yes"` block at build time, so the compiled
+      # extension must be importable.
+      #
+      # Deliberately a debug build: `[profile.release]` sets `lto = "thin"` and
+      # `codegen-units = 1`, which cost minutes of compile time to speed up maths that
+      # here runs over example frames of a handful of rows. The PR suite tests a debug
+      # wheel too (`maturin build` defaults to debug), so this is the validated profile.
+      - name: Build abi3 wheel
+        if: steps.wheel-cache.outputs.cache-hit != 'true'
+        run: uvx maturin build --out dist
+      # Same install path as the `docs-strict-build` pull request check, so what deploys
+      # here is what that check validated.
+      - name: Sync project dependencies
+        run: uv sync --group docs --no-install-project
+      - name: Install built wheel
+        run: uv pip install dist/*.whl
+      - run: uv run --no-sync zensical build --clean
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        id: deployment
