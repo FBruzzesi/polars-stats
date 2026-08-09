@@ -165,6 +165,7 @@ fn pdf_value(dist: &Beta, v: f64) -> Option<f64> {
 /// `Beta(0.05, 0.05).ln_pdf(1 - 1e-9)` is `+16.00`; statrs 0.19 says `-inf` for both).
 /// `1 - v` is exact there (Sterbenz), so the direct form is correctly rounded; everywhere else the
 /// native path is unchanged.
+/// TODO(FBruzzesi): Rollback to `Some(dist.ln_pdf(v))` once regression is fixed
 fn ln_pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     if (1.0 - v) <= 1e-9 && v < 1.0 {
         let (a, b) = (dist.shape_a(), dist.shape_b());
