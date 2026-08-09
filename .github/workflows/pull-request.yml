@@ -57,8 +57,14 @@ jobs:
         env:
           SKIP: no-commit-to-branch
 
+  # A `bump-version` release PR changes version strings only, so the expensive jobs
+  # skip on it (the narwhals pattern): the full suite runs once per release, at tag
+  # time, inside publish_to_pypi.yml on the exact release commit. `prek` still runs
+  # (it is the cheap job that validates the bump itself: the uv-lock hook and the
+  # CHANGELOG lint). Skipped required checks count as passing for branch protection.
   rust-lint:
     name: lint / cargo fmt + clippy
+    if: github.head_ref != 'bump-version'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -67,9 +73,13 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup show
+      # fmt runs on nightly (rustfmt.toml uses unstable options); everything else,
+      # clippy included, runs on the stable toolchain rust-toolchain.toml pins.
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: cargo fmt
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
 
@@ -78,6 +88,9 @@ jobs:
   # typing / test jobs just download and pip-install it.
   build:
     name: build wheel
+    # Skipping this on `bump-version` also skips everything that needs it
+    # (typing, test-latest, test-oldest, docs-strict-build).
+    if: github.head_ref != 'bump-version'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

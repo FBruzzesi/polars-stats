@@ -1,3 +1,8 @@
+# Builds pin stable (release wheels included: maturin and maturin-action read this
+# file). rustfmt runs on nightly separately (`cargo +nightly fmt`, see the Makefile
+# and CI's rust-lint job) because rustfmt.toml uses the unstable `group_imports` /
+# `imports_granularity` options. `rustfmt` is deliberately not a component here, so
+# a plain `cargo fmt` fails loudly instead of reformatting with stable's rules.
 [toolchain]
-channel = "nightly-2026-04-01"
-components = ["rustfmt", "clippy"]
+channel = "1.97.1"
+components = ["clippy"]
