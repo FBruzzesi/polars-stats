@@ -78,7 +78,7 @@ error surface.
 consecutive values from the one per-row stream keyed `(seed, i)`, so `samples(size=1)` matches `sample` bit for bit
 and growing `size` extends each row's array without changing existing draws.
 
-**Per-row seeding**: the root seed is resolved once per plugin call (`OsRng` when `seed=None`), then each row derives
+**Per-row seeding**: the root seed is resolved once per plugin call (`SysRng` when `seed=None`), then each row derives
 its own `Pcg64Mcg` generator from `(root_seed, row_index)` via two splitmix64 mixing draws. The row index arrives as a
 regular input column (`pl.int_range(0, pl.len())`), so it tracks the partition under `over` / `group_by`.
 
@@ -114,8 +114,8 @@ bad column row surface identically.
 
 ## Stack
 
-The math runs on `statrs` 0.18; the plugin glue is `pyo3-polars` over `pyo3` (abi3); per-row seeded RNG is `rand_pcg`
-(`Pcg64Mcg`), with `rand` for `OsRng`; `serde` deserialises the static `seed` kwarg. The full dependency rationale and
+The math runs on `statrs` 0.19; the plugin glue is `pyo3-polars` over `pyo3` (abi3); per-row seeded RNG is `rand_pcg`
+(`Pcg64Mcg`), with `rand` for `SysRng`; `serde` deserialises the static `seed` kwarg. The full dependency rationale and
 the deliberately-excluded crates are in [Contributing / Stack](../contributing.md#stack), and the repository layout is
 in [Contributing / Repository layout](../contributing.md#repository-layout). Supported Python, Polars, and OS versions
 are in [Reference / Compatibility](../reference/index.md#compatibility).

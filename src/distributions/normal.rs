@@ -4,7 +4,7 @@ use std::f64::consts::{LN_2, SQRT_2};
 use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution as RandDistribution;
+use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
@@ -64,7 +64,7 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: Float64Chunked = try_ternary_elementwise(
         mu_ca,

@@ -2,8 +2,9 @@
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution as RandDistribution;
+use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
+use statrs::function::beta::ln_beta;
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
@@ -95,7 +96,7 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: Float64Chunked = try_ternary_elementwise(
         a_ca,
@@ -157,7 +158,18 @@ fn pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
 }
 
+/// Log-pdf via native `ln_pdf`, except on `v in [1 - 1e-9, 1)`, where the log-density is computed
+/// directly: `statrs` 0.19 compares `v` to `1.0` with an *absolute* epsilon of `1e-9`
+/// (`prec::ulps_eq!`), so its endpoint branch swallows that whole band and returns `-inf` where
+/// the true value is finite (`Beta(2, 3).ln_pdf(1 - 1e-9)` is `-38.96`, and
+/// `Beta(0.05, 0.05).ln_pdf(1 - 1e-9)` is `+16.00`; statrs 0.19 says `-inf` for both).
+/// `1 - v` is exact there (Sterbenz), so the direct form is correctly rounded; everywhere else the
+/// native path is unchanged.
 fn ln_pdf_value(dist: &Beta, v: f64) -> Option<f64> {
+    if (1.0 - v) <= 1e-9 && v < 1.0 {
+        let (a, b) = (dist.shape_a(), dist.shape_b());
+        return Some((a - 1.0) * v.ln() + (b - 1.0) * (1.0 - v).ln() - ln_beta(a, b));
+    }
     Some(dist.ln_pdf(v))
 }
 

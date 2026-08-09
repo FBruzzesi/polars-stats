@@ -15,6 +15,21 @@ def test_log_pdf_equals_log_of_pdf(value_grid: list[float]) -> None:
     assert_series_equal(result, expected, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_log_pdf_finite_in_the_upper_1e9_band() -> None:
+    # statrs 0.19 compares the evaluation point to 1.0 with an absolute epsilon of 1e-9
+    # (`prec::ulps_eq!`), so its endpoint branch swallows the whole band `1 - 1e-9 <= x < 1` and
+    # returns -inf regardless of shape, where the true log-density is finite (positive for
+    # small shapes). The Rust body computes that band directly; this pins several shape regimes.
+    x = 1.0 - 1e-9
+    df = pl.DataFrame({"x": [x]})
+    for a, b in [(2.0, 3.0), (0.05, 0.05), (5.0, 1e-3)]:
+        ln_beta = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+        expected_val = (a - 1.0) * math.log(x) + (b - 1.0) * math.log(1.0 - x) - ln_beta
+        result = df.select(r=Beta(a=a, b=b).log_pdf(pl.col("x")))["r"]
+        expected = pl.Series("r", [expected_val], dtype=pl.Float64)
+        assert_series_equal(result, expected, rel_tol=1e-13, abs_tol=0.0)
+
+
 def test_log_pdf_outside_support_is_neg_inf() -> None:
     df = pl.DataFrame({"x": [-0.5, 1.5]})
     result = df.select(r=Beta(a=2.0, b=3.0).log_pdf(pl.col("x")))["r"]

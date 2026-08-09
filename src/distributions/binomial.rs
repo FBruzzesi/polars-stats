@@ -2,7 +2,7 @@
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution as RandDistribution;
+use rand::distr::Distribution as RandDistribution;
 use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
@@ -113,7 +113,7 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: UInt64Chunked = try_ternary_elementwise(
         n_ca,
@@ -236,8 +236,8 @@ const PPF_CDF_TOL: f64 = 1e-12;
 /// discrete CDF.
 ///
 /// This is the inverse-cdf statrs documents for `Binomial` (a search over the CDF), reimplemented
-/// here because `statrs`' generic `DiscreteCDF::inverse_cdf` panics for small `n` (it `unwrap`s a
-/// bisection that returns `None`).
+/// here so the cdf-step comparison carries the **relative** slack below, which `statrs`' generic
+/// `DiscreteCDF::inverse_cdf` does not provide.
 ///
 /// The step slack is **relative** ([`PPF_CDF_TOL`] scaled by `q`), not absolute: an absolute slack
 /// exceeds every quantile below it, so `cdf(0) + tol >= q` held for any `q <= 1e-12` and the search
