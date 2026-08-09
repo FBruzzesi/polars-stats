@@ -30,17 +30,20 @@ polars-core = { version = "0.52.0", default-features = false }
 # Trim statrs to what this crate uses. `default-features = false` drops the optional `nalgebra` feature
 # (and its matrixmultiply / num-complex / num-rational / num-integer subtree), which statrs pulls only for
 # its multivariate distributions (MultivariateNormal, Dirichlet, ...) that this crate does not use.
-# `rand` is re-enabled explicitly: the statrs-backed samplers (Normal, Bernoulli, Exponential, ...) draw via
-# statrs's `rand::distributions::Distribution` impl, so dropping it fails to compile. `nalgebra?/rand` inside
-# statrs's `rand` feature is inert while `nalgebra` is off, so no nalgebra returns. Compile-only trim,
+# `std` must be re-enabled explicitly: statrs 0.19 supports `no_std` and carries `std` as a default
+# feature, so switching defaults off without it silently builds a `no_std` statrs. `rand` is re-enabled
+# explicitly too: the statrs-backed samplers (Normal, Bernoulli, Exponential, ...) draw via statrs's
+# `rand::distr::Distribution` impl, so dropping it fails to compile. `nalgebra?/rand` inside statrs's
+# `rand` feature is inert while `nalgebra` is off, so no nalgebra returns. Compile-only trim,
 # identical output.
-statrs = { version = "0.18.0", default-features = false, features = ["rand"] }
-rand = "0.8"
-# The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE) and its
-# per-draw uniform consumption: a bump can change it. The committed Cargo.lock pins the exact build
-# version; treat any update as a deliberate, changelog-recorded seeded-output change.
-rand_distr = "0.4"
-rand_pcg = "0.3"
+statrs = { version = "0.19.0", default-features = false, features = ["std", "rand"] }
+rand = "0.10"
+# The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE, plus a
+# Poisson approximation when `1 - p == 1.0`) and its per-draw uniform consumption: a bump can change
+# it. The committed Cargo.lock pins the exact build version; treat any update as a deliberate,
+# changelog-recorded seeded-output change.
+rand_distr = "0.6"
+rand_pcg = "0.10"
 
 [profile.release]
 lto = "thin"  # "fat" is more aggressive; see trade-off

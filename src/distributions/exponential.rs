@@ -2,7 +2,7 @@
 use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution as RandDistribution;
+use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
 use crate::distributions::param_validator;
@@ -55,7 +55,7 @@ fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<S
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: Float64Chunked = try_binary_elementwise(
         rate_ca,

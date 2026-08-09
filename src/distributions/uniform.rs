@@ -2,7 +2,7 @@
 use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::{Distribution, Standard};
+use rand::distr::{Distribution, StandardUniform};
 use statrs::distribution::Uniform;
 
 use crate::distributions::param_validator;
@@ -49,7 +49,7 @@ fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
 /// `hi.next_down() >= lo`.
 #[inline]
 fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
-    let u: f64 = Standard.sample(rng);
+    let u: f64 = StandardUniform.sample(rng);
     let x = lo + (hi - lo) * u;
     if x < hi {
         x
@@ -74,7 +74,7 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: Float64Chunked = try_ternary_elementwise(
         min_ca,

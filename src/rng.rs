@@ -20,8 +20,8 @@ use polars_arrow::bitmap::Bitmap;
 use polars_arrow::datatypes::reshape::ReshapeDimension;
 use polars_core::utils::rayon::prelude::*;
 use polars_core::POOL;
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::rngs::SysRng;
+use rand::TryRng;
 use rand_pcg::Pcg64Mcg;
 use serde::Deserialize;
 
@@ -40,9 +40,20 @@ fn splitmix64(mut z: u64) -> u64 {
 
 /// Resolve the root seed for a sampler call: the caller's seed if given, otherwise a
 /// fresh OS-entropy draw. Called once per plugin invocation, never per row.
+///
+/// An OS-entropy failure (`SysRng` is fallible) surfaces as a `ComputeError` and fails the
+/// evaluation, the same contract as an invalid parameter: it is a per-call error, deliberately
+/// not a panic out of the plugin.
 #[inline]
-fn resolve_root_seed(seed: Option<u64>) -> u64 {
-    seed.unwrap_or_else(|| OsRng.next_u64())
+fn resolve_root_seed(seed: Option<u64>) -> PolarsResult<u64> {
+    match seed {
+        Some(seed) => Ok(seed),
+        None => SysRng.try_next_u64().map_err(|e| {
+            PolarsError::ComputeError(
+                format!("failed to draw OS entropy for the sampler root seed: {e}").into(),
+            )
+        }),
+    }
 }
 
 /// Per-row RNG seeded by `(root_seed, index)`.
@@ -74,9 +85,9 @@ impl SampleKwargs {
     ///
     /// Call this a single time per plugin invocation, outside the elementwise loop: it
     /// draws OS entropy at most once here, after which every [`RowRngs::rng`] is a few
-    /// integer ops.
+    /// integer ops. Errs only when the OS entropy source fails (see [`resolve_root_seed`]).
     #[inline]
-    pub(crate) fn row_rngs(&self) -> RowRngs {
+    pub(crate) fn row_rngs(&self) -> PolarsResult<RowRngs> {
         row_rngs(self.seed)
     }
 }
@@ -89,10 +100,10 @@ impl SampleKwargs {
 /// through the same resolve-once-then-derive-per-row path, so seeded output is identical
 /// regardless of which entry point a distribution uses.
 #[inline]
-pub(crate) fn row_rngs(seed: Option<u64>) -> RowRngs {
-    RowRngs {
-        root_seed: resolve_root_seed(seed),
-    }
+pub(crate) fn row_rngs(seed: Option<u64>) -> PolarsResult<RowRngs> {
+    Ok(RowRngs {
+        root_seed: resolve_root_seed(seed)?,
+    })
 }
 
 /// Shared driver for the constant-parameter sampler fast paths.
@@ -120,7 +131,7 @@ where
 {
     let index = index.cast(&DataType::UInt64)?;
     let index_ca = index.u64()?;
-    let rngs = row_rngs(seed);
+    let rngs = row_rngs(seed)?;
     Ok(build(index_ca, &rngs).into_series())
 }
 
@@ -190,7 +201,7 @@ where
     }
     let index = index.cast(&DataType::UInt64)?;
     let indices: Vec<u64> = index.u64()?.into_no_null_iter().collect();
-    let rngs = row_rngs(seed);
+    let rngs = row_rngs(seed)?;
 
     let mut flat = vec![V::default(); indices.len() * size];
     fill_rows(&mut flat, size, |row, slot| {
@@ -245,7 +256,7 @@ where
     // which can raise) from the draw loop, whose rows then fill independently. A null row keeps
     // its `V::default()` slice; it is masked by the validity bitmaps below, never read.
     let states: Vec<Option<(u64, S)>> = rows.collect::<PolarsResult<_>>()?;
-    let rngs = row_rngs(seed);
+    let rngs = row_rngs(seed)?;
 
     let mut flat = vec![V::default(); states.len() * size];
     fill_rows(&mut flat, size, |row, slot| {

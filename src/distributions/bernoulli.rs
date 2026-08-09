@@ -2,7 +2,7 @@
 use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution;
+use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
 use crate::distributions::param_validator;
@@ -42,7 +42,7 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: BooleanChunked = try_binary_elementwise(
         proba_ca,

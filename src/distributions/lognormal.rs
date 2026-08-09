@@ -2,7 +2,7 @@
 use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distributions::Distribution as RandDistribution;
+use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal, Normal};
 
 use crate::distributions::{
@@ -29,38 +29,24 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<LogNormal> {
     })
 }
 
-/// Construct the *underlying* `statrs::Normal` (mean `mu`, std-dev `sigma`) for the stable
-/// `log_cdf` / `log_sf`, which reuse the normal's `ln_erfc` form on `ln(x)`.
+/// The underlying `statrs::Normal` (mean `mu`, std-dev `sigma`) a built `LogNormal` wraps,
+/// recovered through the `location()` / `scale()` accessors. Backs the stable `log_cdf` / `log_sf`
+/// / `isf`, which reuse the normal's `ln_erfc` forms on `ln(x)`.
 ///
-/// `statrs::LogNormal` hides its `(location, scale)` (no accessors), so the value functions cannot
-/// recover `(mu, sigma)` from a built `LogNormal`; they receive this underlying `Normal` instead.
-/// Validation is delegated to [`build_dist`], so an invalid parameterisation reports the identical
-/// error (down to the statrs suffix) as every other method.
-fn build_underlying_normal(mu: f64, sigma: f64) -> PolarsResult<Normal> {
-    build_dist(mu, sigma)?;
-    Ok(Normal::new(mu, sigma)
-        .expect("Normal::new accepts every (mu, sigma) LogNormal::new accepts"))
+/// Infallible: any `(location, scale)` a built `LogNormal` carries is a valid `Normal`
+/// parameterisation, so validation stays with [`build_dist`] alone.
+fn underlying_normal(dist: &LogNormal) -> Normal {
+    Normal::new(dist.location(), dist.scale())
+        .expect("Normal::new accepts every (location, scale) a built LogNormal carries")
 }
 
 value_keyed_per_row! {
-    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by
-    /// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises
+    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by every
+    /// Rust-bound value-keyed method. `null` propagates; an invalid parameterisation raises
     /// via [`build_dist`]; `f` may return `None` to null a row on its own terms.
     fn value_keyed(&LogNormal);
     params = (DataType::Float64 => f64, DataType::Float64 => f64);
     build = build_dist;
-}
-
-value_keyed_per_row! {
-    /// Apply a value-keyed function `f(&Normal, value)` over `(value, mu, sigma)`, building the
-    /// *underlying* normal (see [`build_underlying_normal`]) rather than the `LogNormal`.
-    ///
-    /// Backs the stable `log_cdf` / `log_sf` only: they compute the underlying normal's log-cdf / log-sf
-    /// at `ln(value)`, which `statrs::LogNormal`'s hidden parameters would not let them reach via
-    /// [`value_keyed`]. Null / invalid-parameter contract is identical to [`value_keyed`].
-    fn value_keyed_norm(&Normal);
-    params = (DataType::Float64 => f64, DataType::Float64 => f64);
-    build = build_underlying_normal;
 }
 
 param_validator! {
@@ -90,7 +76,7 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs();
+    let rngs = kwargs.row_rngs()?;
 
     let ca: Float64Chunked = try_ternary_elementwise(
         mu_ca,
@@ -165,22 +151,22 @@ fn sf_value(dist: &LogNormal, v: f64) -> Option<f64> {
 }
 
 /// Stable log-cdf: the underlying normal's [`normal::ln_cdf_value`] at `ln(v)`; `-inf` for `v <= 0`
-/// (`cdf = 0` outside the support). `norm` is the underlying normal built by [`build_underlying_normal`].
-fn ln_cdf_value(norm: &Normal, v: f64) -> Option<f64> {
+/// (`cdf = 0` outside the support). See [`underlying_normal`] for the recovery.
+fn ln_cdf_value(dist: &LogNormal, v: f64) -> Option<f64> {
     if v <= 0.0 {
         Some(f64::NEG_INFINITY)
     } else {
-        normal::ln_cdf_value(norm, v.ln())
+        normal::ln_cdf_value(&underlying_normal(dist), v.ln())
     }
 }
 
 /// Stable log-sf: the underlying normal's [`normal::ln_sf_value`] at `ln(v)`; `0` for `v <= 0`
 /// (`sf = 1` outside the support).
-fn ln_sf_value(norm: &Normal, v: f64) -> Option<f64> {
+fn ln_sf_value(dist: &LogNormal, v: f64) -> Option<f64> {
     if v <= 0.0 {
         Some(0.0)
     } else {
-        normal::ln_sf_value(norm, v.ln())
+        normal::ln_sf_value(&underlying_normal(dist), v.ln())
     }
 }
 
@@ -202,8 +188,8 @@ fn ppf_value(dist: &LogNormal, q: f64) -> Option<f64> {
 ///
 /// The endpoints follow from the normal's: `isf(0) = exp(+inf) = +inf` and `isf(1) = exp(-inf) = 0`,
 /// which are the support boundaries `ppf` maps in the other order.
-fn isf_value(norm: &Normal, q: f64) -> Option<f64> {
-    normal::isf_value(norm, q).map(f64::exp)
+fn isf_value(dist: &LogNormal, q: f64) -> Option<f64> {
+    normal::isf_value(&underlying_normal(dist), q).map(f64::exp)
 }
 
 /// Element-wise pdf via `statrs` `Continuous::pdf`; `0` for `value <= 0` (outside the support).
@@ -237,14 +223,14 @@ fn lognormal_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// tail, unlike `cdf().ln()`); `-inf` for `value <= 0`.
 #[polars_expr(output_type=Float64)]
 fn lognormal_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_norm(inputs, ln_cdf_value)
+    value_keyed(inputs, ln_cdf_value)
 }
 
 /// Element-wise log-sf via the underlying normal's stable `ln_erfc` form (finite in the far-right
 /// tail, unlike `sf().ln()`); `0` for `value <= 0`.
 #[polars_expr(output_type=Float64)]
 fn lognormal_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_norm(inputs, ln_sf_value)
+    value_keyed(inputs, ln_sf_value)
 }
 
 /// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
@@ -258,7 +244,7 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 /// See [`isf_value`] for why, and for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn lognormal_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_norm(inputs, isf_value)
+    value_keyed(inputs, isf_value)
 }
 
 value_keyed_scalar_plugins! {
@@ -272,21 +258,6 @@ value_keyed_scalar_plugins! {
         fn lognormal_cdf_scalar => cdf_value;
         fn lognormal_sf_scalar => sf_value;
         fn lognormal_ppf_scalar => ppf_value;
-    }
-}
-
-value_keyed_scalar_plugins! {
-    /// Constant-parameter fast path for the stable `log_cdf` / `log_sf`, building the *underlying*
-    /// normal once (see [`build_underlying_normal`]) rather than the `LogNormal`.
-    ///
-    /// The scalar twin of [`value_keyed_norm`]: same field names as [`LogNormalParamsKwargs`]
-    /// (`mu`, `sigma`, so the Python layer routes either method's scalar params here unchanged), but
-    /// `build` returns the underlying `Normal` the `ln_erfc` bodies need.
-    struct LogNormalLogKwargs { mu: f64, sigma: f64 }
-
-    build = |kw| build_underlying_normal(kw.mu, kw.sigma)?;
-
-    methods {
         fn lognormal_ln_cdf_scalar => ln_cdf_value;
         fn lognormal_ln_sf_scalar => ln_sf_value;
         fn lognormal_isf_scalar => isf_value;

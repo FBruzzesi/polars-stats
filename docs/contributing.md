@@ -68,10 +68,10 @@ polars-stats/
 | `polars-core` | `POOL` and its `rayon` re-export, so the multi-draw fill runs on the thread pool Polars itself uses |
 | `pyo3-polars` | the `#[polars_expr]` macro and FFI glue (source of ABI churn) |
 | `pyo3` | Python FFI, abi3 for forward compatibility |
-| `statrs` 0.18 | distribution math, and sampling except the binomial and uniform draws |
-| `rand_distr` 0.4 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](explanation/design.md#binomial-sampling-uses-rand_distr-not-statrs) |
-| `rand` 0.8 | `RngCore` / `OsRng` for the unseeded root seed |
-| `rand_pcg` 0.3 | `Pcg64Mcg` per-row RNG for deterministic seeded sampling |
+| `statrs` 0.19 | distribution math, and sampling except the binomial and uniform draws |
+| `rand_distr` 0.6 | `O(1)`-amortised binomial draw (statrs' is `O(n)` per row); exact build version pinned by `Cargo.lock`, see [Design notes](explanation/design.md#binomial-sampling-uses-rand_distr-not-statrs) |
+| `rand` 0.10 | `TryRng` / `SysRng` for the unseeded root seed |
+| `rand_pcg` 0.10 | `Pcg64Mcg` per-row RNG for deterministic seeded sampling |
 | `serde` | deserialise the static `seed` kwarg |
 
 Deliberately excluded: `rand_chacha` (replaced by `rand_pcg`; per-row `ChaCha20`
