@@ -85,7 +85,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |
-| Deep-tail underflow (`sf` of a 60-sigma event) | per row | `0.0`; use `log_sf` to keep resolution |
+| Deep-tail underflow (`sf` of a 60-sigma event) | per row | `0.0`; `log_sf` keeps resolution where it has a stable form, see [Numerical accuracy](../explanation/accuracy.md) |
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in

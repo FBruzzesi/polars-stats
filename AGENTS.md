@@ -27,7 +27,7 @@ classes.
 Code, prose, test, and git conventions live in [Contributing > Conventions](./docs/contributing.md#conventions);
 follow them, do not re-derive them here. On top of those:
 
-* **Priorities, in order: correctness, maintainability, ergonomics, performance.** Performance last is deliberate:
+* **Priorities, in order: correctness, ergonomics, maintainability, performance.** Performance last is deliberate:
   the polars engine does the heavy lifting on large frames, so a clear formula beats a fast one. Only reject a
   choice on performance grounds when it is clearly suboptimal (an `O(n)` draw per row, a per-draw rebuild), not to
   shave constants.
