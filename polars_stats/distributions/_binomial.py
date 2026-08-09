@@ -71,12 +71,28 @@ class Binomial(DiscreteDistribution):
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival ``P(X > floor(value))`` via native ``DiscreteCDF::sf`` (accurate upper tail).
 
-        ``isf`` inherits the base-class default ``ppf(1 - quantile)``. ``log_sf`` (and ``log_cdf``)
-        inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to ``-inf`` deep in the
-        tails: the regularized incomplete beta has no cheap stable log form (scipy's ``logsf`` /
-        ``logcdf`` are naive here too, so parity holds).
+        ``isf`` inherits the base-class default ``ppf(1 - quantile)``.
         """
         return self._value_plugin("binomial_sf", value)
+
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """Stable log-cdf via the Rust log-space incomplete-beta port.
+
+        Overrides the naive ``cdf().log()``, which underflows to ``-inf`` deep in the lower tail
+        (large ``n``, ``p`` near ``1``). The binomial tails *are* the incomplete beta, so this binds
+        the same port ``Beta`` uses. Beyond scipy there: ``scipy.stats.binom.logcdf`` is itself
+        naive and returns ``-inf``.
+        """
+        return self._value_plugin("binomial_ln_cdf", value)
+
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """Stable log-sf via the Rust log-space incomplete-beta port.
+
+        Overrides the naive ``sf().log()``, which underflows to ``-inf`` deep in the upper tail
+        (large ``n``, small ``p``, ``value`` well above ``n * p``); mirror of ``_log_cdf``, and
+        likewise finite where ``scipy.stats.binom.logsf`` is ``-inf``.
+        """
+        return self._value_plugin("binomial_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """Inverse cdf via the binary-search ``DiscreteCDF::inverse_cdf``, as an integer-valued ``Float64``.
@@ -87,6 +103,17 @@ class Binomial(DiscreteDistribution):
         statrs' native ``floor(n * p)`` median is a different convention and is deliberately not used.
         """
         return self._value_plugin("binomial_ppf", quantile)
+
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """Inverse survival function, by binary search on ``log_sf`` against ``log(quantile)``.
+
+        Overrides the base-class default ``ppf(1 - quantile)``, which returns ``n`` for *every*
+        quantile below ``1.1e-16`` because the complement rounds to exactly ``1.0``.
+        ``scipy.stats.binom.isf`` composes the same way and has the same behaviour, so this is one of
+        the few places the library is deliberately more accurate than scipy. The endpoints map to the
+        support bounds in the opposite order to ``ppf`` (``isf(0) = n``, ``isf(1) = 0``).
+        """
+        return self._value_plugin("binomial_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``n * p``."""

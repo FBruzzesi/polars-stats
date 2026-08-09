@@ -5,8 +5,8 @@ use pyo3_polars::derive::polars_expr;
 use rand::distributions::Distribution as RandDistribution;
 use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
-use statrs::statistics::Distribution as StatrsDistribution;
 
+use crate::distributions::beta::{ln_beta_reg, ln_beta_reg_complement};
 use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
 use crate::rng::{
     sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
@@ -196,6 +196,43 @@ fn sf_value(dist: &Binomial, v: f64) -> Option<f64> {
     }
 }
 
+/// `(a, b, x)` for the regularized incomplete beta behind the tail at `floor(v)`, or `None` when
+/// `v` is off the support and the tail is one of the two exact constants.
+///
+/// The binomial tails *are* the incomplete beta: `P(X > k) = I_p(k + 1, n - k)`, and the cdf is its
+/// complement. Both are keyed on `p` itself rather than the equivalent `I_{1-p}(n - k, k + 1)`
+/// form, which would have to build `1 - p` first and lose the whole upper tail for a tiny `p`
+/// (`1 - 1e-18` is `1.0`, so `sf` would come back `-inf` instead of `~ln(n p)`).
+fn tail_args(dist: &Binomial, v: f64) -> Option<(f64, f64, f64)> {
+    let n = dist.n();
+    let k = v.floor() as u64;
+    if v < 0.0 || k >= n {
+        return None;
+    }
+    Some(((k + 1) as f64, (n - k) as f64, dist.p()))
+}
+
+/// Native log-cdf via [`ln_beta_reg_complement`]: finite in the lower tail (no `cdf().ln()`
+/// underflow) and full relative precision in the upper one. `-inf` below the support, `0` at/above
+/// `n`, matching the linear `cdf`'s constants taken in log.
+fn ln_cdf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    match tail_args(dist, v) {
+        Some((a, b, p)) => Some(ln_beta_reg_complement(a, b, p)),
+        None if v < 0.0 => Some(f64::NEG_INFINITY),
+        None => Some(0.0),
+    }
+}
+
+/// Native log-sf via [`ln_beta_reg`]: finite in the upper tail (no `sf().ln()` underflow) and full
+/// relative precision in the lower one. `0` below the support, `-inf` at/above `n`.
+fn ln_sf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    match tail_args(dist, v) {
+        Some((a, b, p)) => Some(ln_beta_reg(a, b, p)),
+        None if v < 0.0 => Some(0.0),
+        None => Some(f64::NEG_INFINITY),
+    }
+}
+
 /// Element-wise pmf via `statrs` `Discrete::pmf`; zero off the integer support (`value < 0`,
 /// non-integer, or `value > n`), `NaN` for a `NaN` value. See [`value_keyed`] for the null/error
 /// contract.
@@ -223,6 +260,20 @@ fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
+}
+
+/// Element-wise log-cdf via the stable log-space incomplete-beta port (finite in the lower tail,
+/// unlike `cdf().log()`).
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_cdf_value)
+}
+
+/// Element-wise log-sf via the stable log-space incomplete-beta port (finite in the upper tail,
+/// unlike `sf().log()`).
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_sf_value)
 }
 
 /// Slack absorbing the rounding error in `statrs`' regularized-incomplete-beta cdf when comparing
@@ -275,11 +326,69 @@ fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
     }
 }
 
+/// Smallest support point `k in {0, ..., n}` with `sf(k) <= q`, searched on the **log** survival
+/// function against `ln q`.
+///
+/// The mirror of [`inverse_cdf`], and not `ppf(1 - q)`, which fails twice over here. Below
+/// `q ~ 1.1e-16` the complement rounds to exactly `1.0`, so the `q == 1` endpoint branch fires and
+/// *every* such quantile answers `n`: `Binomial(100, 0.001).isf(1e-20)` returned `100` where the
+/// answer is `11`, and `Binomial(10, 0).isf(1e-20)` returned `10` where it is `0`. Just above that
+/// the search still compares `cdf(k)` against a `1 - q` whose trailing digits are gone, which put
+/// `isf(1e-16)` at `7` where scipy and the exact answer agree on `9`. `scipy.stats.binom` composes
+/// the same way and reproduces both, so this is one of the few places the library is deliberately
+/// more accurate than its reference.
+///
+/// In log space rather than on `sf` directly because `sf(k)` underflows to `0` well before `k = n`,
+/// which would stop the search at the first underflowed step rather than at the true one. `ln_sf`
+/// is finite far past that, so the reachable range is bounded by `ln q` (about `q = 1e-308`) rather
+/// than by the tail. The slack is additive here for the same reason it is relative in
+/// [`inverse_cdf`]: `ln(q * (1 + tol)) ~ ln q + tol`.
+fn inverse_sf(dist: &Binomial, q: f64) -> u64 {
+    let threshold = q.ln() + PPF_CDF_TOL;
+    let mut lo = 0u64;
+    let mut hi = dist.n();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let ln_sf = ln_sf_value(dist, mid as f64).expect("ln_sf_value is total on the support");
+        if ln_sf <= threshold {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// A quantile outside `[0, 1]` yields `null`. The endpoints map to the support bounds in the
+/// opposite order to [`ppf_value`] (`isf(0) = n`, `isf(1) = 0`).
+///
+/// `q == 0` is mapped here rather than left to the search for the reason `q == 1` is in `ppf_value`:
+/// `ln_sf(k)` reaches `-inf` a long way below `n` once the upper tail underflows, and the search
+/// would stop at the first such `k`.
+fn isf_value(dist: &Binomial, q: f64) -> Option<f64> {
+    if !(0.0..=1.0).contains(&q) {
+        None
+    } else if q == 0.0 {
+        Some(dist.n() as f64)
+    } else if q == 1.0 {
+        Some(0.0)
+    } else {
+        Some(inverse_sf(dist, q) as f64)
+    }
+}
+
 /// Element-wise ppf (inverse cdf), returning the integer support point as `f64`.
 /// See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
+}
+
+/// Element-wise isf (inverse survival function), returning the integer support point as `f64`.
+/// See [`inverse_sf`] for why this is not `ppf(1 - q)`, and [`isf_value`] for the contract.
+#[polars_expr(output_type=Float64)]
+fn binomial_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, isf_value)
 }
 
 value_keyed_scalar_plugins! {
@@ -292,7 +401,10 @@ value_keyed_scalar_plugins! {
         fn binomial_ln_pmf_scalar => ln_pmf_value;
         fn binomial_cdf_scalar => cdf_value;
         fn binomial_sf_scalar => sf_value;
+        fn binomial_ln_cdf_scalar => ln_cdf_value;
+        fn binomial_ln_sf_scalar => ln_sf_value;
         fn binomial_ppf_scalar => ppf_value;
+        fn binomial_isf_scalar => isf_value;
     }
 }
 
@@ -310,13 +422,27 @@ param_validator! {
     output_name = inputs[1];
 }
 
-/// Element-wise Shannon entropy (in nats) via `statrs` `Distribution::entropy`, the exact support
-/// sum `-sum_k pmf(k) ln pmf(k)`; `0` at the degenerate endpoints `p in {0, 1}`.
+/// Shannon entropy (in nats): the exact support sum `-sum_k pmf(k) ln pmf(k)`, skipping the terms
+/// whose mass has underflowed.
+///
+/// Not `statrs`' `Distribution::entropy`, which sums the same series without that guard and so
+/// evaluates `0 * ln 0 = NaN` the moment any `pmf(k)` rounds to zero: `Binomial(50, 1e-8)` and
+/// `Binomial(1000, 0.999)` both came back `NaN` where scipy is finite. The `x ln x -> 0` limit is
+/// the only difference; every other term is identical.
+fn entropy_value(dist: &Binomial) -> f64 {
+    (0..=dist.n())
+        .map(|k| dist.pmf(k))
+        .filter(|mass| *mass > 0.0)
+        .map(|mass| -mass * mass.ln())
+        .sum()
+}
+
+/// Element-wise Shannon entropy (in nats); `0` at the degenerate endpoints `p in {0, 1}`.
 ///
 /// Kept in Rust, unlike `mean` / `variance`: the binomial entropy has no elementary closed form (it
 /// is a sum over the whole `{0, ..., n}` support, which scipy also evaluates exactly), so there is no
 /// numerically equivalent Polars expression to move it to.
 #[polars_expr(output_type=Float64)]
 fn binomial_entropy(inputs: &[Series]) -> PolarsResult<Series> {
-    params_keyed(inputs, |dist| dist.entropy().unwrap())
+    params_keyed(inputs, entropy_value)
 }

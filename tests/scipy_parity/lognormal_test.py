@@ -121,6 +121,26 @@ def test_log_near_one_side_keeps_relative_precision(mu: float, sigma: float) -> 
     np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(lower), rtol=1e-9, atol=0.0)
 
 
+# Regression from `make audit`: the density underflowed to `0.0` where scipy is finite, because
+# `statrs` forms `exp(-z**2 / 2)` and only then divides by the tiny `x`. Composing through the log
+# reorders it, and reproduces scipy exactly at both probes the audit flagged.
+_DEEP_LEFT_CASES = [
+    (0.0, 5.0, 1.3838965267367376e-87),
+    (3.0, 2.0, 3.6251409191435593e-34),
+    (0.0, 5.0, 1e-60),
+    (0.0, 10.0, 1e-120),
+]
+
+
+@pytest.mark.parametrize(("mu", "sigma", "x"), _DEEP_LEFT_CASES, ids=lambda v: str(v)[:12])
+def test_pdf_stays_finite_deep_in_the_left_tail(mu: float, sigma: float, x: float) -> None:
+    """`pdf` is finite and matches scipy where the intermediate `exp` alone would underflow."""
+    got = pl.DataFrame({"x": [x]}).select(r=LogNormal(mu=mu, sigma=sigma).pdf(pl.col("x")))["r"].item()
+    expected = float(scipy_lognorm.pdf(x, s=sigma, scale=exp(mu)))
+    assert got > 0.0, "pdf underflowed to zero where scipy is finite"
+    assert got == pytest.approx(expected, rel=1e-13)
+
+
 # The `isf` regression. `isf` was the base-class `ppf(1 - quantile)` until X5; it is now the
 # underlying normal's symmetry form exponentiated, which forms no complement.
 #

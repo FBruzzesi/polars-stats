@@ -108,7 +108,7 @@ What matters specifically for an agent:
       wired through the `value_keyed` machinery exactly like `ln_pdf`. Reuse an existing port rather than
       deriving a new one: `LogNormal` composes the normal's `ln_erfc` with `ln(x)` (statrs `LogNormal` hides
       its `location` / `scale`, so build the underlying `Normal` from `(mu, sigma)` rather than reading them
-      back off the `LogNormal`).
+      back off the `LogNormal`), and `Binomial` binds `ln_beta_reg` through `P(X > k) = I_p(k + 1, n - k)`.
     * **`_isf` is a hook, not a derived quantity.** The base-class `ppf(1 - quantile)` throws the tail mass
       away before your inverse runs, so it is only correct where `q` is not tiny. `_base.py::_isf` records
       what each shipped distribution needed instead.
@@ -120,8 +120,8 @@ What matters specifically for an agent:
       the `1e-6` tolerance loosening in the relevant test. Where it is *not* a binary search it has been
       wrong in several ways, including relatively wrong by `6e-3` for Gamma in the low-quantile tail (8
       bisections plus 4 unguarded Newton steps), and panicking, hanging and saturating for Beta (AS 64, whose
-      Newton step is unguarded and whose step-halving loop is unbounded). A bounded solve with every Newton
-      proposal clamped into a bisection bracket is the pattern to copy.
+      Newton step is unguarded and whose step-halving loop is unbounded). `beta.rs::inverse_cdf` is a bounded
+      solve replacing it, and is the pattern to copy.
 
 * **scipy reparam.** Several distributions need a parameter mapping at the docstring level (Exp, Gamma, Pareto,
    LogNormal, Weibull, Uniform, Binomial, DiscreteUniform). Spell out the scipy equivalent so test writers know what to

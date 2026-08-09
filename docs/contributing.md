@@ -219,9 +219,10 @@ probe aimed at it.
 
 **Where the recipes live.** `Exponential._log_sf` (an exact closed form), `Exponential._cdf` and `LogNormal.variance`
 (the `sinh` identity standing in for the `expm1` Polars does not expose), `Exponential._log_cdf` and
-`Uniform._log_cdf` (`log1p` on the near-certain side), `normal.rs`'s `ln_erfc` (a special function ported to log
-space, the pattern for the hard cases), and the `isf_value` bodies in `normal.rs` (a symmetry) and `lognormal.rs`
-(composing one).
+`Uniform._log_cdf` (`log1p` on the near-certain side), `normal.rs`'s `ln_erfc` and `beta.rs`'s `ln_beta_reg` (a
+special function ported to log space, the pattern for the hard cases), `beta.rs`'s `inverse_cdf` (a bounded solve, for
+when an upstream inverse cannot be trusted to terminate), and the `isf_value` bodies in `normal.rs` (a symmetry),
+`lognormal.rs` (composing one) and `beta.rs` / `binomial.rs` (entering an existing solve from the other tail).
 
 ## Conventions
 

@@ -32,7 +32,7 @@ class Beta(ContinuousDistribution):
     Null parameters propagate to null.
 
     The support is ``[0, 1]``: ``pdf`` is ``0`` outside it, and when a shape is ``< 1`` the density
-    diverges (``inf`` or large finite values) at the corresponding boundary.
+    diverges to ``inf`` at the corresponding boundary (as does ``log_pdf``), matching scipy.
     """
 
     _a: pl.Expr
@@ -71,21 +71,46 @@ class Beta(ContinuousDistribution):
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
 
-        ``isf`` inherits the base-class default ``ppf(1 - quantile)``. ``log_sf`` (and ``log_cdf``)
-        inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to ``-inf`` deep in the
-        tails: the regularized incomplete beta has no cheap stable log form (scipy's ``logsf`` /
-        ``logcdf`` are naive here too, so parity holds).
+        ``isf`` inherits the base-class default ``ppf(1 - quantile)``.
         """
         return self._value_plugin("beta_sf", value)
 
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """Stable log-cdf via the Rust log-space incomplete-beta port.
+
+        Overrides the naive ``cdf().log()``, which underflows to ``-inf`` once ``value**a`` rounds
+        to ``0`` in the left corner (large ``a``, small ``value``), exactly the regime tail scoring
+        needs finite. Beyond scipy there: ``scipy.stats.beta.logcdf`` is itself naive and returns
+        ``-inf``.
+        """
+        return self._value_plugin("beta_ln_cdf", value)
+
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """Stable log-sf via the Rust log-space incomplete-beta port.
+
+        Overrides the naive ``sf().log()``, which underflows to ``-inf`` in the right corner
+        (large ``b``, ``value`` near ``1``); mirror of ``_log_cdf``, and likewise finite where
+        ``scipy.stats.beta.logsf`` is ``-inf``.
+        """
+        return self._value_plugin("beta_ln_sf", value)
+
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf`` (inverse regularized incomplete beta).
+        """Inverse cdf, by a bounded solve on the log-space incomplete beta (not statrs' AS 64).
 
         A quantile outside ``[0, 1]`` yields null; the endpoints map to the support bounds
         (``ppf(0) = 0``, ``ppf(1) = 1``), matching scipy. ``median`` is ``ppf(0.5)`` (the base-class default);
         the beta median has no closed form.
         """
         return self._value_plugin("beta_ppf", quantile)
+
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """Inverse survival function, the same solve entered from the upper tail.
+
+        Overrides the base-class default ``ppf(1 - quantile)``, which would take the branch that has
+        to recover the mass as ``1 - (1 - quantile)``. The endpoints map to the support bounds in the
+        opposite order to ``ppf`` (``isf(0) = 1``, ``isf(1) = 0``).
+        """
+        return self._value_plugin("beta_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``a / (a + b)``."""

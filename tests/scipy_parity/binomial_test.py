@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
 
-from polars_stats import Binomial
+from polars_stats import Beta, Binomial
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
 # Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
@@ -55,7 +58,41 @@ def test_method_matches_scipy(case: Case[Binomial], n: int, p: float) -> None:
     )
 
 
-# Regressions from `make audit`, in a regime `_QUANTILES` / `_VALUE_GRID` above never reach.
+# Regressions from `make audit`, each in a regime `_QUANTILES` / `_VALUE_GRID` above never reach.
+
+_DEEP_TAIL_CASES = [
+    # (n, p, k): the tail whose linear value underflows, so `cdf().log()` / `sf().log()` were -inf.
+    (100000, 0.001, 5000),
+    (1000, 0.5, 50),
+    (1000, 0.5, 950),
+    (50, 1e-8, 10),
+    (1000, 0.999, 900),
+]
+
+
+@pytest.mark.parametrize(("n", "p", "k"), _DEEP_TAIL_CASES, ids=str)
+def test_log_tails_stay_finite_beyond_the_linear_underflow(n: int, p: float, k: int) -> None:
+    """`log_cdf` / `log_sf` are finite where the linear cdf / sf have rounded to zero.
+
+    The binomial tails *are* the regularized incomplete beta (`P(X > k) = I_p(k + 1, n - k)`), so
+    both bind the log-space port `Beta` uses. The oracle is the `Beta` identity rather than scipy,
+    whose `binom.logcdf` / `logsf` are the same naive `log` of the linear value and return `-inf`
+    in exactly this regime.
+    """
+    dist = Binomial(n, p)
+    beta = Beta(a=float(k + 1), b=float(n - k))
+    got = pl.DataFrame({"k": [float(k)]}).select(
+        log_cdf=dist.log_cdf(pl.col("k")),
+        log_sf=dist.log_sf(pl.col("k")),
+    )
+    reference = pl.DataFrame({"p": [p]}).select(
+        log_cdf=beta.log_sf(pl.col("p")),
+        log_sf=beta.log_cdf(pl.col("p")),
+    )
+    assert math.isfinite(got["log_cdf"].item())
+    assert math.isfinite(got["log_sf"].item())
+    assert got["log_cdf"].item() == pytest.approx(reference["log_cdf"].item(), rel=1e-12)
+    assert got["log_sf"].item() == pytest.approx(reference["log_sf"].item(), rel=1e-12)
 
 
 @pytest.mark.parametrize(("n", "p"), [(1000, 0.5), (5000, 0.001), (50, 1e-8), (1000, 0.999), (10, 0.5)])
@@ -82,3 +119,80 @@ def test_ppf_at_one_returns_the_support_maximum(n: int, p: float) -> None:
     """
     got = pl.DataFrame({"q": [1.0]}).select(r=Binomial(n, p).ppf(pl.col("q")))["r"].item()
     assert got == float(n) == float(scipy_binom.ppf(1.0, n, p))
+
+
+@pytest.mark.parametrize(("n", "p"), [(50, 1e-8), (1000, 0.999), (100, 1e-6), (500, 1.0 - 1e-9), (10, 0.5)])
+def test_entropy_is_finite_when_a_mass_underflows(n: int, p: float) -> None:
+    """`entropy` is finite wherever some `pmf(k)` rounds to zero.
+
+    `statrs`' `Distribution::entropy` sums `pmf ln pmf` without the `x ln x -> 0` limit, so a single
+    underflowed mass turned the whole sum into `NaN` (`Binomial(50, 1e-8)` and `Binomial(1000, 0.999)`
+    both did, where scipy is finite). A `NaN` moment is the worst kind of defect for a scoring
+    library: it propagates silently.
+    """
+    got = pl.DataFrame({"_": [0]}).select(r=Binomial(n, p).entropy())["r"].item()
+    assert math.isfinite(got)
+    assert got == pytest.approx(float(scipy_binom.entropy(n, p)), rel=1e-8)
+
+
+# The `isf` regression, found only after `make audit`'s survival sweep was allowed below `q = 1e-9`.
+# `isf` was the base-class `ppf(1 - quantile)`, so below `q ~ 1.1e-16` the complement rounded to
+# exactly `1.0`, the `ppf(1) = n` endpoint branch fired, and *every* such quantile answered `n`.
+# It now searches `log_sf(k) <= log(q)` directly (`binomial.rs::inverse_sf`).
+#
+# Oracled by an exact rational sum over the pmf, not by scipy: `scipy.stats.binom.isf` composes the
+# same way and returns `n` at every one of these points. `Fraction` makes the oracle exact for the
+# integer-valued answer, so there is no tolerance to argue about.
+# `scipy` is the last column: recorded, not inferred. Two distinct stories live in this table and a
+# single rule would state one of them falsely. Where scipy answers `n` it has the `1 - q` defect and
+# we are deliberately better; at `(100, 0.001, 1e-16)` the complement still resolves, scipy is right,
+# and it was *our* old search comparing `cdf(k)` against a blunted `1 - q` that answered `7`.
+_DEEP_ISF_CASES = [
+    (10, 0.0, 1e-20, 0.0, 10.0),
+    (10, 0.0, 1e-166, 0.0, 10.0),
+    (100, 0.001, 1e-20, 11.0, 100.0),
+    (100, 0.001, 1e-16, 9.0, 9.0),
+    (100, 0.001, 1e-166, 64.0, 100.0),
+    (20, 0.3, 1e-20, 20.0, 20.0),
+]
+
+
+def _exact_sf(n: int, p: Fraction, k: int) -> Fraction:
+    """`P(X > k)` as an exact rational."""
+    return sum(
+        (Fraction(math.comb(n, j)) * p**j * (1 - p) ** (n - j) for j in range(k + 1, n + 1)),
+        Fraction(0),
+    )
+
+
+def _exact_isf(n: int, p: float, q: float) -> float:
+    """Smallest `k` with `sf(k) <= q`, by exact rational arithmetic over the pmf.
+
+    Total on `[0, n]` without a fallback: `sf(n)` is an empty sum, so `k = n` always qualifies.
+    """
+    prob, target = Fraction(p), Fraction(q)
+    return float(next(k for k in range(n + 1) if _exact_sf(n, prob, k) <= target))
+
+
+@pytest.mark.parametrize(("n", "p", "q", "expected", "scipy_answer"), _DEEP_ISF_CASES, ids=lambda v: str(v)[:10])
+def test_isf_resolves_below_the_complement_resolution(
+    n: int, p: float, q: float, expected: float, scipy_answer: float
+) -> None:
+    """`isf` answers the true support point where `ppf(1 - q)` could only ever answer `n`.
+
+    Asserts scipy's own answer too, so the table stays honest about which rows are a deliberate
+    divergence and which are us catching up. If a future scipy fixes its composition, the last
+    assertion fails and the comment above gets updated rather than quietly becoming false.
+    """
+    assert _exact_isf(n, p, q) == expected, "the hard-coded expectation disagrees with the exact oracle"
+    got = pl.DataFrame({"q": [q]}).select(r=Binomial(n=n, p=p).isf(pl.col("q")))["r"].item()
+    assert got == expected
+    assert float(scipy_binom.isf(q, n, p)) == scipy_answer, "scipy's behaviour here has changed"
+
+
+@pytest.mark.parametrize(("n", "p"), [(10, 0.5), (20, 0.3), (100, 0.001), (5, 0.9)])
+def test_isf_still_matches_scipy_above_the_complement_resolution(n: int, p: float) -> None:
+    """Above `q ~ 1e-15` scipy is a valid oracle, and the fix must not have moved anything there."""
+    quantiles = [1e-12, 1e-9, 1e-6, 0.001, 0.1, 0.5, 0.9, 0.999]
+    got = pl.DataFrame({"q": quantiles}).select(r=Binomial(n=n, p=p).isf(pl.col("q")))["r"].to_list()
+    assert got == [float(scipy_binom.isf(q, n, p)) for q in quantiles]

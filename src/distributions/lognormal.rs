@@ -148,8 +148,15 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
+/// Density as `exp(ln_pdf)`, so the `1 / x` factor is applied in log space.
+///
+/// `statrs`' `pdf` forms `exp(-z^2 / 2)` and *then* divides by `x`, which underflows to `0` deep in
+/// the left tail while the true density is finite and representable: at `LogNormal(0, 5)`,
+/// `x = 1.38e-87` it returns `0.0` against scipy's `2.11e-262`. Composing through the log restores
+/// it, and reproduces scipy bit for bit at both probes the audit flagged. Everywhere else the two
+/// spellings agree to within an ulp.
 fn pdf_value(dist: &LogNormal, v: f64) -> Option<f64> {
-    Some(dist.pdf(v))
+    Some(dist.ln_pdf(v).exp())
 }
 
 fn ln_pdf_value(dist: &LogNormal, v: f64) -> Option<f64> {
