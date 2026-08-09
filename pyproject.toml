@@ -65,6 +65,7 @@ typing = [
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
     "scipy-stubs>=1.15.3.0",
+    {include-group = "audit"},
     {include-group = "benchmarks"},
     {include-group = "testing"},
 ]

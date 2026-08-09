@@ -108,7 +108,10 @@ CATEGORIES: tuple[Category, ...] = ("OK", "PANIC", "UNDERFLOW", "SIGN", "NAN", "
 materially worse than one that returns a wrong number, so it does not belong under `NAN`."""
 
 Params = tuple[float, ...]
-Point = tuple[float, str]
+Origin = Literal["danger", "random", "moment"]
+"""Why a probe exists: a curated danger point, a random sample, or a method with no point at all."""
+
+Point = tuple[float, Origin]
 Oracle = Callable[[Params, float], mp.mpf]
 SeededOracle = Callable[[Params, float, float], mp.mpf]
 """An inverse with no closed form, refined from the library's own answer; see [`solve_monotone`]."""
@@ -162,6 +165,23 @@ def solve_monotone(residual: Callable[[mp.mpf], mp.mpf], seed: float) -> mp.mpf:
         msg = f"secant did not converge ({type(exc).__name__})"
         raise OracleUnavailableError(msg) from exc
     return root
+
+
+def smallest_satisfying(n: int, holds: Callable[[int], bool]) -> mp.mpf:
+    """Smallest `k` in `[0, n]` where a monotone `holds` turns true: the discrete [`solve_monotone`].
+
+    Extracted because `ppf` and `isf` ran this same search with only the predicate differing, and a
+    discrete inverse is the one place no tolerance absorbs an off-by-one (see [`bernoulli_ppf`]):
+    the index arithmetic should exist once rather than twice.
+    """
+    lo, hi = 0, n
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if holds(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return mp.mpf(lo)
 
 
 # Normal and LogNormal oracles.
@@ -584,15 +604,8 @@ def binomial_ppf(params: Params, q: float) -> mp.mpf:
         return mp.mpf(0)
     if q >= 1:
         return mp.mpf(n)
-    lo, hi = 0, n
     target = mp.mpf(q)
-    while lo < hi:
-        mid = lo + (hi - lo) // 2
-        if binomial_cdf(params, float(mid)) >= target:
-            hi = mid
-        else:
-            lo = mid + 1
-    return mp.mpf(lo)
+    return smallest_satisfying(n, lambda k: binomial_cdf(params, float(k)) >= target)
 
 
 def binomial_isf(params: Params, q: float) -> mp.mpf:
@@ -602,15 +615,8 @@ def binomial_isf(params: Params, q: float) -> mp.mpf:
         return mp.mpf(n)
     if q >= 1:
         return mp.mpf(0)
-    lo, hi = 0, n
     target = mp.mpf(q)
-    while lo < hi:
-        mid = lo + (hi - lo) // 2
-        if binomial_sf(params, float(mid)) <= target:
-            hi = mid
-        else:
-            lo = mid + 1
-    return mp.mpf(lo)
+    return smallest_satisfying(n, lambda k: binomial_sf(params, float(k)) <= target)
 
 
 def binomial_entropy(params: Params, _x: float) -> mp.mpf:
@@ -1150,7 +1156,7 @@ class Probe:
     method: str
     params: Params
     x: float | None
-    origin: str
+    origin: Origin
     got: Observation
     expected: str
     category: Category
@@ -1298,7 +1304,7 @@ def audit_method(spec: DistributionSpec, method: MethodSpec, rng: random.Random,
         if params[0] > method.max_first_param:
             continue
         moment = method.points is None
-        points = [(math.nan, "moment")] if moment else method.points(params, rng, samples)  # type: ignore[misc]
+        points: list[Point] = [(math.nan, "moment")] if moment else method.points(params, rng, samples)  # type: ignore[misc]
         observed = evaluate(spec, method, params, [] if moment else [x for x, _ in points])
         for (x, origin), got in zip(points, observed, strict=True):
             point = None if moment else x
@@ -1398,9 +1404,10 @@ def summarise(probes: Sequence[Probe]) -> list[str]:
         "| Distribution | Method | Probes | Worst rel. error | Excused (worst) | " + " | ".join(CATEGORIES),
         "| --- | --- | --- | --- | --- | " + " | ".join("---" for _ in CATEGORIES),
     ]
-    keys = dict.fromkeys((p.distribution, p.method) for p in probes)
-    for distribution, method in keys:
-        group = [p for p in probes if p.distribution == distribution and p.method == method]
+    groups: dict[tuple[str, str], list[Probe]] = {}
+    for probe in probes:
+        groups.setdefault((probe.distribution, probe.method), []).append(probe)
+    for (distribution, method), group in groups.items():
         excused = [p for p in group if p.excused]
         judged = worst_relative(p for p in group if not p.excused)
         absolved = f"{len(excused)} ({worst_relative(excused)})" if excused else "-"
@@ -1433,8 +1440,12 @@ class Run:
     samples: int
 
 
-def write_report(path: Path, run: Run) -> None:
-    """Write the findings report: the controls, what was skipped, the summary, then every defect row."""
+def write_report(path: Path, run: Run) -> int:
+    """Write the findings report: the controls, what was skipped, the summary, then every defect row.
+
+    Returns the non-`OK` count it recorded, which is also the caller's exit gate. Counted once so the
+    number the report claims and the number the process exits on cannot drift apart.
+    """
     probes = run.probes
     defects = [p for p in probes if p.category != "OK"]
     lines = [
@@ -1468,6 +1479,7 @@ def write_report(path: Path, run: Run) -> None:
         )
         lines.extend(p.row() for p in worst_per_group(defects, limit=5))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(defects)
 
 
 KNOWN_HANGS: dict[str, str] = {}
@@ -1532,10 +1544,9 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     covered = {f"{spec.name}.{method.name}" for spec in registry for method in spec.methods}
-    write_report(
+    total = write_report(
         args.output, Run(probes, controls, {k: v for k, v in skipped.items() if k in covered}, args.seed, args.samples)
     )
-    total = sum(p.category != "OK" for p in probes)
     print(f"\n{len(probes)} probes, {total} non-OK. Report written to {args.output}")
     if not probes:
         print("no probes ran, which is a broken sweep and not a clean one")

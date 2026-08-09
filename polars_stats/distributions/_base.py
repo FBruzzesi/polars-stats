@@ -380,14 +380,7 @@ class _UnivariateDistribution(ABC):
     def ppf(self, quantile: float | IntoExprColumn) -> pl.Expr:
         """Percent point function (inverse cdf).
 
-        A `quantile` outside `[0, 1]` yields **null**. That is a guarantee, not an accident of the
-        implementations: it holds for every distribution and both parameter regimes, and is pinned
-        by `tests/property/ppf_domain_test.py`. Null is the right answer rather than an error
-        because a quantile column is data, so one bad row must not fail the whole frame, and rather
-        than `NaN` because `NaN` is reserved for a `NaN` *input* (below).
-
-        The closed endpoints are in range and never null: `ppf(0)` and `ppf(1)` return the
-        distribution's support bounds, which may be infinite (`Normal.ppf(0) = -inf`).
+        A `quantile` outside `[0, 1]` yields **null**.
 
         Nulls are propagated and a `NaN` quantile yields `NaN`, matching scipy.
         """
@@ -413,9 +406,9 @@ class _UnivariateDistribution(ABC):
         `1 - quantile` resolves to `1.1e-16` absolute, so the tail mass a subclass is asked to invert
         is quantised to `1.1e-16 / quantile` relative before the inverse ever runs. Like `_cdf().log()`
         for `_log_cdf`, this is convenience rather than an implementation: inheriting it is a decision
-        to justify. The forms that worked here, in rough order of preference, are a closed form
-        (`Uniform`, `Bernoulli`, `Exponential`), a symmetry (`Normal`, and `LogNormal` by composing
-        it), and entering an existing two-sided solve from the other tail.
+        to justify. The forms that worked here are a closed form (`Uniform`, `Bernoulli`, `Exponential`),
+        a symmetry (`Normal`, and `LogNormal` by composing it), and entering an existing two-sided
+        solve from the other tail.
 
         Being integer-valued or piecewise-linear does *not* make a distribution safe here, which was
         the tempting wrong conclusion: `Bernoulli(1e-17).isf(1e-20)` answered `0.0` where the answer
