@@ -1,8 +1,8 @@
 """Bit-equality of the constant-parameter value-keyed fast path against the per-row path.
 
 Constant scalar parameters route the value-keyed methods (density, log-density, cdf, log-cdf, sf,
-log-sf, ppf) through a dedicated ``<name>_<method>_scalar`` plugin: parameters are validated once and passed as
-kwargs, with only the value column crossing FFI. Column parameters take the general per-row plugin.
+log-sf, ppf, isf) through a dedicated ``<name>_<method>_scalar`` plugin: parameters are validated once and
+passed as kwargs, with only the value column crossing FFI. Column parameters take the general per-row plugin.
 In Rust both plugins call the same named per-method body, so for any parameterisation the two paths
 must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]`` contract. A
 divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
@@ -72,6 +72,7 @@ def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.D
         (values, scalar.sf(x), per_row.sf(x)),
         (values, scalar.log_sf(x), per_row.log_sf(x)),
         (quantiles, scalar.ppf(q), per_row.ppf(q)),
+        (quantiles, scalar.isf(q), per_row.isf(q)),
     ]
     for frame, fast_expr, per_row_expr in cases:
         fast = frame.select(r=fast_expr)["r"]

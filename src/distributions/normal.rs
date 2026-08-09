@@ -211,6 +211,30 @@ fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
     }
 }
 
+/// Inverse survival function, `mu + sigma * sqrt(2) * erfc_inv(2q)`, solved on `q` rather than on
+/// its complement.
+///
+/// Deliberately not `ppf(1 - q)`, the base-class default: that composes `statrs`' `inverse_cdf`
+/// into `erfc_inv(2 - 2q)`, whose argument resolves to `2.2e-16` absolute, so the tail mass is
+/// quantised before the inverse runs. The symmetry `z_(1-q) = -z_q` puts the sign on the scale
+/// instead, leaving the exact power-of-two `2q` as the only thing the inverse sees.
+///
+/// Contract mirrors [`ppf_value`]: `null` outside `[0, 1]`, closed endpoints to the infinite tails
+/// (`isf(0) = +inf`, `isf(1) = -inf`, the reverse of `ppf`). `pub(crate)` so `LogNormal` composes it.
+pub(crate) fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
+    if !(0.0..=1.0).contains(&q) {
+        None
+    } else if q == 0.0 {
+        Some(f64::INFINITY)
+    } else if q == 1.0 {
+        Some(f64::NEG_INFINITY)
+    } else {
+        let mu = dist.mean().expect("Normal always has a mean");
+        let sigma = dist.std_dev().expect("Normal always has a std_dev");
+        Some(mu + sigma * SQRT_2 * erf::erfc_inv(2.0 * q))
+    }
+}
+
 /// Element-wise pdf via `statrs` `Continuous::pdf`. See [`value_keyed`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn normal_pdf(inputs: &[Series]) -> PolarsResult<Series> {
@@ -254,6 +278,13 @@ fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
+/// Element-wise isf (inverse survival function) via the symmetry form, not `ppf(1 - q)`.
+/// See [`isf_value`] for why, and for the endpoint and out-of-range contract.
+#[polars_expr(output_type=Float64)]
+fn normal_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, isf_value)
+}
+
 value_keyed_scalar_plugins! {
     struct NormalParamsKwargs { mu: f64, sigma: f64 }
 
@@ -267,5 +298,6 @@ value_keyed_scalar_plugins! {
         fn normal_ln_cdf_scalar => ln_cdf_value;
         fn normal_ln_sf_scalar => ln_sf_value;
         fn normal_ppf_scalar => ppf_value;
+        fn normal_isf_scalar => isf_value;
     }
 }

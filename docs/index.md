@@ -35,7 +35,8 @@ boundary, and realigning the result through later joins and filters is your prob
 planner can see. [Why polars-stats](explanation/index.md) has the full comparison.
 
 The math runs in Rust on top of the [`statrs`](https://docs.rs/statrs) crate; the Python layer is a thin, typed surface
-of distribution classes.
+of distribution classes. [Numerical accuracy](explanation/accuracy.md) covers how that is checked and where the known
+limits are.
 
 ## Quick example
 

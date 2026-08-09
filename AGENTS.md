@@ -98,28 +98,30 @@ What matters specifically for an agent:
 * **Don't use the base-class `_log_pdf` / `_log_pmf` defaults if statrs has a native `ln_pdf` / `ln_pmf`.**
    The default is `_pdf(x).log()`, which underflows in the tails. Override the hook to bind the native log version.
 
-* **`_log_cdf` / `_log_sf` have no native shortcut, and their defaults underflow.** Unlike `ln_pdf`, statrs
-   exposes no `ln_cdf` / `ln_sf` (its `ContinuousCDF` / `DiscreteCDF` are `cdf` / `sf` / `inverse_cdf` only) and
-   Polars has no `erf`, so there is no one-line bind. The base defaults `_cdf().log()` / `_sf().log()` return
-   `-inf` once `cdf` / `sf` round to `0` in the tail (Normal: past ~38 sigma), the exact regime `log_sf` exists
-   to serve. For a distribution used in tail work, override with either: a `log1p` / exact closed form
-   (`Exponential._log_sf` = `-rate * x`, `Uniform._log_sf`), or a special-function port bound through the
-   `value_keyed` machinery (`normal.rs` `ln_erfc` -> `normal_ln_cdf` / `normal_ln_sf`, wired exactly like
-   `ln_pdf`). A related distribution can reuse an existing port: `LogNormal` composes the underlying normal's
-   `ln_erfc` form with `ln(x)` (statrs `LogNormal` hides its `location` / `scale`, so build the underlying
-   `Normal` from `(mu, sigma)` rather than reading them back off the `LogNormal`). Add a scipy-parity case
-   probing *beyond* the underflow threshold (e.g. ~40 sigma for Normal, not merely `sf ~ 1e-300` where the
-   naive path is still finite), the regime the finite grids miss. A statrs-backed family with no elementary
-   tail can port its special function to log space instead: keep the underflow-prone prefactor in logs and
-   reuse statrs's own series / continued-fraction evaluation verbatim; note scipy's `logcdf` / `logsf` may be
-   naive there too, so the parity oracle past scipy's underflow is an independent series. The Gamma / Beta
-   ports (`ln_gamma_lr` / `ln_gamma_ur`, `ln_beta_reg`) are the reference implementations; they live on the
-   pending Gamma branch until it merges. Binomial still carries the naive default, documented.
+* **Numerical stability is its own discipline, and it has a section.**
+   [Contributing > Numerical stability](./docs/contributing.md#numerical-stability) is canonical: read it
+   before touching any `log_*`, `ppf` or `isf` hook, and do not restate it here. Agent-specific additions:
 
-* **`statrs` `inverse_cdf` is binary-search for several distributions** (Chi, Bernoulli, Binomial, Poisson,
-   Geometric, NegBinom, Hypergeom, DiscreteUniform). Document the tolerance loosening (`1e-6`) in the relevant
-   test. When that accuracy is not enough, a dedicated log-space inverse is the pattern (the pending Gamma
-   branch's `inv_gamma_lr` / `inv_gamma_ur`, ~1e-14 relative in both tails, reusable for ChiSquared and friends).
+    * **`_log_cdf` / `_log_sf` have no native shortcut.** statrs exposes no `ln_cdf` / `ln_sf` (its
+      `ContinuousCDF` / `DiscreteCDF` are `cdf` / `sf` / `inverse_cdf` only) and Polars has no `erf`, so
+      there is no one-line bind. Override with a `log1p` / exact closed form, or a special-function port
+      wired through the `value_keyed` machinery exactly like `ln_pdf`. Reuse an existing port rather than
+      deriving a new one: `LogNormal` composes the normal's `ln_erfc` with `ln(x)` (statrs `LogNormal` hides
+      its `location` / `scale`, so build the underlying `Normal` from `(mu, sigma)` rather than reading them
+      back off the `LogNormal`).
+    * **`_isf` is a hook, not a derived quantity.** The base-class `ppf(1 - quantile)` throws the tail mass
+      away before your inverse runs, so it is only correct where `q` is not tiny. `_base.py::_isf` records
+      what each shipped distribution needed instead.
+    * **Add a parity case probing *beyond* the underflow threshold** (~40 sigma for Normal, not merely
+      `sf ~ 1e-300` where the naive path is still finite), the regime the finite grids miss. The same applies
+      to `isf`: probe `q` down to `1e-300`.
+    * **`statrs` `inverse_cdf` cannot be trusted without checking.** It is a binary search for the discrete
+      families (Chi, Bernoulli, Binomial, Poisson, Geometric, NegBinom, Hypergeom, DiscreteUniform); document
+      the `1e-6` tolerance loosening in the relevant test. Where it is *not* a binary search it has been
+      wrong in several ways, including relatively wrong by `6e-3` for Gamma in the low-quantile tail (8
+      bisections plus 4 unguarded Newton steps), and panicking, hanging and saturating for Beta (AS 64, whose
+      Newton step is unguarded and whose step-halving loop is unbounded). A bounded solve with every Newton
+      proposal clamped into a bisection bracket is the pattern to copy.
 
 * **scipy reparam.** Several distributions need a parameter mapping at the docstring level (Exp, Gamma, Pareto,
    LogNormal, Weibull, Uniform, Binomial, DiscreteUniform). Spell out the scipy equivalent so test writers know what to

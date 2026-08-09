@@ -1,6 +1,9 @@
 SHELL=/bin/bash
 
-.PHONY: lint test benchmark typing install install-release
+.PHONY: audit lint test benchmark typing install install-release
+
+audit:
+	uv run --group audit tools/accuracy_audit.py
 
 lint:
 	uvx prek run --all-files ruff-format ruff-check rumdl ryl

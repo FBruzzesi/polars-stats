@@ -194,6 +194,18 @@ fn ppf_value(dist: &LogNormal, q: f64) -> Option<f64> {
     }
 }
 
+/// Inverse survival function, the underlying normal's [`normal::isf_value`] exponentiated.
+///
+/// Not `ppf(1 - q)`: see [`normal::isf_value`] for why the complement is unrecoverable for a tiny
+/// `q`. Composing through `exp` turns the normal's *absolute* error at the quantile into a
+/// *relative* one here, so a large `sigma` amplifies it.
+///
+/// The endpoints follow from the normal's: `isf(0) = exp(+inf) = +inf` and `isf(1) = exp(-inf) = 0`,
+/// which are the support boundaries `ppf` maps in the other order.
+fn isf_value(norm: &Normal, q: f64) -> Option<f64> {
+    normal::isf_value(norm, q).map(f64::exp)
+}
+
 /// Element-wise pdf via `statrs` `Continuous::pdf`; `0` for `value <= 0` (outside the support).
 /// See [`value_keyed`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
@@ -242,6 +254,13 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
+/// Element-wise isf via the underlying normal's symmetry form, not `ppf(1 - q)`.
+/// See [`isf_value`] for why, and for the endpoint and out-of-range contract.
+#[polars_expr(output_type=Float64)]
+fn lognormal_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_norm(inputs, isf_value)
+}
+
 value_keyed_scalar_plugins! {
     struct LogNormalParamsKwargs { mu: f64, sigma: f64 }
 
@@ -270,5 +289,6 @@ value_keyed_scalar_plugins! {
     methods {
         fn lognormal_ln_cdf_scalar => ln_cdf_value;
         fn lognormal_ln_sf_scalar => ln_sf_value;
+        fn lognormal_isf_scalar => isf_value;
     }
 }

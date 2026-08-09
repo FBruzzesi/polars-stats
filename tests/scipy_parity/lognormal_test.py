@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
+import sys
 from math import exp
 
 import numpy as np
 import polars as pl
 import pytest
+from scipy import special as scipy_special
 from scipy.stats import lognorm as scipy_lognorm
 
 from polars_stats import LogNormal
@@ -116,3 +119,70 @@ def test_log_near_one_side_keeps_relative_precision(mu: float, sigma: float) -> 
     )
     np.testing.assert_allclose(got["log_cdf"].to_numpy(), frozen.logcdf(upper), rtol=1e-9, atol=0.0)
     np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(lower), rtol=1e-9, atol=0.0)
+
+
+# The `isf` regression. `isf` was the base-class `ppf(1 - quantile)` until X5; it is now the
+# underlying normal's symmetry form exponentiated, which forms no complement.
+#
+# Oracled by `scipy.special.ndtri` under the symmetry `z_(1-q) = -z_q`, **not** by
+# `scipy.stats.lognorm.isf`: scipy composes the same way, so it carries the same defect and cannot
+# referee it. Composing through `exp` turns the normal's absolute quantile error into a relative one
+# here, which is why a large `sigma` made this the worst `isf` in the library (`1.1e-07` at
+# `LogNormal(0, 20).isf(1e-9)`).
+_ISF_DEEP_QUANTILES = [1e-300, 1e-100, 1e-40, 1e-16, 1e-9, 1e-8, 1e-4, 0.3, 0.5, 0.9]
+
+
+@pytest.mark.parametrize(("mu", "sigma"), [(0.0, 1.0), (0.0, 20.0), (3.0, 2.0), (-5.0, 0.25)], ids=str)
+def test_isf_keeps_relative_precision_across_300_decades(mu: float, sigma: float) -> None:
+    """`isf` holds full relative precision arbitrarily deep, where it used to degrade as `1.1e-16 / q`.
+
+    Asserted in log space, with an *absolute* tolerance: the values here span 600 decades, and an
+    absolute error in the log is exactly a relative error in the value, so `atol=1e-12` on the log
+    states the `1e-12` relative claim uniformly. Comparing the values directly would also overflow
+    the oracle at `sigma = 20`, where the true `isf(1e-300)` exceeds float64 and `inf` is correct.
+    """
+    got = pl.DataFrame({"q": _ISF_DEEP_QUANTILES}).select(r=LogNormal(mu=mu, sigma=sigma).isf(pl.col("q")))["r"]
+    expected_log = mu - sigma * scipy_special.ndtri(np.array(_ISF_DEEP_QUANTILES))
+    representable = expected_log < math.log(sys.float_info.max)
+    assert np.isfinite(got.to_numpy()[representable]).all(), "isf saturated where the answer is representable"
+    np.testing.assert_allclose(np.log(got.to_numpy()[representable]), expected_log[representable], rtol=0.0, atol=1e-12)
+
+
+# The `std` regression: `std` inherited `variance().sqrt()`, and so inherited an overflow the square
+# root would have undone. The variance genuinely exceeds float64 above `sigma ~ 18.8`, but the
+# standard deviation only does above `sigma ~ 26.6`.
+#
+# Oracled by hard-coded 50-digit `mpmath` values, not by scipy: `scipy.stats.lognorm.std` composes
+# through the variance too and returns `inf` at every one of these points.
+_LOGSPACE_STD_CASES = [
+    (0.0, 19.0, 6.0298702490003524e156),
+    (0.0, 20.0, 5.221469689764144e173),
+    (2.0, 25.0, 2.0074288128646431e272),
+]
+
+
+@pytest.mark.parametrize(("mu", "sigma", "expected"), _LOGSPACE_STD_CASES, ids=lambda v: str(v)[:10])
+def test_std_survives_where_the_variance_overflows(mu: float, sigma: float, expected: float) -> None:
+    """`std` is finite and correct where `variance()` is legitimately `inf`."""
+    frame = pl.DataFrame({"_": [0]})
+    assert math.isinf(frame.select(r=LogNormal(mu=mu, sigma=sigma).variance())["r"].item()), (
+        "variance no longer overflows here, so this case no longer tests anything"
+    )
+    got = frame.select(r=LogNormal(mu=mu, sigma=sigma).std())["r"].item()
+    assert math.isfinite(got), "std inherited the variance overflow"
+    assert got == pytest.approx(expected, rel=1e-14)
+
+
+# The `variance` regression, same identity from the other end: `exp(sigma**2) - 1` cancels for a
+# small `sigma`, losing 8 of 16 digits at `sigma = 1e-4`. Spelled `2 * exp(t/2) * sinh(t/2)` instead,
+# which is `expm1(t)` exactly (polars has no `expm1`). Oracled by `math.expm1`, which does have one.
+@pytest.mark.parametrize("sigma", [1e-6, 1e-4, 1e-3, 0.01, 0.5])
+def test_variance_and_std_keep_precision_for_a_tiny_sigma(sigma: float) -> None:
+    """The moments hold their `1e-12` claim where the naive difference of exponentials cancels."""
+    got = pl.DataFrame({"_": [0]}).select(
+        variance=LogNormal(mu=0.0, sigma=sigma).variance(),
+        std=LogNormal(mu=0.0, sigma=sigma).std(),
+    )
+    expected_variance = math.expm1(sigma**2) * math.exp(sigma**2)
+    assert got["variance"].item() == pytest.approx(expected_variance, rel=1e-14)
+    assert got["std"].item() == pytest.approx(math.sqrt(expected_variance), rel=1e-14)

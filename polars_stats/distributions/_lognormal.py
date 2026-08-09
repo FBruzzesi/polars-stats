@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 _TWO_PI_E = math.tau * math.e
 """2 * pi * e, the constant inside the log-normal's differential entropy `mu + 0.5 * log(2 * pi * e * sigma^2)`."""
 
+_LN_2 = math.log(2.0)
+"""`log(2)`, the constant in the `expm1` identity below."""
+
 
 class LogNormal(ContinuousDistribution):
     """Log-normal distribution: ``X`` such that ``ln(X)`` is ``Normal(mu, sigma)``.
@@ -82,10 +85,7 @@ class LogNormal(ContinuousDistribution):
         return self._value_plugin("lognormal_ln_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
-        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
-
-        ``isf`` inherits the base-class default ``ppf(1 - quantile)`` over the native ``ppf``.
-        """
+        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail)."""
         return self._value_plugin("lognormal_sf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
@@ -104,13 +104,47 @@ class LogNormal(ContinuousDistribution):
         """
         return self._value_plugin("lognormal_ppf", quantile)
 
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """Inverse survival function, the underlying normal's symmetry form exponentiated.
+
+        Overrides the base-class default ``ppf(1 - quantile)``. See ``Normal._isf``; composing
+        through ``exp`` turns the normal's absolute quantile error into a relative one here, so a
+        large ``sigma`` amplifies it.
+        """
+        return self._value_plugin("lognormal_isf", quantile)
+
+    @property
+    def _half_sigma_sq(self) -> pl.Expr:
+        """``sigma ** 2 / 2``, the argument both moment identities below are written in."""
+        return self._sigma**2 / 2
+
     def mean(self) -> pl.Expr:
         """Expected value, ``exp(mu + sigma ** 2 / 2)``."""
-        return self._moment((self._mu + self._sigma**2 / 2).exp())
+        return self._moment((self._mu + self._half_sigma_sq).exp())
 
     def variance(self) -> pl.Expr:
-        """Variance, ``(exp(sigma ** 2) - 1) * exp(2 * mu + sigma ** 2)``."""
-        return self._moment(((self._sigma**2).exp() - 1) * (2 * self._mu + self._sigma**2).exp())
+        """Variance, ``(exp(sigma ** 2) - 1) * exp(2 * mu + sigma ** 2)``.
+
+        The leading factor is spelled ``2 * exp(t / 2) * sinh(t / 2)``, which is ``expm1(t)``
+        identically. Polars has no ``expm1``, and the literal ``exp(t) - 1`` cancels for a small
+        ``sigma``. The identity holds full precision on both sides and overflows no earlier than the
+        result does.
+        """
+        half = self._half_sigma_sq
+        return self._moment(2 * half.exp() * half.sinh() * (2 * self._mu + self._sigma**2).exp())
+
+    def std(self) -> pl.Expr:
+        """Standard deviation, ``exp(0.5 * log(exp(sigma ** 2) - 1) + mu + sigma ** 2 / 2)``.
+
+        Overrides the base-class ``variance().sqrt()``, which inherits an overflow the square root
+        would have undone: the variance genuinely exceeds ``f64`` above ``sigma ~ 18.8`` (so ``inf``
+        is right *there*), but the standard deviation only does above ``sigma ~ 26.6``.
+
+        Consequence worth knowing: ``std() ** 2`` and ``variance()`` are no longer interchangeable
+        at a large ``sigma``, because one is representable and the other is not.
+        """
+        half = self._half_sigma_sq
+        return self._moment((0.5 * (_LN_2 + half + half.sinh().log()) + self._mu + half).exp())
 
     def median(self) -> pl.Expr:
         """Median, ``exp(mu)``."""

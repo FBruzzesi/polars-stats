@@ -237,15 +237,18 @@ const PPF_CDF_TOL: f64 = 1e-12;
 ///
 /// This is the inverse-cdf statrs documents for `Binomial` (a search over the CDF), reimplemented
 /// here because `statrs`' generic `DiscreteCDF::inverse_cdf` panics for small `n` (it `unwrap`s a
-/// bisection that returns `None`). The comparison carries [`PPF_CDF_TOL`] so a quantile exactly on a
-/// cdf step is not pushed to the next support point by the cdf's last-ULP error. `q == 0` returns the
-/// support minimum `0`; `q == 1` returns `n`.
+/// bisection that returns `None`).
+///
+/// The step slack is **relative** ([`PPF_CDF_TOL`] scaled by `q`), not absolute: an absolute slack
+/// exceeds every quantile below it, so `cdf(0) + tol >= q` held for any `q <= 1e-12` and the search
+/// collapsed to `0`. The caller maps the closed endpoints, so `q` here is interior.
 fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
+    let threshold = q * (1.0 - PPF_CDF_TOL);
     let mut lo = 0u64;
     let mut hi = dist.n();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if dist.cdf(mid) + PPF_CDF_TOL >= q {
+        if dist.cdf(mid) >= threshold {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -257,9 +260,16 @@ fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
 /// A quantile outside `[0, 1]` yields `null`. At the endpoints this returns the support bounds
 /// (`ppf(0) = 0`, `ppf(1) = n`); scipy's below-support sentinel `ppf(0) = -1` is not reproduced, so
 /// parity comparisons restrict to interior quantiles.
+///
+/// `q == 1` is mapped here rather than left to the search: `cdf(k)` reaches `1.0` a long way below
+/// `n` once the upper tail underflows, so the search would stop at the first such `k`.
 fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
+    } else if q == 0.0 {
+        Some(0.0)
+    } else if q == 1.0 {
+        Some(dist.n() as f64)
     } else {
         Some(inverse_cdf(dist, q) as f64)
     }

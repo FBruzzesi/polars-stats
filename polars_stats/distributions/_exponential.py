@@ -15,6 +15,13 @@ from polars_stats.distributions._base import (
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn
 
+_CDF_SINH_MAX_HALF = 0.5
+"""Crossover of `Exponential._cdf`, in units of `rate * x / 2`.
+
+Above `rate * x = 1` the plain `1 - exp(-t)` is already exact, and the `sinh` identity that replaces
+it below would overflow past `t ~ 1420`. The two branches agree to `1e-16` here.
+"""
+
 
 class Exponential(ContinuousDistribution):
     """Exponential distribution with rate ``rate`` (λ).
@@ -59,9 +66,17 @@ class Exponential(ContinuousDistribution):
         return self._checked("exponential_rate", self._rate)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """``rate * exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
+        """``rate * exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``, keeping the subnormal range exact.
+
+        Reassociated as ``(rate * exp(-rate * x / 2)) * exp(-rate * x / 2)``: the same product with
+        the rounding moved to the end. Written literally, ``exp(-rate * x)`` rounds into the
+        gradual-underflow range while the scale is still to be applied, and the multiply then
+        magnifies what the subnormal threw away. Halving the exponent keeps the intermediate normal,
+        so only the final multiply underflows, at the cost of one multiply and no branch.
+        """
         r = self._checked_rate
-        return pl.when(value >= 0).then(r * (-r * value).exp()).otherwise(0.0)
+        half = (-r * value / 2).exp()
+        return pl.when(value >= 0).then((r * half) * half).otherwise(0.0)
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
         """``log(rate) - rate * x`` on ``x >= 0``, ``-inf`` for ``x < 0``."""
@@ -69,21 +84,33 @@ class Exponential(ContinuousDistribution):
         return pl.when(value >= 0).then(r.log() - r * value).otherwise(float("-inf"))
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
-        r = self._checked_rate
-        return pl.when(value >= 0).then(1 - (-r * value).exp()).otherwise(0.0)
+        """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``, keeping the left tail exact.
+
+        Polars exposes no ``expm1``, and ``1 - exp(-t)`` cancels to ``0`` below ``t ~ 1.1e-16``.
+        The identity ``1 - exp(-t) = 2 exp(-t / 2) sinh(t / 2)`` has no subtraction and is spellable
+        with what Polars does expose, so the small branch keeps full relative precision. ``sinh``
+        overflows above ``t ~ 1420``, hence the split at ``t = 1``, where the plain form is already
+        exact; the two agree to ``1e-16`` at the crossover.
+        """
+        half = self._checked_rate * value / 2
+        return (
+            pl.when(value < 0)
+            .then(0.0)
+            .when(half < _CDF_SINH_MAX_HALF)
+            .then(2 * (-half).exp() * half.sinh())
+            .otherwise(1 - (-2 * half).exp())
+        )
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """``log(1 - exp(-rate * x))`` via ``log1p(-sf)``; ``-inf`` for ``x <= 0``.
+        """``log(cdf)`` in the left tail, ``log1p(-sf)`` in the right; ``-inf`` for ``x <= 0``.
 
-        Overrides the base ``log(cdf)``, which loses relative precision as ``cdf -> 1`` (the deep
-        right tail, where ``log_cdf -> 0``): ``cdf`` rounds to ~1 and its log to a tiny, inaccurate
-        value. ``log1p(-sf)`` keeps full precision there, since ``sf = exp(-rate * x)`` is small and
-        ``log1p`` is accurate near 0. Polars exposes no ``expm1``, so the ``cdf -> 0`` left tail is no
-        more accurate than the base (the cancellation in ``1 - exp(-rate * x)`` is unavoidable in pure
-        Polars); that regime keeps full precision in ``cdf`` / ``sf`` instead.
+        As ``cdf -> 1`` the cdf rounds to ~1 and its log to a tiny, inaccurate value, so that side
+        goes through ``log1p`` of the small ``sf``. As ``cdf -> 0`` the log is well conditioned and
+        ``_cdf`` is exact there, so that side is simply its log.
         """
-        return (-self._sf(value)).log1p()
+        return (
+            pl.when(self._checked_rate * value < 1).then(self._cdf(value).log()).otherwise((-self._sf(value)).log1p())
+        )
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """``exp(-rate * x)`` on ``x >= 0``, ``1`` for ``x < 0`` (closed form, accurate in the upper tail)."""
@@ -96,10 +123,28 @@ class Exponential(ContinuousDistribution):
         return pl.when(value >= 0).then(-r * value).otherwise(0.0)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log(1 - q) / rate``; null for ``q`` outside ``[0, 1]``."""
+        """``-log1p(-q) / rate``; null for ``q`` outside ``[0, 1]``.
+
+        Through ``log1p`` rather than ``log(1 - q)``: the latter rounds ``1 - q`` to exactly ``1``
+        below ``q ~ 1.1e-16`` and collapses to ``-0.0``. The negation is written ``0.0 - q`` so an
+        unsigned quantile column promotes to ``Float64`` (polars rejects ``neg`` on an unsigned
+        dtype).
+        """
         return (
             pl.when(quantile.is_between(0, 1))
-            .then(-(1 - quantile).log() / self._checked_rate)
+            .then(-(0.0 - quantile).log1p() / self._checked_rate)
+            .otherwise(pl.lit(None, dtype=pl.Float64()))
+        )
+
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """``-log(q) / rate``, the exact inverse survival function.
+
+        Overrides the base ``ppf(1 - quantile)``, which forms the complement and then undoes it.
+        The closed form never builds it, and is exact for every ``q`` in ``(0, 1]``.
+        """
+        return (
+            pl.when(quantile.is_between(0, 1))
+            .then(-quantile.log() / self._checked_rate)
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
@@ -110,6 +155,14 @@ class Exponential(ContinuousDistribution):
     def variance(self) -> pl.Expr:
         """Variance, ``1 / rate**2``."""
         return 1 / self._checked_rate**2
+
+    def std(self) -> pl.Expr:
+        """Standard deviation, ``1 / rate``, the same expression as ``mean``.
+
+        Overrides the base-class ``variance().sqrt()``, which squares the rate and then unsquares
+        it: the round trip saturates about 300 decades before ``1 / rate`` does.
+        """
+        return 1 / self._checked_rate
 
     def median(self) -> pl.Expr:
         """Median, ``log(2) / rate``."""

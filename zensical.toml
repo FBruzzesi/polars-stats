@@ -32,6 +32,7 @@ nav = [
     { "Home" = "explanation/index.md" },
     { "Architecture" = "explanation/architecture.md" },
     { "Design notes" = "explanation/design.md" },
+    { "Numerical accuracy" = "explanation/accuracy.md" },
   ] },
   { "Contributing" = "contributing.md" },
 ]

@@ -87,6 +87,14 @@ shape: (2, 4)
 
 Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, without leaving the lazy engine.
 
+## Numerical accuracy
+
+The maths runs on [`statrs`](https://docs.rs/statrs), and `make audit` sweeps every method against
+an [`mpmath`](https://mpmath.org) oracle at 50 digits, including inputs many decades past where
+`scipy` itself saturates. Use `log_cdf` / `log_sf` rather than the linear pair for tail work, and
+`isf(q)` rather than `ppf(1 - q)`. The known limits are listed in
+[Numerical accuracy](https://fbruzzesi.github.io/polars-stats/explanation/accuracy/).
+
 ## Installation
 
 ```bash

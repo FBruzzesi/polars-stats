@@ -71,6 +71,7 @@ Method = Literal[
     "sf",
     "log_sf",
     "ppf",
+    "isf",
     "mean",
     "variance",
     "std",
@@ -95,13 +96,19 @@ ALL_METHODS: tuple[Method, ...] = (
     "sf",
     "log_sf",
     "ppf",
+    "isf",
     "mean",
     "variance",
     "std",
     "entropy",
 )
 
-_VALUE_METHODS: frozenset[Method] = frozenset({"density", "log_density", "cdf", "log_cdf", "sf", "log_sf", "ppf"})
+_INVERSE_METHODS: frozenset[Method] = frozenset({"ppf", "isf"})
+"""Value-keyed methods whose input is a quantile rather than a support point; see `_eval_inputs`."""
+
+_VALUE_METHODS: frozenset[Method] = frozenset(
+    {"density", "log_density", "cdf", "log_cdf", "sf", "log_sf", *_INVERSE_METHODS}
+)
 
 _MOMENT_METHODS: frozenset[Method] = frozenset({"mean", "variance", "std", "entropy"})
 """Parameter-only moments: no value column, one expression evaluated over the length frame."""
@@ -277,10 +284,12 @@ def _eval_inputs(comp: Comparison, config: RunConfig, method: Method) -> np.ndar
     """Deterministic evaluation inputs for a value-keyed method, shared by both sides.
 
     Derived only from `(comp, config)` so the two sides (and the isolated memory subprocesses)
-    regenerate the identical array. `ppf` gets uniform quantiles from `[0, 1)`; the other methods
-    get the distribution's own seeded draws, which cover the support with realistic density.
+    regenerate the identical array. The inverses (`ppf`, `isf`) get uniform quantiles from `[0, 1)`;
+    the other methods get the distribution's own seeded draws, which cover the support with realistic
+    density. Feeding an inverse the support draws instead puts almost every row on the
+    null-outside-`[0, 1]` path, which measures the guard rather than the algorithm.
     """
-    if method == "ppf":
+    if method in _INVERSE_METHODS:
         return np.random.default_rng(config.seed).uniform(0.0, 1.0, size=config.rows)
     return np.asarray(comp.scipy_frozen.rvs(size=config.rows, random_state=config.seed), dtype=np.float64)
 

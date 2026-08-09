@@ -78,10 +78,7 @@ class Normal(ContinuousDistribution):
         return self._value_plugin("normal_ln_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
-        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
-
-        ``isf`` inherits the base-class default ``ppf(1 - quantile)`` over the native ``ppf``.
-        """
+        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail)."""
         return self._value_plugin("normal_sf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
@@ -100,6 +97,15 @@ class Normal(ContinuousDistribution):
         """
         return self._value_plugin("normal_ppf", quantile)
 
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """Inverse survival function via the symmetry form ``mu + sigma * sqrt(2) * erfc_inv(2q)``.
+
+        Overrides the base-class default ``ppf(1 - quantile)``, which quantises a small quantile to
+        the ``1.1e-16`` resolution of its complement before the inverse runs. Same domain contract
+        as ``ppf``, with the endpoints reversed (``isf(0) = +inf``, ``isf(1) = -inf``).
+        """
+        return self._value_plugin("normal_isf", quantile)
+
     def mean(self) -> pl.Expr:
         """Expected value, the ``mu`` location parameter."""
         return self._moment(self._mu)
@@ -107,6 +113,14 @@ class Normal(ContinuousDistribution):
     def variance(self) -> pl.Expr:
         """Variance, ``sigma ** 2``."""
         return self._moment(self._sigma**2)
+
+    def std(self) -> pl.Expr:
+        """Standard deviation, the ``sigma`` scale parameter.
+
+        Overrides the base-class ``variance().sqrt()``, which squares ``sigma`` and then unsquares
+        it: the round trip saturates across roughly 300 decades where ``sigma`` is the answer.
+        """
+        return self._moment(self._sigma)
 
     def median(self) -> pl.Expr:
         """Median, equal to the ``mu`` location parameter."""

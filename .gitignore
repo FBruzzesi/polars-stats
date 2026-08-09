@@ -41,3 +41,14 @@ site/
 
 # MacOS
 .DS_Store
+
+# Local planning docs
+tasks/
+plans/
+statrs-issues/
+
+# Numerical precision summary
+audit-findings.md
+
+# Local clone of the upstream crate, for cross-project work. Never committed.
+statrs/
