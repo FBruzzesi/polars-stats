@@ -32,7 +32,7 @@ on:
 permissions:
   contents: read
 
-# Make sure CI fails on all warnings, including Clippy lints
+# Make sure CI fails on any warning, including Clippy lints
 env:
   RUSTFLAGS: "-Dwarnings"
 
