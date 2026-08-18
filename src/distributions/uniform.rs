@@ -5,7 +5,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 use statrs::distribution::Uniform;
 
-use crate::distributions::param_validator;
+use crate::distributions::validate_params_binary;
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -139,19 +139,23 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
     )
 }
 
-param_validator! {
-    /// Element-wise support width `max - min`, validating the parameterisation.
-    ///
-    /// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
-    /// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
-    /// (surfaces as a `ComputeError`).
-    ///
-    /// Every closed-form Python method derives from this width, so routing it through Rust is what
-    /// lets them report an invalid parameterisation consistently with `uniform_sample`, instead of
-    /// silently producing a negative or infinite result.
-    fn uniform_range;
-    params = (min: DataType::Float64 => f64, max: DataType::Float64 => f64);
-    build = build_dist;
-    returns = max - min;
-    output_name = inputs[0];
+/// Element-wise support width `max - min`, validating the parameterisation.
+///
+/// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
+/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
+/// (surfaces as a `ComputeError`).
+///
+/// Every closed-form Python method derives from this width, so routing it through Rust is what
+/// lets them report an invalid parameterisation consistently with `uniform_sample`, instead of
+/// silently producing a negative or infinite result.
+#[polars_expr(output_type=Float64)]
+fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
+    let min = inputs[0].cast(&DataType::Float64)?;
+    let max = inputs[1].cast(&DataType::Float64)?;
+    let name = inputs[0].name().clone();
+
+    validate_params_binary(min.f64()?, max.f64()?, name, |lo, hi| {
+        build_dist(lo, hi)?;
+        Ok(hi - lo)
+    })
 }

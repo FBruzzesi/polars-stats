@@ -5,7 +5,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
-use crate::distributions::param_validator;
+use crate::distributions::validate_params_unary;
 use crate::rng::{
     binary_param_rows, sample_scalar_plugin, samples_f64_output, samples_per_row, SampleKwargs,
     SamplesKwargs,
@@ -24,19 +24,22 @@ fn build_dist(rate: f64) -> PolarsResult<Exp> {
     })
 }
 
-param_validator! {
-    /// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `InvalidOperation`
-    /// if `rate` is `NaN` or `rate <= 0`. `null` propagates.
-    ///
-    /// Exponential is an elementary closed-form distribution, so its pdf / cdf / ppf and moments are
-    /// pure Polars expressions; routing the rate through this validator is what lets them report an
-    /// invalid parameterisation consistently with `exponential_sample`, instead of silently computing
-    /// with a non-positive rate.
-    fn exponential_rate;
-    params = (rate: DataType::Float64 => f64);
-    build = build_dist;
-    returns = rate;
-    output_name = inputs[0];
+/// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `InvalidOperation`
+/// if `rate` is `NaN` or `rate <= 0`. `null` propagates.
+///
+/// Exponential is an elementary closed-form distribution, so its pdf / cdf / ppf and moments are
+/// pure Polars expressions; routing the rate through this validator is what lets them report an
+/// invalid parameterisation consistently with `exponential_sample`, instead of silently computing
+/// with a non-positive rate.
+#[polars_expr(output_type=Float64)]
+fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
+    let rate = inputs[0].cast(&DataType::Float64)?;
+    let name = inputs[0].name().clone();
+
+    validate_params_unary(rate.f64()?, name, |rate| {
+        build_dist(rate)?;
+        Ok(rate)
+    })
 }
 
 /// Element-wise Exponential sampler over `(rate, row_index)`, returning `Float64`.
