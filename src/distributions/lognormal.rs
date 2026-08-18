@@ -259,20 +259,22 @@ struct LogNormalParamsKwargs {
 }
 
 impl LogNormalParamsKwargs {
-    /// Validate the parameters and build the distribution **once per call**, outside the row loop.
-    ///
-    /// A swapped or misnamed field compiles, runs, and returns wrong numbers. Pinned by
-    /// `tests/property/value_keyed_test.py`, which asserts exact scalar-vs-per-row equality.
-    fn build(&self) -> PolarsResult<LogNormal> {
-        build_dist(self.mu, self.sigma)
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
+    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&LogNormal, f64) -> Option<f64>,
+    {
+        let dist = build_dist(self.mu, self.sigma)?;
+        value_keyed_scalar(value, |v| f(&dist, v))
     }
 }
 
 /// Constant-parameter fast path for [`lognormal_pdf`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_pdf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| pdf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], pdf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_ln_pdf`].
@@ -281,29 +283,25 @@ fn lognormal_ln_pdf_scalar(
     inputs: &[Series],
     kwargs: LogNormalParamsKwargs,
 ) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| ln_pdf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], ln_pdf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_cdf`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_cdf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], cdf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_sf`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_sf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], sf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_ppf`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_ppf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| ppf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_ln_cdf`].
@@ -312,8 +310,7 @@ fn lognormal_ln_cdf_scalar(
     inputs: &[Series],
     kwargs: LogNormalParamsKwargs,
 ) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| ln_cdf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], ln_cdf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_ln_sf`].
@@ -322,13 +319,11 @@ fn lognormal_ln_sf_scalar(
     inputs: &[Series],
     kwargs: LogNormalParamsKwargs,
 ) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| ln_sf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], ln_sf_value)
 }
 
 /// Constant-parameter fast path for [`lognormal_isf`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_isf_scalar(inputs: &[Series], kwargs: LogNormalParamsKwargs) -> PolarsResult<Series> {
-    let dist = kwargs.build()?;
-    value_keyed_scalar(&inputs[0], |v| isf_value(&dist, v))
+    kwargs.value_keyed(&inputs[0], isf_value)
 }
