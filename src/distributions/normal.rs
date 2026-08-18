@@ -9,9 +9,7 @@ use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{
-    validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
-};
+use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -291,19 +289,75 @@ fn normal_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
 }
 
-value_keyed_scalar_plugins! {
-    struct NormalParamsKwargs { mu: f64, sigma: f64 }
+/// Constant parameters for Normal's value-keyed fast paths, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct NormalParamsKwargs {
+    mu: f64,
+    sigma: f64,
+}
 
-    build = |kw| build_dist(kw.mu, kw.sigma)?;
-
-    methods {
-        fn normal_pdf_scalar => pdf_value;
-        fn normal_ln_pdf_scalar => ln_pdf_value;
-        fn normal_cdf_scalar => cdf_value;
-        fn normal_sf_scalar => sf_value;
-        fn normal_ln_cdf_scalar => ln_cdf_value;
-        fn normal_ln_sf_scalar => ln_sf_value;
-        fn normal_ppf_scalar => ppf_value;
-        fn normal_isf_scalar => isf_value;
+impl NormalParamsKwargs {
+    /// Validate the parameters and build the distribution **once per call**, outside the row loop.
+    ///
+    /// A swapped or misnamed field compiles, runs, and returns wrong numbers. Pinned by
+    /// `tests/property/value_keyed_test.py`, which asserts exact scalar-vs-per-row equality.
+    fn build(&self) -> PolarsResult<Normal> {
+        build_dist(self.mu, self.sigma)
     }
+}
+
+/// Constant-parameter fast path for [`normal_pdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| pdf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_ln_pdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| ln_pdf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_cdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| cdf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_sf`].
+#[polars_expr(output_type=Float64)]
+fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| sf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_ln_cdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| ln_cdf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_ln_sf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| ln_sf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_ppf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| ppf_value(&dist, v))
+}
+
+/// Constant-parameter fast path for [`normal_isf`].
+#[polars_expr(output_type=Float64)]
+fn normal_isf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    let dist = kwargs.build()?;
+    value_keyed_scalar(&inputs[0], |v| isf_value(&dist, v))
 }

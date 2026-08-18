@@ -47,64 +47,6 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Generates a distribution's constant-parameter value-keyed fast paths: one `<method>_scalar`
-/// plugin per Rust-bound method (`pdf`/`pmf`, `ln_*`, `cdf`, `sf`, `ppf`), all over the shared
-/// [`value_keyed_scalar`] driver.
-///
-/// The constant-parameter counterpart of the per-row `value_keyed` helper, and the value-keyed
-/// twin of [`sample_scalar_plugin!`](crate::rng::sample_scalar_plugin): when every distribution
-/// parameter is a Python scalar, the parameters arrive as kwargs (validated and built into the
-/// distribution **once** per call), and only the evaluation-point column crosses FFI. The three
-/// things that vary between distributions are the macro's inputs:
-///
-/// * the kwargs fields (parameter names and types), one `<Name>ParamsKwargs` struct shared by
-///   every method;
-/// * `build`: validates the parameters and returns the `statrs` distribution, built **once** per
-///   call (`?` is available);
-/// * the `methods` list, each `fn <plugin_name> => <body>`, where `<body>` is the same named
-///   per-method function the per-row `value_keyed` path applies (`pdf_value`, `ppf_value`, ...),
-///   so the scalar and per-row paths share one body and cannot drift. The property test only
-///   samples parameterisations; sharing the body is what makes the bit-equality structural.
-///
-/// Every value-keyed method returns `Float64` (a density, probability, or quantile), so the output
-/// dtype is fixed here; that is the structural difference from `sample_scalar_plugin!`, whose dtype
-/// varies. Plugin and struct names stay literal in each invocation (greppable from the Python
-/// layer), so `value_keyed_test.py`'s `test_value_keyed_scalar_fast_path_matches_per_row` keeps
-/// pinning bit-equality with the per-row path. Call sites are the distribution modules, which all
-/// have `polars::prelude::*` in scope.
-macro_rules! value_keyed_scalar_plugins {
-    (
-        $(#[$kwargs_meta:meta])*
-        struct $kwargs:ident { $($param:ident: $param_ty:ty),+ $(,)? }
-
-        build = |$kw:ident| $build:expr;
-
-        methods {
-            $(
-                $(#[$fn_meta:meta])*
-                fn $fn_name:ident => $body:ident;
-            )+
-        }
-    ) => {
-        $(#[$kwargs_meta])*
-        #[derive(serde::Deserialize)]
-        struct $kwargs {
-            $($param: $param_ty,)+
-        }
-
-        $(
-            $(#[$fn_meta])*
-            #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-            fn $fn_name(inputs: &[Series], kwargs: $kwargs) -> PolarsResult<Series> {
-                let $kw = &kwargs;
-                let dist = $build;
-                $crate::distributions::value_keyed_scalar(&inputs[0], |v| $body(&dist, v))
-            }
-        )+
-    };
-}
-pub(crate) use value_keyed_scalar_plugins;
-
 /// Generates a distribution's per-row `value_keyed` helper: the column-parameter counterpart of
 /// [`value_keyed_scalar`], building and validating the distribution **once per row** over
 /// `(value, p1, p2)` and applying the per-method body `f`.
