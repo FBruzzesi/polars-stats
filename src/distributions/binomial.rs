@@ -7,7 +7,9 @@ use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
+use crate::distributions::{
+    validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
+};
 use crate::rng::{
     sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -296,18 +298,22 @@ value_keyed_scalar_plugins! {
     }
 }
 
-param_validator! {
-    /// Validate the `(n, p)` parameterisation and return the validated `p`.
-    ///
-    /// `inputs[0]` is `n`, `inputs[1]` is `p`. The Python closed-form moments (`mean = n * p`,
-    /// `variance = n * p * (1 - p)`) are gated on this single FFI round-trip, so they raise on an
-    /// invalid parameterisation exactly like the value-keyed methods. `null` in either input
-    /// propagates; invalid raises via [`build_dist`].
-    fn binomial_params;
-    params = (n: DataType::Int64 => i64, p: DataType::Float64 => f64);
-    build = build_dist;
-    returns = p;
-    output_name = inputs[1];
+/// Validate the `(n, p)` parameterisation and return the validated `p`.
+///
+/// `inputs[0]` is `n`, `inputs[1]` is `p`. The Python closed-form moments (`mean = n * p`,
+/// `variance = n * p * (1 - p)`) are gated on this single FFI round-trip, so they raise on an
+/// invalid parameterisation exactly like the value-keyed methods. `null` in either input
+/// propagates; invalid raises via [`build_dist`].
+#[polars_expr(output_type=Float64)]
+fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
+    let n = inputs[0].cast(&DataType::Int64)?;
+    let p = inputs[1].cast(&DataType::Float64)?;
+    let name = inputs[1].name().clone();
+
+    validate_params_binary(n.i64()?, p.f64()?, name, |n, p| {
+        build_dist(n, p)?;
+        Ok(p)
+    })
 }
 
 /// Element-wise Shannon entropy (in nats) via `statrs` `Distribution::entropy`, the exact support

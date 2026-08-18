@@ -6,7 +6,7 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal, Normal};
 
 use crate::distributions::{
-    normal, param_validator, value_keyed_per_row, value_keyed_scalar_plugins,
+    normal, validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
 };
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
@@ -49,17 +49,21 @@ value_keyed_per_row! {
     build = build_dist;
 }
 
-param_validator! {
-    /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
-    ///
-    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
-    /// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
-    /// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
-    fn lognormal_sigma;
-    params = (mu: DataType::Float64 => f64, sigma: DataType::Float64 => f64);
-    build = build_dist;
-    returns = sigma;
-    output_name = inputs[1];
+/// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
+///
+/// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
+/// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
+/// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
+#[polars_expr(output_type=Float64)]
+fn lognormal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
+    let mu = inputs[0].cast(&DataType::Float64)?;
+    let sigma = inputs[1].cast(&DataType::Float64)?;
+    let name = inputs[1].name().clone();
+
+    validate_params_binary(mu.f64()?, sigma.f64()?, name, |mu, sigma| {
+        build_dist(mu, sigma)?;
+        Ok(sigma)
+    })
 }
 
 /// Element-wise LogNormal sampler over `(mu, sigma, row_index)`, returning `Float64`.

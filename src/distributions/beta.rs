@@ -7,7 +7,9 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::function::beta::ln_beta;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
+use crate::distributions::{
+    validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
+};
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -25,18 +27,22 @@ fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
     })
 }
 
-param_validator! {
-    /// Validate the `(a, b)` parameterisation and return the validated `b`.
-    ///
-    /// `inputs[0]` is `a`, `inputs[1]` is `b`. The Python closed-form moments (`mean = a / (a + b)`,
-    /// `variance = a * b / ((a + b)^2 * (a + b + 1))`) are gated on this single FFI round-trip, so
-    /// they raise on an invalid parameterisation exactly like the value-keyed methods. `null` in
-    /// either input propagates; invalid raises via [`build_dist`].
-    fn beta_params;
-    params = (a: DataType::Float64 => f64, b: DataType::Float64 => f64);
-    build = build_dist;
-    returns = b;
-    output_name = inputs[1];
+/// Validate the `(a, b)` parameterisation and return the validated `b`.
+///
+/// `inputs[0]` is `a`, `inputs[1]` is `b`. The Python closed-form moments (`mean = a / (a + b)`,
+/// `variance = a * b / ((a + b)^2 * (a + b + 1))`) are gated on this single FFI round-trip, so
+/// they raise on an invalid parameterisation exactly like the value-keyed methods. `null` in
+/// either input propagates; invalid raises via [`build_dist`].
+#[polars_expr(output_type=Float64)]
+fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
+    let a = inputs[0].cast(&DataType::Float64)?;
+    let b = inputs[1].cast(&DataType::Float64)?;
+    let name = inputs[1].name().clone();
+
+    validate_params_binary(a.f64()?, b.f64()?, name, |a, b| {
+        build_dist(a, b)?;
+        Ok(b)
+    })
 }
 
 value_keyed_per_row! {

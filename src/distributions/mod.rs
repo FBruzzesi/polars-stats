@@ -6,7 +6,7 @@ pub mod lognormal;
 pub mod normal;
 pub mod uniform;
 
-use polars::prelude::arity::unary_elementwise;
+use polars::prelude::arity::{try_binary_elementwise, try_unary_elementwise, unary_elementwise};
 use polars::prelude::*;
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
@@ -168,93 +168,71 @@ macro_rules! value_keyed_per_row {
 }
 pub(crate) use value_keyed_per_row;
 
-/// Generates a two-parameter validation plugin: validate `(p1, p2)` per row by constructing the
-/// distribution, then return a derived `Float64` the closed-form Python methods can build on,
-/// raising identically to the sampler on an invalid parameterisation.
+/// Shared driver for the two-parameter validation plugins: validate `(a, b)` per row by
+/// constructing the distribution inside `validate`, and emit the `Float64` that closure returns.
 ///
 /// These plugins exist so the closed-form moments and (for Uniform / Bernoulli) value-keyed
-/// methods, which are pure Polars expressions, still report an invalid parameterisation through
-/// the same Rust `build_dist` rather than silently producing a garbage result. The constant-
-/// parameter fast path calls the very same plugin on length-1 `pl.lit` inputs, so it is built
-/// once instead of per row. The four knobs that vary between distributions are the macro's inputs:
+/// methods, which are pure Polars expressions, still report an invalid parameterisation through the
+/// same Rust `build_dist` rather than silently producing a garbage result. The constant-parameter
+/// fast path calls the same plugin on length-1 `pl.lit` inputs, so it is built once instead of per
+/// row.
 ///
-/// * each parameter's `<name>: <cast dtype> => <accessor>` (binomial's `n` is `Int64`/`.i64()`,
-///   the continuous parameters are `Float64`/`.f64()`); the matched values bind to `<name>`;
-/// * `build`: the constructor (`build_dist`), validating per row (`?` is available);
-/// * `returns`: the `Float64` to emit, an expression over the parameter names (a parameter itself,
-///   e.g. `sigma`, or a derived width, e.g. `max - min`);
-/// * `output_name = inputs[i]`: which input column names the output (most return the second
-///   parameter and name after it; Uniform's width names after the first).
+/// `validate` validates and derives in one step: it `?`-propagates the `InvalidOperation` out of
+/// `build_dist` and returns the value to emit, either a parameter itself (`sigma`) or a quantity
+/// derived from both (Uniform's `max - min`).
 ///
-/// Two arms that differ only in arity: a binary one (`normal_sigma`, `lognormal_sigma`,
-/// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`).
-/// A unary validator's `output_name` is always `inputs[0]` (its only input). Call sites are the
-/// distribution modules (`polars::prelude::*` in scope).
-macro_rules! param_validator {
-    (
-        $(#[$meta:meta])*
-        fn $name:ident;
-        params = ($p1:ident: $p1_dt:expr => $p1_acc:ident, $p2:ident: $p2_dt:expr => $p2_acc:ident);
-        build = $build:path;
-        returns = $ret:expr;
-        output_name = inputs[$out_idx:literal];
-    ) => {
-        $(#[$meta])*
-        #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-        fn $name(inputs: &[Series]) -> PolarsResult<Series> {
-            let p1 = inputs[0].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let p2 = inputs[1].cast(&$p2_dt)?;
-            let p2_ca = p2.$p2_acc()?;
-            let name = inputs[$out_idx].name().clone();
+/// The two parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial)
+/// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
+/// the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`.
+///
+/// Null contract: any null input nulls the row without calling `validate`, matching the samplers.
+///
+/// Polars resolves a plugin expression's output name from its first input and ignores the name set
+/// here, so the frame column follows `inputs[0]` whichever input is passed (pinned by
+/// `tests/distributions/output_name_test.py`). `name` labels the returned `Series` only; callers
+/// pass the input whose quantity they return.
+///
+/// Keep `validate` a generic `F: Fn`: it monomorphises into the row loop, where a `&dyn Fn` or a
+/// `fn` pointer would cost an indirect call per row.
+pub(crate) fn validate_params_binary<A, B, F>(
+    a: &ChunkedArray<A>,
+    b: &ChunkedArray<B>,
+    name: PlSmallStr,
+    validate: F,
+) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    F: Fn(A::Native, B::Native) -> PolarsResult<f64>,
+{
+    let ca: Float64Chunked =
+        try_binary_elementwise(a, b, |a_opt, b_opt| -> PolarsResult<Option<f64>> {
+            match (a_opt, b_opt) {
+                (Some(a), Some(b)) => Ok(Some(validate(a, b)?)),
+                _ => Ok(None),
+            }
+        })?;
 
-            let ca: Float64Chunked = polars::prelude::arity::try_binary_elementwise(
-                p1_ca,
-                p2_ca,
-                |o1, o2| -> PolarsResult<Option<f64>> {
-                    match (o1, o2) {
-                        (Some($p1), Some($p2)) => {
-                            $build($p1, $p2)?;
-                            Ok(Some($ret))
-                        },
-                        _ => Ok(None),
-                    }
-                },
-            )?;
-
-            Ok(ca.with_name(name).into_series())
-        }
-    };
-    (
-        $(#[$meta:meta])*
-        fn $name:ident;
-        params = ($p1:ident: $p1_dt:expr => $p1_acc:ident);
-        build = $build:path;
-        returns = $ret:expr;
-        output_name = inputs[$out_idx:literal];
-    ) => {
-        $(#[$meta])*
-        #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-        fn $name(inputs: &[Series]) -> PolarsResult<Series> {
-            let p1 = inputs[0].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let name = inputs[$out_idx].name().clone();
-
-            let ca: Float64Chunked = polars::prelude::arity::try_unary_elementwise(
-                p1_ca,
-                |o1| -> PolarsResult<Option<f64>> {
-                    match o1 {
-                        Some($p1) => {
-                            $build($p1)?;
-                            Ok(Some($ret))
-                        },
-                        None => Ok(None),
-                    }
-                },
-            )?;
-
-            Ok(ca.with_name(name).into_series())
-        }
-    };
+    Ok(ca.with_name(name).into_series())
 }
-pub(crate) use param_validator;
+
+/// Single-parameter counterpart of [`validate_params_binary`], same contracts
+/// (`bernoulli_proba`, `exponential_rate`).
+pub(crate) fn validate_params_unary<A, F>(
+    a: &ChunkedArray<A>,
+    name: PlSmallStr,
+    validate: F,
+) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    F: Fn(A::Native) -> PolarsResult<f64>,
+{
+    let ca: Float64Chunked = try_unary_elementwise(a, |a_opt| -> PolarsResult<Option<f64>> {
+        match a_opt {
+            Some(a) => Ok(Some(validate(a)?)),
+            None => Ok(None),
+        }
+    })?;
+
+    Ok(ca.with_name(name).into_series())
+}
