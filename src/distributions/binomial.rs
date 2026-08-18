@@ -7,9 +7,7 @@ use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{
-    validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
-};
+use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
     sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -284,18 +282,54 @@ fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-value_keyed_scalar_plugins! {
-    struct BinomialParamsKwargs { n: i64, p: f64 }
+/// Constant parameters for Binomial's value-keyed fast paths, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct BinomialParamsKwargs {
+    n: i64,
+    p: f64,
+}
 
-    build = |kw| build_dist(kw.n, kw.p)?;
-
-    methods {
-        fn binomial_pmf_scalar => pmf_value;
-        fn binomial_ln_pmf_scalar => ln_pmf_value;
-        fn binomial_cdf_scalar => cdf_value;
-        fn binomial_sf_scalar => sf_value;
-        fn binomial_ppf_scalar => ppf_value;
+impl BinomialParamsKwargs {
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
+    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Binomial, f64) -> Option<f64>,
+    {
+        let dist = build_dist(self.n, self.p)?;
+        value_keyed_scalar(value, |v| f(&dist, v))
     }
+}
+
+/// Constant-parameter fast path for [`binomial_pmf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], pmf_value)
+}
+
+/// Constant-parameter fast path for [`binomial_ln_pmf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_pmf_value)
+}
+
+/// Constant-parameter fast path for [`binomial_cdf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], cdf_value)
+}
+
+/// Constant-parameter fast path for [`binomial_sf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], sf_value)
+}
+
+/// Constant-parameter fast path for [`binomial_ppf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
 /// Validate the `(n, p)` parameterisation and return the validated `p`.

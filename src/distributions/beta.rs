@@ -7,9 +7,7 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::function::beta::ln_beta;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{
-    validate_params_binary, value_keyed_per_row, value_keyed_scalar_plugins,
-};
+use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
     sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
     SamplesKwargs,
@@ -241,18 +239,54 @@ fn beta_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-value_keyed_scalar_plugins! {
-    struct BetaParamsKwargs { a: f64, b: f64 }
+/// Constant parameters for Beta's value-keyed fast paths, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct BetaParamsKwargs {
+    a: f64,
+    b: f64,
+}
 
-    build = |kw| build_dist(kw.a, kw.b)?;
-
-    methods {
-        fn beta_pdf_scalar => pdf_value;
-        fn beta_ln_pdf_scalar => ln_pdf_value;
-        fn beta_cdf_scalar => cdf_value;
-        fn beta_sf_scalar => sf_value;
-        fn beta_ppf_scalar => ppf_value;
+impl BetaParamsKwargs {
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
+    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Beta, f64) -> Option<f64>,
+    {
+        let dist = build_dist(self.a, self.b)?;
+        value_keyed_scalar(value, |v| f(&dist, v))
     }
+}
+
+/// Constant-parameter fast path for [`beta_pdf`].
+#[polars_expr(output_type=Float64)]
+fn beta_pdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], pdf_value)
+}
+
+/// Constant-parameter fast path for [`beta_ln_pdf`].
+#[polars_expr(output_type=Float64)]
+fn beta_ln_pdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_pdf_value)
+}
+
+/// Constant-parameter fast path for [`beta_cdf`].
+#[polars_expr(output_type=Float64)]
+fn beta_cdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], cdf_value)
+}
+
+/// Constant-parameter fast path for [`beta_sf`].
+#[polars_expr(output_type=Float64)]
+fn beta_sf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], sf_value)
+}
+
+/// Constant-parameter fast path for [`beta_ppf`].
+#[polars_expr(output_type=Float64)]
+fn beta_ppf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
 /// Element-wise differential entropy (in nats) via `statrs` `Distribution::entropy`:
