@@ -66,13 +66,24 @@ fn underlying_normal(dist: &LogNormal) -> Normal {
         .expect("Normal::new accepts every (location, scale) a built LogNormal carries")
 }
 
-value_keyed_per_row! {
-    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by every
-    /// Rust-bound value-keyed method. `null` propagates; an invalid parameterisation raises
-    /// via [`build_dist`]; `f` may return `None` to null a row on its own terms.
-    fn value_keyed(&LogNormal);
-    params = (DataType::Float64 => f64, DataType::Float64 => f64);
-    build = build_dist;
+/// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by every
+/// Rust-bound value-keyed method. Null and `NaN` contracts in [`value_keyed_per_row`].
+fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
+where
+    F: Fn(&LogNormal, f64) -> Option<f64>,
+{
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let mu = inputs[1].cast(&DataType::Float64)?;
+    let sigma = inputs[2].cast(&DataType::Float64)?;
+
+    value_keyed_per_row(
+        value.f64()?,
+        mu.f64()?,
+        sigma.f64()?,
+        inputs[0].name().clone(),
+        build_dist,
+        f,
+    )
 }
 
 /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.

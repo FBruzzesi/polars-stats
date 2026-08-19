@@ -71,13 +71,24 @@ fn normal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     })
 }
 
-value_keyed_per_row! {
-    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by
-    /// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises
-    /// via [`build_dist`]; `f` may return `None` to null a row on its own terms.
-    fn value_keyed(&Normal);
-    params = (DataType::Float64 => f64, DataType::Float64 => f64);
-    build = build_dist;
+/// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by `pdf`,
+/// `ln_pdf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
+fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
+where
+    F: Fn(&Normal, f64) -> Option<f64>,
+{
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let mu = inputs[1].cast(&DataType::Float64)?;
+    let sigma = inputs[2].cast(&DataType::Float64)?;
+
+    value_keyed_per_row(
+        value.f64()?,
+        mu.f64()?,
+        sigma.f64()?,
+        inputs[0].name().clone(),
+        build_dist,
+        f,
+    )
 }
 
 /// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

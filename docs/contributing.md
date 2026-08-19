@@ -114,8 +114,8 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
       plugin and both shells; that shared call, not a test, is what keeps the three byte-identical.
     * When a method needs a **special function** (`erf`, log-gamma, regularized incomplete beta/gamma, ...) or has
       no elementary closed form: bind it in `statrs` (`pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`,
-      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (from the
-      `value_keyed_per_row!` macro in `src/distributions/mod.rs`) and the constant-parameter
+      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (a hand-written
+      shell over the `value_keyed_per_row` driver in `src/distributions/mod.rs`) and the constant-parameter
       `<name>_<method>_scalar` twin, so the two paths are byte-identical by construction. Write each twin as a
       one-line `#[polars_expr]` shell over `kwargs.value_keyed(&inputs[0], <method>_value)`, an inherent method on
       the distribution's `<Name>ParamsKwargs` struct that validates and builds the distribution once per call and

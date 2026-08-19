@@ -94,13 +94,24 @@ fn support_point(value: f64) -> Option<u64> {
     }
 }
 
-value_keyed_per_row! {
-    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, n, p)`; shared by `pmf`,
-    /// `ln_pmf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises via
-    /// [`build_dist`]; `f` may return `None` to null a row on its own terms.
-    fn value_keyed(&Binomial);
-    params = (DataType::Int64 => i64, DataType::Float64 => f64);
-    build = build_dist;
+/// Apply a value-keyed `f(dist, value)` element-wise over `(value, n, p)`; shared by `pmf`,
+/// `ln_pmf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
+fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
+where
+    F: Fn(&Binomial, f64) -> Option<f64>,
+{
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let n = inputs[1].cast(&DataType::Int64)?;
+    let p = inputs[2].cast(&DataType::Float64)?;
+
+    value_keyed_per_row(
+        value.f64()?,
+        n.i64()?,
+        p.f64()?,
+        inputs[0].name().clone(),
+        build_dist,
+        f,
+    )
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(n, p)`.
