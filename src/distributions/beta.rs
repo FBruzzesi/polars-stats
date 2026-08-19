@@ -9,8 +9,8 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Beta`, mapping the invalid-parameter case to a `ComputeError`.
@@ -23,6 +23,32 @@ fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
             format!("a and b must be finite and strictly positive, got a={a}, b={b}: {e}").into(),
         )
     })
+}
+
+/// Beta's constant shapes, deserialised once per call.
+///
+/// The one place this file spells `(a, b)`: every fast path, sampler or value-keyed, reaches the
+/// constructor through [`Self::build`], so the order cannot drift between them.
+#[derive(serde::Deserialize)]
+struct BetaParamsKwargs {
+    a: f64,
+    b: f64,
+}
+
+impl BetaParamsKwargs {
+    fn build(&self) -> PolarsResult<Beta> {
+        build_dist(self.a, self.b)
+    }
+
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Beta, f64) -> Option<f64>,
+    {
+        let dist = self.build()?;
+        value_keyed_scalar(value, |v| f(&dist, v))
+    }
 }
 
 /// Validate the `(a, b)` parameterisation and return the validated `b`.
@@ -82,6 +108,15 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
+/// One Beta draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Beta sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
+    RandDistribution::sample(dist, rng)
+}
+
 /// Element-wise Beta sampler over `(a, b, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid shape raises via [`build_dist`]. Seeding and
@@ -111,8 +146,7 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
                 (Some(a), Some(b), Some(i)) => {
                     let dist = build_dist(a, b)?;
                     let mut rng = rngs.rng(i);
-                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
-                    Ok(Some(draw))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -122,16 +156,33 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct BetaScalarKwargs { a: f64, b: f64 }
+/// Constant-parameter fast path for [`beta_sample`].
+#[polars_expr(output_type=Float64)]
+fn beta_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<BetaParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`beta_sample`].
-    fn beta_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = beta_samples_scalar as BetaSamplesScalarKwargs -> samples_f64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`beta_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn beta_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<BetaParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.a, kw.b)?;
-    draw = |dist, rng| RandDistribution::sample(&dist, rng);
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Beta sampler: `size` draws per row in one call, the distribution built
@@ -147,13 +198,7 @@ fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series
 
     let rows = ternary_param_rows(a.f64()?, b.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        RandDistribution::sample,
-    )
+    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -237,26 +282,6 @@ fn beta_sf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn beta_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
-}
-
-/// Constant parameters for Beta's value-keyed fast paths, deserialised once per call.
-#[derive(serde::Deserialize)]
-struct BetaParamsKwargs {
-    a: f64,
-    b: f64,
-}
-
-impl BetaParamsKwargs {
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
-    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
-    where
-        F: Fn(&Beta, f64) -> Option<f64>,
-    {
-        let dist = build_dist(self.a, self.b)?;
-        value_keyed_scalar(value, |v| f(&dist, v))
-    }
 }
 
 /// Constant-parameter fast path for [`beta_pdf`].

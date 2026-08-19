@@ -7,14 +7,26 @@ use statrs::distribution::Bernoulli;
 
 use crate::distributions::validate_params_unary;
 use crate::rng::{
-    binary_param_rows, sample_scalar_plugin, samples_bool_output, samples_per_row, SampleKwargs,
-    SamplesKwargs,
+    binary_param_rows, sample_by_index, samples_bool_output, samples_by_index, samples_per_row,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {proba}: {e}").into())
     })
+}
+
+/// Bernoulli's constant success probability, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct BernoulliParamsKwargs {
+    p: f64,
+}
+
+impl BernoulliParamsKwargs {
+    fn build(&self) -> PolarsResult<Bernoulli> {
+        build_dist(self.p)
+    }
 }
 
 /// Element-wise validation of the success probability: returns `p` unchanged, raising
@@ -31,6 +43,15 @@ fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
         build_dist(proba)?;
         Ok(proba)
     })
+}
+
+/// One Bernoulli draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Bernoulli sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
+    <Bernoulli as Distribution<bool>>::sample(dist, rng)
 }
 
 /// Element-wise Bernoulli sampler over `(p, row_index)`, returning `Boolean`.
@@ -55,9 +76,7 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
                 (Some(p), Some(i)) => {
                     let dist = build_dist(p)?;
                     let mut rng = rngs.rng(i);
-                    Ok(Some(<Bernoulli as Distribution<bool>>::sample(
-                        &dist, &mut rng,
-                    )))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -67,16 +86,33 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct BernoulliScalarKwargs { p: f64 }
+/// Constant-parameter fast path for [`bernoulli_sample`].
+#[polars_expr(output_type=Boolean)]
+fn bernoulli_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<BernoulliParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`bernoulli_sample`].
-    fn bernoulli_sample_scalar(output_type = Boolean, physical = BooleanType);
+    sample_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = bernoulli_samples_scalar as BernoulliSamplesScalarKwargs -> samples_bool_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`bernoulli_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Boolean, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
+fn bernoulli_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<BernoulliParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.p)?;
-    draw = |dist, rng| <Bernoulli as Distribution<bool>>::sample(&dist, rng);
+    samples_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Bernoulli sampler: `size` draws per row in one call, the distribution
@@ -91,11 +127,5 @@ fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
     let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<BooleanType, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        <Bernoulli as Distribution<bool>>::sample,
-    )
+    samples_per_row::<BooleanType, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }

@@ -91,11 +91,12 @@ reproducible across OS and architecture.
 takes a dedicated plugin, `<name>_sample_scalar`. The parameters travel in `kwargs` and are validated once; only the row
 index crosses FFI, instead of one full-length `pl.repeat` column per parameter that the general plugin would marshal and
 re-validate on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
-non-null index straight into the typed output. Each distribution declares its fast path through the
-`sample_scalar_plugin!` macro in `rng.rs` (kwargs struct, output dtype, one-time `build`, per-row `draw`), which
-generates the kwargs struct and the plugin function, so a new distribution cannot drift from the pattern. It reuses
-the same `(root_seed, row_index)` seeding and the same draw as the per-row path, so output is byte-identical for the
-same seed (a property test pins that equality); column-valued parameters still take the general per-row plugin.
+non-null index straight into the typed output. Each distribution writes the two fast-path shells by hand over
+`sample_by_index` / `samples_by_index`, carrying its parameters in `SampleScalarKwargs<P>` / `SamplesScalarKwargs<P>`,
+the generic `seed` / `size` wrappers in `rng.rs` around the distribution's own `<Name>ParamsKwargs`. The shells reuse
+the same `(root_seed, row_index)` seeding and call the same named `draw` as the per-row path, so output is
+byte-identical for the same seed (a property test pins that equality); column-valued parameters still take the general
+per-row plugin.
 
 !!! info "Earlier `ChaCha20` design (removed)"
 
