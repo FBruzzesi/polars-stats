@@ -42,7 +42,7 @@ polars-stats/
 ├── rust-toolchain.toml
 ├── src/
 │   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # per-row RNG + sampler drivers (sample_by_index, samples_per_row, sample_scalar_plugin!)
+│   ├── rng.rs                # per-row RNG + sampler drivers (sample_by_index, samples_by_index, samples_per_row)
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports
@@ -108,9 +108,10 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
       then `rngs.rng(i)` inside; never reseed from chunk position; `try_*_elementwise` so a `null` in any input
       propagates and an invalid parameter raises). The per-row `<name>_sample` / `<name>_samples` (multi-draw, backing
       `samples`) take the parameter columns plus a row index as the last input; the constant-parameter fast paths
-      `<name>_sample_scalar` / `<name>_samples_scalar` (parameters validated once in `kwargs`) come from the
-      `sample_scalar_plugin!` macro in `src/rng.rs`, generated from one shared `build` / `draw` so they stay
-      byte-identical to the per-row path.
+      `<name>_sample_scalar` / `<name>_samples_scalar` are hand-written shells over `sample_by_index` /
+      `samples_by_index`, taking `SampleScalarKwargs<<Name>ParamsKwargs>` / `SamplesScalarKwargs<<Name>ParamsKwargs>`
+      so the parameters are validated once. Give the distribution one named `fn draw` and call it from the per-row
+      plugin and both shells; that shared call, not a test, is what keeps the three byte-identical.
     * When a method needs a **special function** (`erf`, log-gamma, regularized incomplete beta/gamma, ...) or has
       no elementary closed form: bind it in `statrs` (`pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`,
       native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (from the

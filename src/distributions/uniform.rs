@@ -7,8 +7,8 @@ use statrs::distribution::Uniform;
 
 use crate::distributions::validate_params_binary;
 use crate::rng::{
-    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
@@ -31,12 +31,33 @@ fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
     })
 }
 
+/// Uniform's constant bounds, deserialised once per call.
+///
+/// The one place this file spells `(min, max)`: both samplers validate through
+/// [`Self::validated_bounds`], so the order cannot drift between them.
+#[derive(serde::Deserialize)]
+struct UniformParamsKwargs {
+    min: f64,
+    max: f64,
+}
+
+impl UniformParamsKwargs {
+    /// Validate the constant bounds once per call and return them raw.
+    ///
+    /// The built distribution is discarded on purpose: [`draw_half_open`] wants the `(lo, hi)` pair,
+    /// not a `statrs::Uniform`.
+    fn validated_bounds(&self) -> PolarsResult<(f64, f64)> {
+        build_dist(self.min, self.max)?;
+        Ok((self.min, self.max))
+    }
+}
+
 /// One half-open `[lo, hi)` draw: `lo + (hi - lo) * U[0, 1)`, matching scipy's
 /// `loc + scale * U[0, 1)`.
 ///
-/// Shared by [`uniform_sample`] and [`uniform_sample_scalar`] so the two paths cannot drift; the
-/// property test pinning their bit-equality only samples parameterisations, this makes it
-/// structural.
+/// Uniform's counterpart of the other distributions' `fn draw`: every Uniform sampler draws through
+/// here, per-row and fast path alike, so their bit-equality is structural rather than only sampled
+/// by `sample_test.py`.
 ///
 /// This deliberately bypasses `statrs`' `Distribution::sample`, which rebuilds a
 /// `rand::distributions::Uniform` float sampler (scale/bias/rejection-zone setup) on *every*
@@ -98,17 +119,36 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct UniformScalarKwargs { min: f64, max: f64 }
+/// Constant-bounds fast path for [`uniform_sample`]. The built distribution is intentionally
+/// unused; the draw is [`draw_half_open`] over the raw bounds.
+#[polars_expr(output_type=Float64)]
+fn uniform_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<UniformParamsKwargs>,
+) -> PolarsResult<Series> {
+    let (lo, hi) = kwargs.params.validated_bounds()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-bounds fast path for [`uniform_sample`]. The built distribution is intentionally
-    /// unused; the draw is [`draw_half_open`] over the raw bounds.
-    fn uniform_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| {
+        draw_half_open(lo, hi, rng)
+    })
+}
 
-    samples = uniform_samples_scalar as UniformSamplesScalarKwargs -> samples_f64_output;
+/// Constant-bounds multi-draw fast path: the `samples` twin of [`uniform_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the bounds are validated once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn uniform_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<UniformParamsKwargs>,
+) -> PolarsResult<Series> {
+    let (lo, hi) = kwargs.params.validated_bounds()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| { build_dist(kw.min, kw.max)?; (kw.min, kw.max) };
-    draw = |(lo, hi), rng| draw_half_open(lo, hi, rng);
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw_half_open(lo, hi, rng)
+    })
 }
 
 /// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one call,

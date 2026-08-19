@@ -9,8 +9,8 @@ use crate::distributions::{
     normal, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
 };
 use crate::rng::{
-    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
@@ -27,6 +27,32 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<LogNormal> {
             .into(),
         )
     })
+}
+
+/// LogNormal's constant parameters, deserialised once per call.
+///
+/// The one place this file spells `(mu, sigma)`: every fast path, sampler or value-keyed, reaches the
+/// constructor through [`Self::build`], so the order cannot drift between them.
+#[derive(serde::Deserialize)]
+struct LogNormalParamsKwargs {
+    mu: f64,
+    sigma: f64,
+}
+
+impl LogNormalParamsKwargs {
+    fn build(&self) -> PolarsResult<LogNormal> {
+        build_dist(self.mu, self.sigma)
+    }
+
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&LogNormal, f64) -> Option<f64>,
+    {
+        let dist = self.build()?;
+        value_keyed_scalar(value, |v| f(&dist, v))
+    }
 }
 
 /// The underlying `statrs::Normal` (mean `mu`, std-dev `sigma`) a built `LogNormal` wraps,
@@ -66,6 +92,15 @@ fn lognormal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     })
 }
 
+/// One LogNormal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every LogNormal sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &LogNormal, rng: &mut impl rand::Rng) -> f64 {
+    RandDistribution::sample(dist, rng)
+}
+
 /// Element-wise LogNormal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
@@ -91,8 +126,7 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
                 (Some(m), Some(s), Some(i)) => {
                     let dist = build_dist(m, s)?;
                     let mut rng = rngs.rng(i);
-                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
-                    Ok(Some(draw))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -102,16 +136,33 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct LogNormalScalarKwargs { mu: f64, sigma: f64 }
+/// Constant-parameter fast path for [`lognormal_sample`].
+#[polars_expr(output_type=Float64)]
+fn lognormal_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<LogNormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`lognormal_sample`].
-    fn lognormal_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = lognormal_samples_scalar as LogNormalSamplesScalarKwargs -> samples_f64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`lognormal_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn lognormal_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<LogNormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.mu, kw.sigma)?;
-    draw = |dist, rng| RandDistribution::sample(&dist, rng);
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw LogNormal sampler: `size` draws per row in one call, the distribution
@@ -127,13 +178,7 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        RandDistribution::sample,
-    )
+    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -249,26 +294,6 @@ fn lognormal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn lognormal_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
-}
-
-/// Constant parameters for LogNormal's value-keyed fast paths, deserialised once per call.
-#[derive(serde::Deserialize)]
-struct LogNormalParamsKwargs {
-    mu: f64,
-    sigma: f64,
-}
-
-impl LogNormalParamsKwargs {
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
-    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
-    where
-        F: Fn(&LogNormal, f64) -> Option<f64>,
-    {
-        let dist = build_dist(self.mu, self.sigma)?;
-        value_keyed_scalar(value, |v| f(&dist, v))
-    }
 }
 
 /// Constant-parameter fast path for [`lognormal_pdf`].

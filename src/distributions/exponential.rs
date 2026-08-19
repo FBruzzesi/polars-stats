@@ -7,8 +7,8 @@ use statrs::distribution::Exp;
 
 use crate::distributions::validate_params_unary;
 use crate::rng::{
-    binary_param_rows, sample_scalar_plugin, samples_f64_output, samples_per_row, SampleKwargs,
-    SamplesKwargs,
+    binary_param_rows, sample_by_index, samples_by_index, samples_f64_output, samples_per_row,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Exp`, mapping the invalid-parameter case to a `ComputeError`.
@@ -22,6 +22,18 @@ fn build_dist(rate: f64) -> PolarsResult<Exp> {
             format!("rate must be strictly positive, got rate={rate}: {e}").into(),
         )
     })
+}
+
+/// Exponential's constant rate, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct ExponentialParamsKwargs {
+    rate: f64,
+}
+
+impl ExponentialParamsKwargs {
+    fn build(&self) -> PolarsResult<Exp> {
+        build_dist(self.rate)
+    }
 }
 
 /// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `InvalidOperation`
@@ -40,6 +52,15 @@ fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
         build_dist(rate)?;
         Ok(rate)
     })
+}
+
+/// One Exponential draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Exponential sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
+    RandDistribution::sample(dist, rng)
 }
 
 /// Element-wise Exponential sampler over `(rate, row_index)`, returning `Float64`.
@@ -68,8 +89,7 @@ fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<S
                 (Some(r), Some(i)) => {
                     let dist = build_dist(r)?;
                     let mut rng = rngs.rng(i);
-                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
-                    Ok(Some(draw))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -79,16 +99,33 @@ fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<S
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct ExponentialScalarKwargs { rate: f64 }
+/// Constant-rate fast path for [`exponential_sample`].
+#[polars_expr(output_type=Float64)]
+fn exponential_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<ExponentialParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-rate fast path for [`exponential_sample`].
-    fn exponential_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = exponential_samples_scalar as ExponentialSamplesScalarKwargs -> samples_f64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`exponential_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn exponential_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<ExponentialParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.rate)?;
-    draw = |dist, rng| RandDistribution::sample(&dist, rng);
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Exponential sampler: `size` draws per row in one call, the distribution
@@ -103,11 +140,5 @@ fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult
 
     let rows = binary_param_rows(rate.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        RandDistribution::sample,
-    )
+    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }

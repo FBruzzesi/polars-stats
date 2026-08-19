@@ -9,8 +9,8 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_scalar_plugin, samples_per_row, samples_u64_output, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, samples_by_index, samples_per_row, samples_u64_output, ternary_param_rows,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
@@ -44,6 +44,40 @@ fn build_sampler(n: i64, p: f64) -> PolarsResult<BinomialSampler> {
     BinomialSampler::new(trials, p).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {p}: {e}").into())
     })
+}
+
+/// Binomial's constant parameters, deserialised once per call.
+///
+/// The one place this file spells `(n, p)`. The two families build different types from it: the
+/// value-keyed twins take the `statrs` distribution via [`Self::build`], the samplers take the
+/// `rand_distr` sampler via [`Self::build_sampler`].
+#[derive(serde::Deserialize)]
+struct BinomialParamsKwargs {
+    n: i64,
+    p: f64,
+}
+
+impl BinomialParamsKwargs {
+    /// The `statrs` distribution, for the value-keyed methods.
+    fn build(&self) -> PolarsResult<Binomial> {
+        build_dist(self.n, self.p)
+    }
+
+    /// The `rand_distr` sampler, for the samplers. The free [`build_sampler`] carries the note on
+    /// why the two families use different distribution types.
+    fn build_sampler(&self) -> PolarsResult<BinomialSampler> {
+        build_sampler(self.n, self.p)
+    }
+
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Binomial, f64) -> Option<f64>,
+    {
+        let dist = self.build()?;
+        value_keyed_scalar(value, |v| f(&dist, v))
+    }
 }
 
 /// `value` as a binomial support point: `Some(k)` when `value` is a non-negative integer, else
@@ -99,6 +133,16 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
+/// One Binomial draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// The state is a [`BinomialSampler`] (`rand_distr`), built by [`build_sampler`] and not by
+/// [`build_dist`]. Every Binomial sampler draws through here, per-row and fast path alike, so their
+/// bit-equality is structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &BinomialSampler, rng: &mut impl rand::Rng) -> u64 {
+    dist.sample(rng)
+}
+
 /// Element-wise Binomial sampler over `(n, p, row_index)`, returning `UInt64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_sampler`].
@@ -124,7 +168,7 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
                 (Some(n), Some(p), Some(i)) => {
                     let dist = build_sampler(n, p)?;
                     let mut rng = rngs.rng(i);
-                    Ok(Some(dist.sample(&mut rng)))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -134,16 +178,34 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct BinomialScalarKwargs { n: i64, p: f64 }
+/// Constant-parameter fast path for [`binomial_sample`], on the same [`build_sampler`].
+#[polars_expr(output_type=UInt64)]
+fn binomial_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<BinomialParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build_sampler()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`binomial_sample`], on the same [`build_sampler`].
-    fn binomial_sample_scalar(output_type = UInt64, physical = UInt64Type);
+    sample_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = binomial_samples_scalar as BinomialSamplesScalarKwargs -> samples_u64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`binomial_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the sampler (whose BINV/BTPE setup is the expensive part) is built once per call rather
+/// than once per draw. Returns `Array(UInt64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
+fn binomial_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<BinomialParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build_sampler()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_sampler(kw.n, kw.p)?;
-    draw = |dist, rng| dist.sample(rng);
+    samples_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Binomial sampler: `size` draws per row in one call, the `rand_distr`
@@ -160,9 +222,7 @@ fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Se
 
     let rows = ternary_param_rows(n.i64()?, p.f64()?, index.u64()?, build_sampler);
 
-    samples_per_row::<UInt64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, |dist, rng| {
-        dist.sample(rng)
-    })
+    samples_per_row::<UInt64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -280,26 +340,6 @@ fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
 #[polars_expr(output_type=Float64)]
 fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
-}
-
-/// Constant parameters for Binomial's value-keyed fast paths, deserialised once per call.
-#[derive(serde::Deserialize)]
-struct BinomialParamsKwargs {
-    n: i64,
-    p: f64,
-}
-
-impl BinomialParamsKwargs {
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
-    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
-    where
-        F: Fn(&Binomial, f64) -> Option<f64>,
-    {
-        let dist = build_dist(self.n, self.p)?;
-        value_keyed_scalar(value, |v| f(&dist, v))
-    }
 }
 
 /// Constant-parameter fast path for [`binomial_pmf`].

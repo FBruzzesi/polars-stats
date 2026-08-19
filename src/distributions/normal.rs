@@ -11,8 +11,8 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
+    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
@@ -26,6 +26,32 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
                 .into(),
         )
     })
+}
+
+/// Normal's constant parameters, deserialised once per call.
+///
+/// The one place this file spells `(mu, sigma)`: every fast path, sampler or value-keyed, reaches the
+/// constructor through [`Self::build`], so the order cannot drift between them.
+#[derive(serde::Deserialize)]
+struct NormalParamsKwargs {
+    mu: f64,
+    sigma: f64,
+}
+
+impl NormalParamsKwargs {
+    fn build(&self) -> PolarsResult<Normal> {
+        build_dist(self.mu, self.sigma)
+    }
+
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Normal, f64) -> Option<f64>,
+    {
+        let dist = self.build()?;
+        value_keyed_scalar(value, |v| f(&dist, v))
+    }
 }
 
 /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
@@ -54,6 +80,15 @@ value_keyed_per_row! {
     build = build_dist;
 }
 
+/// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Normal sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Normal, rng: &mut impl rand::Rng) -> f64 {
+    RandDistribution::sample(dist, rng)
+}
+
 /// Element-wise Normal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
@@ -79,8 +114,7 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
                 (Some(m), Some(s), Some(i)) => {
                     let dist = build_dist(m, s)?;
                     let mut rng = rngs.rng(i);
-                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
-                    Ok(Some(draw))
+                    Ok(Some(draw(&dist, &mut rng)))
                 },
                 _ => Ok(None),
             }
@@ -90,16 +124,33 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
     Ok(ca.with_name(name).into_series())
 }
 
-sample_scalar_plugin! {
-    struct NormalScalarKwargs { mu: f64, sigma: f64 }
+/// Constant-parameter fast path for [`normal_sample`].
+#[polars_expr(output_type=Float64)]
+fn normal_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<NormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`normal_sample`].
-    fn normal_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = normal_samples_scalar as NormalSamplesScalarKwargs -> samples_f64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`normal_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn normal_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<NormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.mu, kw.sigma)?;
-    draw = |dist, rng| RandDistribution::sample(&dist, rng);
+    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Normal sampler: `size` draws per row in one call, the distribution
@@ -115,13 +166,7 @@ fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Seri
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        RandDistribution::sample,
-    )
+    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -287,26 +332,6 @@ fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn normal_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
-}
-
-/// Constant parameters for Normal's value-keyed fast paths, deserialised once per call.
-#[derive(serde::Deserialize)]
-struct NormalParamsKwargs {
-    mu: f64,
-    sigma: f64,
-}
-
-impl NormalParamsKwargs {
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column. A swapped
-    /// field compiles and returns wrong numbers; `value_keyed_test.py` is what catches it.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
-    where
-        F: Fn(&Normal, f64) -> Option<f64>,
-    {
-        let dist = build_dist(self.mu, self.sigma)?;
-        value_keyed_scalar(value, |v| f(&dist, v))
-    }
 }
 
 /// Constant-parameter fast path for [`normal_pdf`].
