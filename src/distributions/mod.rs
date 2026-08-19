@@ -6,7 +6,9 @@ pub mod lognormal;
 pub mod normal;
 pub mod uniform;
 
-use polars::prelude::arity::{try_binary_elementwise, try_unary_elementwise, unary_elementwise};
+use polars::prelude::arity::{
+    try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
+};
 use polars::prelude::*;
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
@@ -26,7 +28,7 @@ use polars::prelude::*;
 ///
 /// `NaN` contract: a `NaN` evaluation point short-circuits to `NaN` (scipy semantics) before `f`
 /// runs, for every method including `ppf`. The short-circuit is central (here and in
-/// [`value_keyed_per_row!`]) rather than per body, because two bodies genuinely need it and none
+/// [`value_keyed_per_row`]) rather than per body, because two bodies genuinely need it and none
 /// may be forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`
 /// (aborting the whole query), and binomial's support mapping saturates (`NaN.floor() as u64` is
 /// `0`), returning a confident `P(X <= 0)`. The Python-side `propagate_null_and_nan` guard cannot
@@ -47,68 +49,63 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Generates a distribution's per-row `value_keyed` helper: the column-parameter counterpart of
-/// [`value_keyed_scalar`], building and validating the distribution **once per row** over
-/// `(value, p1, p2)` and applying the per-method body `f`.
+/// Shared driver for the column-parameter value-keyed per-row paths.
 ///
-/// The general (non-fast-path) side of the value-keyed methods. Where the scalar fast path builds
-/// the distribution once per call, this rebuilds it per row because at least one parameter is a
-/// column. The three things that vary between distributions are the macro's inputs:
+/// The column-parameter counterpart of [`value_keyed_scalar`]: at least one distribution parameter
+/// is a column, so `build` validates and constructs once per row instead of once per call. `f` is
+/// the same named per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two
+/// paths cannot drift and agree bit for bit.
 ///
-/// * the distribution type, used in the `F: Fn(&$dist, f64) -> Option<f64>` bound;
-/// * each parameter's `<cast dtype> => <accessor>` pair (binomial's `n` is `Int64`/`.i64()`, the
-///   continuous scales are `Float64`/`.f64()`); the evaluation point is always cast to `Float64`;
-/// * `build`: the distribution constructor (`build_dist`), validating per row and raising on an
-///   invalid parameterisation (`?` is available inside the closure).
+/// The caller does the cast and the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`, so a
+/// mixed `(i64, f64)` parameterisation (Binomial's `Int64` `n` beside its `Float64` `p`) fits, as in
+/// [`ternary_param_rows`](crate::rng::ternary_param_rows). `S` needs no trait bound: it is whatever
+/// `build` returns.
 ///
-/// `f` is the same named per-method body the scalar fast path applies, so the two paths share one
-/// body and cannot drift. A `NaN` evaluation point short-circuits to `NaN` after the distribution
-/// is built, so an invalid parameterisation still raises on a `NaN` row; see [`value_keyed_scalar`]
-/// for why the guard lives in the shared drivers. Only the 2-parameter (ternary) arm exists today,
-/// since every current distribution takes two parameters; a 1-parameter distribution would add a
-/// `try_binary_elementwise` arm here. Call sites are the distribution modules
-/// (`polars::prelude::*` in scope).
-macro_rules! value_keyed_per_row {
-    (
-        $(#[$meta:meta])*
-        fn $name:ident(&$dist:ty);
-        params = ($p1_dt:expr => $p1_acc:ident, $p2_dt:expr => $p2_acc:ident);
-        build = $build:path;
-    ) => {
-        $(#[$meta])*
-        fn $name<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-        where
-            F: Fn(&$dist, f64) -> Option<f64>,
-        {
-            let value = inputs[0].cast(&DataType::Float64)?;
-            let value_ca = value.f64()?;
-            let p1 = inputs[1].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let p2 = inputs[2].cast(&$p2_dt)?;
-            let p2_ca = p2.$p2_acc()?;
-            let name = inputs[0].name().clone();
-
-            let ca: Float64Chunked = polars::prelude::arity::try_ternary_elementwise(
-                value_ca,
-                p1_ca,
-                p2_ca,
-                |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
-                    match (value_opt, p1_opt, p2_opt) {
-                        (Some(v), Some(a), Some(b)) => {
-                            // Build first so an invalid parameterisation raises on a `NaN` row.
-                            let dist = $build(a, b)?;
-                            Ok(if v.is_nan() { Some(f64::NAN) } else { f(&dist, v) })
-                        },
-                        _ => Ok(None),
-                    }
+/// Null contract: any null among `(value, p1, p2)` nulls the row without calling `build`, matching
+/// the samplers.
+///
+/// `NaN` contract: as in [`value_keyed_scalar`], except that the short-circuit runs after `build`,
+/// so an invalid parameterisation still raises on a `NaN` row.
+///
+/// Keep `build` and `f` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn` or a
+/// `fn` pointer would cost an indirect call per row.
+pub(crate) fn value_keyed_per_row<A, B, S, Build, F>(
+    value: &Float64Chunked,
+    p1: &ChunkedArray<A>,
+    p2: &ChunkedArray<B>,
+    name: PlSmallStr,
+    build: Build,
+    f: F,
+) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    Build: Fn(A::Native, B::Native) -> PolarsResult<S>,
+    F: Fn(&S, f64) -> Option<f64>,
+{
+    let ca: Float64Chunked = try_ternary_elementwise(
+        value,
+        p1,
+        p2,
+        |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
+            match (value_opt, p1_opt, p2_opt) {
+                (Some(value), Some(p1), Some(p2)) => {
+                    // Build before the `NaN` short-circuit, so an invalid parameterisation still
+                    // raises on a `NaN` row. Pinned by `tests/distributions/plugin_nan_test.py`.
+                    let dist = build(p1, p2)?;
+                    Ok(if value.is_nan() {
+                        Some(f64::NAN)
+                    } else {
+                        f(&dist, value)
+                    })
                 },
-            )?;
+                _ => Ok(None),
+            }
+        },
+    )?;
 
-            Ok(ca.with_name(name).into_series())
-        }
-    };
+    Ok(ca.with_name(name).into_series())
 }
-pub(crate) use value_keyed_per_row;
 
 /// Shared driver for the two-parameter validation plugins: validate `(a, b)` per row by
 /// constructing the distribution inside `validate`, and emit the `Float64` that closure returns.

@@ -4,7 +4,7 @@ The public wrappers overlay `propagate_null_and_nan` (`_base.py`), which rewrite
 regardless of what the plugins return, so this Rust-level contract is invisible through the public
 API; it is exercised here through the private `_x` hooks, which for the statrs-backed
 distributions are bare plugin calls. The `NaN` short-circuit lives centrally in the shared drivers
-(`value_keyed_scalar` / `value_keyed_per_row!` in `src/distributions/mod.rs`) and is load-bearing
+(`value_keyed_scalar` / `value_keyed_per_row` in `src/distributions/mod.rs`) and is load-bearing
 in two places:
 
 * `Beta` `cdf` / `sf`: statrs' regularized incomplete beta panics on a `NaN` evaluation point, and
