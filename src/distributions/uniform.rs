@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
@@ -7,8 +6,8 @@ use statrs::distribution::Uniform;
 
 use crate::distributions::validate_params_binary;
 use crate::rng::{
-    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
+    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 fn build_dist(min: f64, max: f64) -> PolarsResult<Uniform> {
@@ -84,39 +83,29 @@ fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
 ///
 /// Per row, `null` propagates and an invalid parameterisation (`max <= min`, non-finite bounds, or
 /// a width overflowing `f64`) raises via [`build_dist`]. Seeding and chunk-invariance follow
-/// [`SampleKwargs::row_rngs`].
+/// [`sample_per_row_ternary`].
+///
+/// The built distribution is discarded on purpose: the row state is the raw `(min, max)` pair
+/// [`draw_half_open`] draws from.
 #[polars_expr(output_type=Float64)]
 fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let min = inputs[0].cast(&DataType::Float64)?;
-    let min_ca = min.f64()?;
     let max = inputs[1].cast(&DataType::Float64)?;
-    let max_ca = max.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        min_ca,
-        max_ca,
-        index_ca,
-        |min_opt, max_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (min_opt, max_opt, i_opt) {
-                (Some(lo), Some(hi), Some(i)) => {
-                    // Validate the parameterisation (finite bounds and width, `max > min`) with
-                    // the same error contract as `uniform_range`; the built distribution is
-                    // intentionally unused for the draw (see `draw_half_open`).
-                    build_dist(lo, hi)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw_half_open(lo, hi, &mut rng)))
-                },
-                _ => Ok(None),
-            }
+    sample_per_row_ternary(
+        name,
+        min.f64()?,
+        max.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        |lo, hi| {
+            build_dist(lo, hi)?;
+            Ok((lo, hi))
         },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+        |&(lo, hi), rng| draw_half_open(lo, hi, rng),
+    )
 }
 
 /// Constant-bounds fast path for [`uniform_sample`]. The built distribution is intentionally
@@ -129,7 +118,7 @@ fn uniform_sample_scalar(
     let (lo, hi) = kwargs.params.validated_bounds()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| {
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| {
         draw_half_open(lo, hi, rng)
     })
 }
@@ -146,7 +135,7 @@ fn uniform_samples_scalar(
     let (lo, hi) = kwargs.params.validated_bounds()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw_half_open(lo, hi, rng)
     })
 }
@@ -170,13 +159,9 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
         Ok((lo, hi))
     });
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        |&(lo, hi), rng| draw_half_open(lo, hi, rng),
-    )
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, |&(lo, hi), rng| {
+        draw_half_open(lo, hi, rng)
+    })
 }
 
 /// Element-wise support width `max - min`, validating the parameterisation.
@@ -192,9 +177,8 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
 fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     let min = inputs[0].cast(&DataType::Float64)?;
     let max = inputs[1].cast(&DataType::Float64)?;
-    let name = inputs[0].name().clone();
 
-    validate_params_binary(min.f64()?, max.f64()?, name, |lo, hi| {
+    validate_params_binary(min.f64()?, max.f64()?, |lo, hi| {
         build_dist(lo, hi)?;
         Ok(hi - lo)
     })

@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -9,8 +8,8 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
+    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Beta`, mapping the invalid-parameter case to a `ComputeError`.
@@ -61,9 +60,8 @@ impl BetaParamsKwargs {
 fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
-    let name = inputs[1].name().clone();
 
-    validate_params_binary(a.f64()?, b.f64()?, name, |a, b| {
+    validate_params_binary(a.f64()?, b.f64()?, |a, b| {
         build_dist(a, b)?;
         Ok(b)
     })
@@ -100,23 +98,9 @@ where
     F: Fn(&Beta) -> f64,
 {
     let a = inputs[0].cast(&DataType::Float64)?;
-    let a_ca = a.f64()?;
     let b = inputs[1].cast(&DataType::Float64)?;
-    let b_ca = b.f64()?;
-    let name = inputs[1].name().clone();
 
-    let ca: Float64Chunked =
-        try_binary_elementwise(a_ca, b_ca, |a_opt, b_opt| -> PolarsResult<Option<f64>> {
-            match (a_opt, b_opt) {
-                (Some(a), Some(b)) => {
-                    let dist = build_dist(a, b)?;
-                    Ok(Some(f(&dist)))
-                },
-                _ => Ok(None),
-            }
-        })?;
-
-    Ok(ca.with_name(name).into_series())
+    validate_params_binary(a.f64()?, b.f64()?, |a, b| Ok(f(&build_dist(a, b)?)))
 }
 
 /// One Beta draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -131,7 +115,7 @@ fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
 /// Element-wise Beta sampler over `(a, b, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid shape raises via [`build_dist`]. Seeding and
-/// chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// chunk-invariance follow [`sample_per_row_ternary`].
 ///
 /// The draw keeps `statrs` (two `O(1)`-amortised Gamma draws, normalised); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class it uses (unlike the
@@ -139,32 +123,19 @@ fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let a = inputs[0].cast(&DataType::Float64)?;
-    let a_ca = a.f64()?;
     let b = inputs[1].cast(&DataType::Float64)?;
-    let b_ca = b.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        a_ca,
-        b_ca,
-        index_ca,
-        |a_opt, b_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (a_opt, b_opt, i_opt) {
-                (Some(a), Some(b), Some(i)) => {
-                    let dist = build_dist(a, b)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw(&dist, &mut rng)))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_ternary(
+        name,
+        a.f64()?,
+        b.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
 /// Constant-parameter fast path for [`beta_sample`].
@@ -176,7 +147,7 @@ fn beta_sample_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
 /// Constant-parameter multi-draw fast path: the `samples` twin of [`beta_sample_scalar`].
@@ -191,7 +162,7 @@ fn beta_samples_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&dist, rng)
     })
 }
@@ -209,7 +180,7 @@ fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series
 
     let rows = ternary_param_rows(a.f64()?, b.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.

@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
@@ -7,8 +6,9 @@ use statrs::distribution::Bernoulli;
 
 use crate::distributions::validate_params_unary;
 use crate::rng::{
-    binary_param_rows, sample_by_index, samples_bool_output, samples_by_index, samples_per_row,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
+    samples_by_index, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
+    SamplesScalarKwargs,
 };
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
@@ -37,9 +37,8 @@ impl BernoulliParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
-    let name = inputs[0].name().clone();
 
-    validate_params_unary(proba.f64()?, name, |proba| {
+    validate_params_unary(proba.f64()?, |proba| {
         build_dist(proba)?;
         Ok(proba)
     })
@@ -57,33 +56,21 @@ fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
 /// Element-wise Bernoulli sampler over `(p, row_index)`, returning `Boolean`.
 ///
 /// Per row, `null` propagates and an invalid `p` raises via [`build_dist`]. Seeding and
-/// chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
-    let proba_ca = proba.f64()?;
     let index = inputs[1].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: BooleanChunked = try_binary_elementwise(
-        proba_ca,
-        index_ca,
-        |p_opt, i_opt| -> PolarsResult<Option<bool>> {
-            match (p_opt, i_opt) {
-                (Some(p), Some(i)) => {
-                    let dist = build_dist(p)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw(&dist, &mut rng)))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_binary(
+        name,
+        proba.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
 /// Constant-parameter fast path for [`bernoulli_sample`].
@@ -95,7 +82,7 @@ fn bernoulli_sample_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
 /// Constant-parameter multi-draw fast path: the `samples` twin of [`bernoulli_sample_scalar`].
@@ -110,7 +97,7 @@ fn bernoulli_samples_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<BooleanType, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&dist, rng)
     })
 }
@@ -127,5 +114,5 @@ fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
     let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<BooleanType, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

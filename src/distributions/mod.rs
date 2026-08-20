@@ -107,36 +107,28 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Shared driver for the two-parameter validation plugins: validate `(a, b)` per row by
-/// constructing the distribution inside `validate`, and emit the `Float64` that closure returns.
+/// Shared driver for the two-parameter validation plugins: `validate` builds the distribution per
+/// row and returns the `Float64` to emit, either a parameter itself (`sigma`) or a quantity derived
+/// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
+/// Any null input nulls the row without calling `validate`, matching the samplers.
 ///
-/// These plugins exist so the closed-form moments and (for Uniform / Bernoulli) value-keyed
-/// methods, which are pure Polars expressions, still report an invalid parameterisation through the
-/// same Rust `build_dist` rather than silently producing a garbage result. The constant-parameter
-/// fast path calls the same plugin on length-1 `pl.lit` inputs, so it is built once instead of per
-/// row.
-///
-/// `validate` validates and derives in one step: it `?`-propagates the `InvalidOperation` out of
-/// `build_dist` and returns the value to emit, either a parameter itself (`sigma`) or a quantity
-/// derived from both (Uniform's `max - min`).
+/// These plugins are what let the closed-form moments and (for Uniform / Bernoulli) value-keyed
+/// methods, which are pure Polars expressions, report an invalid parameterisation through the same
+/// Rust `build_dist`. The constant-parameter fast path calls the same plugin on length-1 `pl.lit`
+/// inputs, so it is built once instead of per row.
 ///
 /// The two parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial)
 /// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
 /// the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`.
 ///
-/// Null contract: any null input nulls the row without calling `validate`, matching the samplers.
-///
-/// Polars resolves a plugin expression's output name from its first input and ignores the name set
-/// here, so the frame column follows `inputs[0]` whichever input is passed (pinned by
-/// `tests/distributions/output_name_test.py`). `name` labels the returned `Series` only; callers
-/// pass the input whose quantity they return.
+/// Takes no output name: polars resolves a plugin expression's output name from its first input, so
+/// the frame column follows `inputs[0]` (pinned by `tests/distributions/output_name_test.py`).
 ///
 /// Keep `validate` a generic `F: Fn`: it monomorphises into the row loop, where a `&dyn Fn` or a
 /// `fn` pointer would cost an indirect call per row.
 pub(crate) fn validate_params_binary<A, B, F>(
     a: &ChunkedArray<A>,
     b: &ChunkedArray<B>,
-    name: PlSmallStr,
     validate: F,
 ) -> PolarsResult<Series>
 where
@@ -152,16 +144,12 @@ where
             }
         })?;
 
-    Ok(ca.with_name(name).into_series())
+    Ok(ca.into_series())
 }
 
 /// Single-parameter counterpart of [`validate_params_binary`], same contracts
 /// (`bernoulli_proba`, `exponential_rate`).
-pub(crate) fn validate_params_unary<A, F>(
-    a: &ChunkedArray<A>,
-    name: PlSmallStr,
-    validate: F,
-) -> PolarsResult<Series>
+pub(crate) fn validate_params_unary<A, F>(a: &ChunkedArray<A>, validate: F) -> PolarsResult<Series>
 where
     A: PolarsNumericType,
     F: Fn(A::Native) -> PolarsResult<f64>,
@@ -173,5 +161,5 @@ where
         }
     })?;
 
-    Ok(ca.with_name(name).into_series())
+    Ok(ca.into_series())
 }

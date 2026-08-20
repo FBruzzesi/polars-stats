@@ -96,7 +96,7 @@ non-null index straight into the typed output. Each distribution writes the two 
 the generic `seed` / `size` wrappers in `rng.rs` around the distribution's own `<Name>ParamsKwargs`. The shells reuse
 the same `(root_seed, row_index)` seeding and call the same named `draw` as the per-row path, so output is
 byte-identical for the same seed (a property test pins that equality); column-valued parameters still take the general
-per-row plugin.
+per-row plugin, itself a shell over the `sample_per_row_*` / `samples_per_row` drivers in the same file.
 
 !!! info "Earlier `ChaCha20` design (removed)"
 

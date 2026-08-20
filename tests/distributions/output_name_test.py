@@ -11,8 +11,8 @@ output to `value`'s resolved name, since its leading `pl.lit(None)` branch would
 every value-keyed output `"literal"`.
 
 The parameter validators follow the same first-parameter rule. Polars resolves a plugin
-expression's output name from its first input and ignores the name the plugin set on its `Series`,
-so `beta_params` naming that `Series` after `b` never reaches the frame.
+expression's output name from its first input, which is why the validator drivers set no name of
+their own.
 """
 
 from __future__ import annotations
@@ -84,9 +84,9 @@ def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution) -> Non
     assert _FRAME.select(dist.cdf(pl.col("p"))).columns == ["p"]
 
 
-# The four binary validators name their Rust `Series` after the second parameter, so giving every
-# second parameter a different column name from its first is what makes these cases discriminating:
-# an assertion on the first name fails if the plugin's own name ever reaches the frame.
+# Every second parameter carries a different column name from its first, which is what makes these
+# cases discriminating: an output that followed `inputs[1]` instead of polars' first-input rule
+# would fail the assertion.
 # `_checked_params` is the unaliased read for the four routed through `_moment`, whose
 # `pl.when(...).then(value)` gate would otherwise rename the output and make any assertion pass.
 _VALIDATOR_FRAME = pl.DataFrame(
