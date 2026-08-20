@@ -62,7 +62,7 @@ path is selected only when the parameters are known scalars, so nothing column-v
 
 ### Constant parameters validate once, not per row
 
-The closed-form moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods of `Uniform` / `Bernoulli`
+The moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods of `Uniform` / `Bernoulli`
 / `Exponential` do not build a distribution; they compute a Polars expression. But they still route their *validation*
 through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`,
 `exponential_rate`, `beta_params`) so an invalid
@@ -71,7 +71,7 @@ nonsense moment (see "Invalid parameters raise"). On the general path that plugi
 parameter columns, validating the *same constant* on every row.
 
 For all-scalar parameters the same plugin is instead called on length-1 `pl.lit` inputs, so its elementwise closure runs
-once. The validated quantity (or, for `Binomial.entropy`, the support-sum value) is returned behind a `pl.when(...)`
+once. The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a `pl.when(...)`
 validity gate; the length-1 condition broadcasts, so the moment stays a length-n column byte-identical to the per-row
 path. A length-1 collapse is deliberately *not* used, because it would break that path equality (column parameters
 still yield length-n). This needs no new plugin and no kwargs: it reuses the existing validators, called on fewer rows.
