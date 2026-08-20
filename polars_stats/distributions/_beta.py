@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, ClassVar
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_kwargs,
 )
@@ -96,11 +95,8 @@ class Beta(ContinuousDistribution):
         return self._moment(self._a * self._b / ((self._a + self._b) ** 2 * (self._a + self._b + 1)))
 
     def entropy(self) -> pl.Expr:
-        """Differential entropy in nats, ``ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b) + (a + b - 2) psi(a + b)``."""
-        # Unlike ``mean`` / ``variance`` there is no elementary closed form (log-Beta and digamma), so the
-        # formula is evaluated by ``beta_entropy`` in Rust. For column parameters that runs once per row; for
-        # scalar parameters it is computed **once** on length-1 inputs and broadcast to length-n behind the
-        # ``_moment`` validity gate, so a constant's entropy is not re-evaluated on every row.
-        if self._scalar_kwargs is None:
-            return register_plugin("beta_entropy", (self._a, self._b))
-        return self._moment(register_plugin("beta_entropy", self._scalar_lit_args()))
+        """Differential entropy in nats, ``ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b) + (a + b - 2) psi(a + b)``.
+
+        No elementary closed form (log-Beta and digamma), so ``beta_entropy`` evaluates it in Rust.
+        """
+        return self._param_plugin("beta_entropy")

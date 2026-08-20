@@ -331,6 +331,21 @@ class _UnivariateDistribution(ABC):
         validated_once = register_plugin(plugin_name, self._scalar_lit_args())
         return pl.when(validated_once.is_not_null()).then(validated)
 
+    def _param_plugin(self, function_name: str) -> pl.Expr:
+        """Register a parameter-keyed Rust plugin call `f(*params)` for a moment with no closed form.
+
+        The moment counterpart of `_value_plugin`: same constant-parameter routing, no `value` input. With
+        column parameters the plugin runs once per row over `_param_exprs`. With all-constant parameters it
+        runs **once** on length-1 `pl.lit` inputs and is broadcast to length-n behind the `_moment` validity
+        gate, so a constant's moment is not re-evaluated on every row.
+
+        The scalar branch routes through `_moment`, so a distribution must define `_checked_params` to
+        use this; `Uniform`, `Bernoulli` and `Exponential` deliberately do not.
+        """
+        if self._scalar_kwargs is None:
+            return register_plugin(function_name, self._param_exprs)
+        return self._moment(register_plugin(function_name, self._scalar_lit_args()))
+
     def cdf(self, value: float | IntoExprColumn) -> pl.Expr:
         """Cumulative distribution function, `P(X <= value)`. Nulls and NaNs in `value` are propagated."""
         v = as_expr(value)
