@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -9,8 +8,8 @@ use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_by_index, samples_by_index, samples_per_row, samples_u64_output, ternary_param_rows,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row, samples_u64_output,
+    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Binomial`, mapping both invalid-parameter cases to a `ComputeError`.
@@ -125,23 +124,9 @@ where
     F: Fn(&Binomial) -> f64,
 {
     let n = inputs[0].cast(&DataType::Int64)?;
-    let n_ca = n.i64()?;
     let p = inputs[1].cast(&DataType::Float64)?;
-    let p_ca = p.f64()?;
-    let name = inputs[1].name().clone();
 
-    let ca: Float64Chunked =
-        try_binary_elementwise(n_ca, p_ca, |n_opt, p_opt| -> PolarsResult<Option<f64>> {
-            match (n_opt, p_opt) {
-                (Some(n), Some(p)) => {
-                    let dist = build_dist(n, p)?;
-                    Ok(Some(f(&dist)))
-                },
-                _ => Ok(None),
-            }
-        })?;
-
-    Ok(ca.with_name(name).into_series())
+    validate_params_binary(n.i64()?, p.f64()?, |n, p| Ok(f(&build_dist(n, p)?)))
 }
 
 /// One Binomial draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -157,36 +142,23 @@ fn draw(dist: &BinomialSampler, rng: &mut impl rand::Rng) -> u64 {
 /// Element-wise Binomial sampler over `(n, p, row_index)`, returning `UInt64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_sampler`].
-/// Seeding and chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
-    let n_ca = n.i64()?;
     let p = inputs[1].cast(&DataType::Float64)?;
-    let p_ca = p.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: UInt64Chunked = try_ternary_elementwise(
-        n_ca,
-        p_ca,
-        index_ca,
-        |n_opt, p_opt, i_opt| -> PolarsResult<Option<u64>> {
-            match (n_opt, p_opt, i_opt) {
-                (Some(n), Some(p), Some(i)) => {
-                    let dist = build_sampler(n, p)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw(&dist, &mut rng)))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_ternary(
+        name,
+        n.i64()?,
+        p.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_sampler,
+        draw,
+    )
 }
 
 /// Constant-parameter fast path for [`binomial_sample`], on the same [`build_sampler`].
@@ -198,7 +170,7 @@ fn binomial_sample_scalar(
     let dist = kwargs.params.build_sampler()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
 /// Constant-parameter multi-draw fast path: the `samples` twin of [`binomial_sample_scalar`].
@@ -214,7 +186,7 @@ fn binomial_samples_scalar(
     let dist = kwargs.params.build_sampler()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<UInt64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&dist, rng)
     })
 }
@@ -233,7 +205,7 @@ fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Se
 
     let rows = ternary_param_rows(n.i64()?, p.f64()?, index.u64()?, build_sampler);
 
-    samples_per_row::<UInt64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -393,9 +365,8 @@ fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> Polar
 fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
     let n = inputs[0].cast(&DataType::Int64)?;
     let p = inputs[1].cast(&DataType::Float64)?;
-    let name = inputs[1].name().clone();
 
-    validate_params_binary(n.i64()?, p.f64()?, name, |n, p| {
+    validate_params_binary(n.i64()?, p.f64()?, |n, p| {
         build_dist(n, p)?;
         Ok(p)
     })

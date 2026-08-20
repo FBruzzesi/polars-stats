@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -7,8 +6,9 @@ use statrs::distribution::Exp;
 
 use crate::distributions::validate_params_unary;
 use crate::rng::{
-    binary_param_rows, sample_by_index, samples_by_index, samples_f64_output, samples_per_row,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
+    samples_f64_output, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
+    SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Exp`, mapping the invalid-parameter case to a `ComputeError`.
@@ -46,9 +46,8 @@ impl ExponentialParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
-    let name = inputs[0].name().clone();
 
-    validate_params_unary(rate.f64()?, name, |rate| {
+    validate_params_unary(rate.f64()?, |rate| {
         build_dist(rate)?;
         Ok(rate)
     })
@@ -66,7 +65,7 @@ fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
 /// Element-wise Exponential sampler over `(rate, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid rate raises via [`build_dist`]. Seeding and
-/// chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// chunk-invariance follow [`sample_per_row_binary`].
 ///
 /// The draw keeps `statrs` (`O(1)` ziggurat: `sample_exp_1(rng) / rate`); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class `statrs` uses (unlike
@@ -74,29 +73,17 @@ fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
-    let rate_ca = rate.f64()?;
     let index = inputs[1].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: Float64Chunked = try_binary_elementwise(
-        rate_ca,
-        index_ca,
-        |rate_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (rate_opt, i_opt) {
-                (Some(r), Some(i)) => {
-                    let dist = build_dist(r)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw(&dist, &mut rng)))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_binary(
+        name,
+        rate.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
 /// Constant-rate fast path for [`exponential_sample`].
@@ -108,7 +95,7 @@ fn exponential_sample_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
 /// Constant-parameter multi-draw fast path: the `samples` twin of [`exponential_sample_scalar`].
@@ -123,7 +110,7 @@ fn exponential_samples_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&dist, rng)
     })
 }
@@ -140,5 +127,5 @@ fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult
 
     let rows = binary_param_rows(rate.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

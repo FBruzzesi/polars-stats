@@ -1,5 +1,4 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -9,8 +8,8 @@ use crate::distributions::{
     normal, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
 };
 use crate::rng::{
-    sample_by_index, samples_by_index, samples_f64_output, samples_per_row, ternary_param_rows,
-    SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
+    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
@@ -95,9 +94,8 @@ where
 fn lognormal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
-    let name = inputs[1].name().clone();
 
-    validate_params_binary(mu.f64()?, sigma.f64()?, name, |mu, sigma| {
+    validate_params_binary(mu.f64()?, sigma.f64()?, |mu, sigma| {
         build_dist(mu, sigma)?;
         Ok(sigma)
     })
@@ -115,36 +113,23 @@ fn draw(dist: &LogNormal, rng: &mut impl rand::Rng) -> f64 {
 /// Element-wise LogNormal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
-/// and chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
-    let mu_ca = mu.f64()?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
-    let sigma_ca = sigma.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        mu_ca,
-        sigma_ca,
-        index_ca,
-        |mu_opt, sigma_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (mu_opt, sigma_opt, i_opt) {
-                (Some(m), Some(s), Some(i)) => {
-                    let dist = build_dist(m, s)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(draw(&dist, &mut rng)))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_ternary(
+        name,
+        mu.f64()?,
+        sigma.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
 /// Constant-parameter fast path for [`lognormal_sample`].
@@ -156,7 +141,7 @@ fn lognormal_sample_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    sample_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
 /// Constant-parameter multi-draw fast path: the `samples` twin of [`lognormal_sample_scalar`].
@@ -171,7 +156,7 @@ fn lognormal_samples_scalar(
     let dist = kwargs.params.build()?;
     let name = inputs[0].name().clone();
 
-    samples_by_index::<Float64Type, _, _>(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&dist, rng)
     })
 }
@@ -189,7 +174,7 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(name, kwargs.seed, kwargs.size, rows, draw)
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
