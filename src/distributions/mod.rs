@@ -56,8 +56,8 @@ where
 /// the same named per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two
 /// paths cannot drift and agree bit for bit.
 ///
-/// The caller does the cast and the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`, so a
-/// mixed `(i64, f64)` parameterisation (Binomial's `Int64` `n` beside its `Float64` `p`) fits, as in
+/// The caller does the cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`, so a
+/// mixed `(u64, f64)` parameterisation (Binomial's `UInt64` `n` beside its `Float64` `p`) fits, as in
 /// [`ternary_param_rows`](crate::rng::ternary_param_rows). `S` needs no trait bound: it is whatever
 /// `build` returns.
 ///
@@ -117,9 +117,9 @@ where
 /// Rust `build_dist`. The constant-parameter fast path calls the same plugin on length-1 `pl.lit`
 /// inputs, so it is built once instead of per row.
 ///
-/// The two parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial)
+/// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
 /// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
-/// the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`.
+/// the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`.
 ///
 /// Takes no output name: polars resolves a plugin expression's output name from its first input, so
 /// the frame column follows `inputs[0]` (pinned by `tests/distributions/output_name_test.py`).

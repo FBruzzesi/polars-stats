@@ -75,14 +75,34 @@ def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
     return _coerce(value, name=name, scalar_label="a float", scalar_types=float, dtype=pl.Float64())
 
 
+_MAX_SCALAR_COUNT = 2**63 - 1
+"""Largest count a *constant* `n` may take, which is `i64::MAX` rather than the `u64::MAX` Rust reads.
+
+The constant-parameter fast paths pass `n` as a plugin kwarg, and kwargs cross FFI as pickle, whose
+integers are `i64`. A larger constant would decode into some methods and not others (`mean` rides as a
+`pl.lit` input rather than a kwarg), so it is refused at construction instead. A column has no such
+limit: Rust widens it to `UInt64` and the whole range is a valid trial count.
+"""
+
+
 def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     """Coerce an integer count parameter (e.g. binomial trial count `n`) into a row-aligned `pl.Expr`.
 
     Accepts a Python `int` or an `IntoExprColumn`; a `bool` (an `int` subclass, but not a sensible count),
-    a `float`, or any other type raises `TypeError`. The expanded scalar is `Int64`.
-    The *value* (`>= 0`) is validated per row in Rust, not here. See `_coerce` for the rationale.
+    a `float`, or any other type raises `TypeError`. An `int` outside `[0, _MAX_SCALAR_COUNT]` raises
+    `ValueError`, the one parameter *value* judged at construction rather than at evaluation, because the
+    expanded scalar is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
+    it with a message about `i64` and `u64`. A column keeps its dtype until Rust widens it to `UInt64`,
+    which requires an integer dtype and every value `>= 0`. See `_coerce` for the rationale.
     """
-    return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
+    if (trials := scalar_int(value)) is not None:
+        if trials < 0:
+            msg = f"{name} must be a non-negative integer, got {trials}"
+            raise ValueError(msg)
+        if trials > _MAX_SCALAR_COUNT:
+            msg = f"{name} must be at most {_MAX_SCALAR_COUNT} as a Python int, got {trials}: pass a column instead"
+            raise ValueError(msg)
+    return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.UInt64())
 
 
 def scalar_float(value: float | IntoExprColumn) -> float | None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
@@ -82,3 +84,30 @@ def test_ppf_at_one_returns_the_support_maximum(n: int, p: float) -> None:
     """
     got = pl.DataFrame({"q": [1.0]}).select(r=Binomial(n, p).ppf(pl.col("q")))["r"].item()
     assert got == float(n) == float(scipy_binom.ppf(1.0, n, p))
+
+
+# NOTE: Deliberate divergences from scipy, recorded here rather than rediscovered as surprises.
+
+_MOMENTS = ("mean", "variance", "std", "entropy")
+
+
+def test_scipy_answers_a_float_n_with_nan() -> None:
+    """scipy's half of the divergence: `n = 2.7` is not a binomial there either, it just says so with `nan`."""
+    assert all(math.isnan(float(getattr(scipy_binom, name)(2.7, 0.5))) for name in ("mean", "var", "std", "entropy"))
+    assert math.isnan(float(scipy_binom.pmf(2, 2.7, 0.5)))
+    # scipy answers for a whole-numbered float, which the dtype check here refuses.
+    assert scipy_binom.mean(2.0, 0.5) == 1.0
+
+
+@pytest.mark.parametrize("n", [2.7, 2.0])
+@pytest.mark.parametrize("method", ["pmf", "cdf", "sf", *_MOMENTS])
+def test_float_n_raises_where_scipy_returns_nan(method: str, n: float) -> None:
+    """A float `n` column raises here, where a `nan` would flow on into whatever consumes it.
+
+    The divergence is wider than the fractional case, since the check reads the dtype: `2.0` raises
+    too. So `_NS` holds only integers, and a float `n` gets no parity assertion.
+    """
+    b = Binomial(n=pl.col("n"), p=pl.col("p"))
+    expr = getattr(b, method)() if method in _MOMENTS else getattr(b, method)(pl.lit(2.0))
+    with pytest.raises(pl.exceptions.ComputeError, match="n must be an integer column"):
+        pl.DataFrame({"n": [n], "p": [0.5]}).select(r=expr)

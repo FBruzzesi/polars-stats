@@ -24,14 +24,17 @@ class Binomial(DiscreteDistribution):
     (``Binomial(p, n)``); this class follows scipy's ``(n, p)``.
 
     Arguments:
-        n: Number of trials, an integer ``>= 0``. Either a Python ``int`` or an ``IntoExprColumn``
-            (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one count per row.
+        n: Number of trials, an integer ``>= 0``. Either a Python ``int`` (at most ``2**63 - 1``) or an
+            ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one count per
+            row. A column must have an integer dtype, of any width up to ``UInt64``, and may hold any count
+            the dtype can; cast a float one yourself (``pl.col("n").cast(pl.Int64)``).
         p: Success probability in ``[0, 1]``. Either a Python ``float`` or an ``IntoExprColumn``.
 
-    Neither parameter is validated at construction: a negative ``n`` or a ``p`` outside ``[0, 1]``
-    raises ``InvalidOperation`` (a ``ComputeError``) when a method is evaluated, identically to an
-    invalid column row. Construction rejects only wrong *types* (``TypeError``). Null parameters
-    propagate to null.
+    Parameters are validated at evaluation, where a negative ``n`` column, a non-integer ``n`` dtype or a
+    ``p`` outside ``[0, 1]`` raises ``InvalidOperation`` (a ``ComputeError``). A scalar ``n`` is the one
+    exception: it is expanded to a ``UInt64`` column and passed to the fast paths as a kwarg, neither of
+    which can carry an out-of-range count, so it raises ``ValueError`` at construction. Construction
+    otherwise rejects only wrong *types* (``TypeError``). Null parameters propagate to null.
     """
 
     _n: pl.Expr

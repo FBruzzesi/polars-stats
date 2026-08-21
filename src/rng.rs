@@ -213,9 +213,9 @@ where
 /// Two-parameter counterpart of [`sample_per_row_binary`] (e.g. `(mu, sigma)`, `(n, p)`), same
 /// contracts throughout.
 ///
-/// The two parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial's
-/// `Int64` `n` beside its `Float64` `p`) fits, as in [`ternary_param_rows`]: the caller does the
-/// cast and the accessor (`.f64()` / `.i64()`), which fixes `A` and `B`. `S` is whatever `build`
+/// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial's
+/// `UInt64` `n` beside its `Float64` `p`) fits, as in [`ternary_param_rows`]: the caller does the
+/// cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`. `S` is whatever `build`
 /// returns, the built distribution for most callers but Uniform's raw `(f64, f64)` bounds for the
 /// one that validates then discards.
 #[inline]
@@ -426,7 +426,7 @@ where
 
 /// Two-parameter counterpart of [`binary_param_rows`] (e.g. `(mu, sigma)`, `(n, p)`): zip both
 /// parameter columns with the row index and, on a fully-non-null row, run `build` once. The two
-/// parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial) fits.
+/// parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial) fits.
 pub(crate) fn ternary_param_rows<'a, A, B, S, F>(
     a: &'a ChunkedArray<A>,
     b: &'a ChunkedArray<B>,

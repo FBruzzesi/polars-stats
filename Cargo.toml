@@ -22,7 +22,14 @@ extension-module = ["pyo3/extension-module"]
 pyo3 = { version = "0.26.0", features = ["abi3-py310"] }
 pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
-polars = { version = "0.52.0", default-features = false, features = ["dtype-u8"] }
+# The narrow integer dtypes are enabled for correctness, not reach: a parameter column of a dtype
+# polars was not built with *panics* at the plugin boundary instead of raising.
+polars = { version = "0.52.0", default-features = false, features = [
+    "dtype-i8",
+    "dtype-i16",
+    "dtype-u8",
+    "dtype-u16",
+] }
 polars-arrow = { version = "0.52.0", default-features = false }
 # Already in polars' tree; depended on directly for POOL and its rayon re-export, so the
 # multi-draw samplers parallelise on the same thread pool polars itself uses.
