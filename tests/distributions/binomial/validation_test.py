@@ -171,3 +171,30 @@ def test_every_integer_width_is_accepted(dtype: type[pl.DataType]) -> None:
     b = Binomial(pl.col("n"), pl.col("p"))
     got = df.select(pmf=b.pmf(pl.col("x")), mean=b.mean(), var=b.variance())
     assert got.row(0) == pytest.approx((10 * 0.5**10, 5.0, 2.5))
+
+
+def test_null_dtype_n_column_propagates() -> None:
+    # A `Null`-dtype column has no values the integer rule could protect, so it stays
+    # null-in-null-out like every other parameter instead of hitting the dtype gate.
+    df = pl.DataFrame({"n": [None, None], "p": [0.5, 0.5]})  # n dtype: Null
+    b = Binomial(pl.col("n"), pl.col("p"))
+    got = df.select(mean=b.mean(), pmf=b.pmf(pl.lit(1.0)), draw=b.sample(seed=0))
+    assert got["mean"].to_list() == [None, None]
+    assert got["pmf"].to_list() == [None, None]
+    assert got["draw"].to_list() == [None, None]
+
+
+def test_all_null_float_n_column_still_raises_on_dtype() -> None:
+    # The dtype rule is column-level: a float `n` column raises even when every value in it is null.
+    df = pl.DataFrame({"n": [None, None], "p": [0.5, 0.5]}, schema={"n": pl.Float64, "p": pl.Float64})
+    with pytest.raises(pl.exceptions.ComputeError, match=_NOT_INTEGER):
+        df.select(r=Binomial(pl.col("n"), pl.col("p")).mean())
+
+
+def test_entropy_raises_at_the_u64_maximum() -> None:
+    # statrs evaluates entropy by iterating `(0..n + 1)`, which wraps to an empty range at
+    # `u64::MAX` in release and returned a confident 0.0 (true value ~22.9 nats). The one value
+    # `test_the_whole_u64_range_of_n_is_accepted` cannot extend to entropy, refused loudly.
+    df = pl.DataFrame({"n": [2**64 - 1], "p": [0.5]}, schema={"n": pl.UInt64, "p": pl.Float64})
+    with pytest.raises(pl.exceptions.ComputeError, match="overflows the entropy support sum"):
+        df.select(r=Binomial(pl.col("n"), pl.col("p")).entropy())

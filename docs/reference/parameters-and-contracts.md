@@ -28,7 +28,9 @@ rather than a broadcast literal, which is what keeps every method elementwise un
 
 Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
 expected. The count parameter `n` is the exception: its column must already hold integers, of any width up to
-`UInt64`, because casting a float one would silently truncate a fractional count. A non-numeric column raises at
+`UInt64`, because casting a float one would silently truncate a fractional count. The rule is judged on the
+dtype, so a float `n` column raises even when every value in it is null; a `Null`-dtype column propagates nulls
+like any other parameter. A non-numeric column raises at
 evaluation: Polars fails the query with `InvalidOperationError` rather than returning nulls.
 
 ## Parameter validity

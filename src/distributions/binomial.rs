@@ -49,9 +49,8 @@ fn build_sampler(n: u64, p: f64) -> PolarsResult<BinomialSampler> {
 ///
 /// The sign comes free from a *strict* cast, since a negative has no `u64` to widen to; the
 /// default `cast` is `NonStrict` and would null the row instead. Polars' message names the column and
-/// every offending value, so this adds only the rule, as [`build_dist`] adds it to statrs'. Unlike
-/// the row loops this reads the whole column, so a negative `n` raises even on a row another
-/// parameter nulls; a null `n` still propagates.
+/// every offending value. Unlike the row loops this reads the whole column, so a negative `n` raises
+/// even on a row another parameter nulls; a null `n` still propagates.
 ///
 /// Widening rather than narrowing is also what lets the whole `u64` range reach `statrs`: the old
 /// `Int64` funnel mapped anything above `i64::MAX` to `null`, turning a trial count `statrs` accepts
@@ -60,6 +59,13 @@ fn build_sampler(n: u64, p: f64) -> PolarsResult<BinomialSampler> {
 /// than the `max()` scan plus down-cast a `UInt64` column used to pay.
 fn coerce_n(n: &Series) -> PolarsResult<UInt64Chunked> {
     let dtype = n.dtype();
+    // A `Null`-dtype column (e.g. `pl.DataFrame({"n": [None]})`) has no values the integer rule
+    // could protect; it widens to all-null `UInt64` so null-in-null-out holds, exactly as every
+    // other parameter's cast treats it. The dtype gate below stays column-level: a *float* column
+    // is refused even when every value in it is null.
+    if dtype == &DataType::Null {
+        return Ok(n.cast(&DataType::UInt64)?.u64()?.clone());
+    }
     if !dtype.is_integer() {
         let msg = format!(
             "n must be an integer column, got {dtype}: cast it explicitly, e.g. \
@@ -150,6 +156,10 @@ where
 /// raises via [`build_dist`]. Only `entropy` routes through here (the one moment without an
 /// elementary closed form); `mean` and `variance` are closed forms computed in Polars and gated on
 /// [`binomial_params`].
+///
+/// `n == u64::MAX` is refused here rather than in [`build_dist`]: it is a valid trial count for
+/// every other method, but `statrs` evaluates the support-sum moments by iterating `(0..n + 1)`,
+/// which wraps to an empty range at `u64::MAX` in release and returned a confident `0.0` entropy.
 fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Binomial) -> f64,
@@ -157,7 +167,15 @@ where
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
 
-    validate_params_binary(&n, p.f64()?, |n, p| Ok(f(&build_dist(n, p)?)))
+    validate_params_binary(&n, p.f64()?, |n, p| {
+        // TODO(FBruzzesi): Remove `n == u64::MAX` guard once fixed upstream in statrs
+        if n == u64::MAX {
+            return Err(PolarsError::InvalidOperation(
+                format!("n = {n} overflows the entropy support sum: statrs iterates 0..=n via n + 1, which wraps at u64::MAX").into(),
+            ));
+        }
+        Ok(f(&build_dist(n, p)?))
+    })
 }
 
 /// One Binomial draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
