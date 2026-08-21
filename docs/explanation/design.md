@@ -47,7 +47,7 @@ serves distributions needing a single uniform per draw, so it is deliberately no
 
 `sample` ships a second plugin, `<name>_sample_scalar`, used when every parameter is a Python scalar. The general
 sampler is built for the differentiator (column-valued parameters), but it makes the common constant-parameter case pay
-for machinery it does not use: each scalar is expanded to a full-length `pl.repeat` column, marshalled across FFI, and
+for machinery it does not use: each scalar is broadcast to a full-length column, marshalled across FFI, and
 re-validated on every row, and the distribution is rebuilt per row. For a cheap draw (uniform is one multiply-add) that
 fixed overhead dominates the draw itself.
 
@@ -67,14 +67,15 @@ The moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods o
 through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`,
 `exponential_rate`, `beta_params`) so an invalid
 parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a
-nonsense moment (see "Invalid parameters raise"). On the general path that plugin runs over the full-length `pl.repeat`
-parameter columns, validating the *same constant* on every row.
+nonsense moment (see "Invalid parameters raise"). With column parameters that plugin runs over the parameter columns,
+validating each row.
 
-For all-scalar parameters the same plugin is instead called on length-1 `pl.lit` inputs, so its elementwise closure runs
-once. The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a `pl.when(...)`
-validity gate; the length-1 condition broadcasts, so the moment stays a length-n column byte-identical to the per-row
-path. A length-1 collapse is deliberately *not* used, because it would break that path equality (column parameters
-still yield length-n). This needs no new plugin and no kwargs: it reuses the existing validators, called on fewer rows.
+For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
+The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
+`pl.when(...)` validity gate. Nothing in the expression is longer than one row, so the moment is a *scalar* column that
+polars broadcasts wherever it meets a longer one: values still match the per-row path bit for bit, only the standalone
+height differs (`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no new plugin and no kwargs, only the
+existing validators called on fewer rows.
 
 It is the same "constant parameters take a fast path" idea as the sampler, applied to validation: nothing leaves Rust,
 and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). For a constant,

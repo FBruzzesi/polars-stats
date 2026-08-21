@@ -79,7 +79,7 @@ def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution) -> Non
 
     Only the output name is pinned: how a downstream `.name.*` modifier resolves it is polars'
     call and differs across supported versions (old polars resolves the *root* name, which for the
-    closed-form hooks is the `pl.len()` inside a scalar parameter's `pl.repeat` expansion).
+    closed-form hooks is a scalar parameter's `pl.lit`).
     """
     assert _FRAME.select(dist.cdf(pl.col("p"))).columns == ["p"]
 

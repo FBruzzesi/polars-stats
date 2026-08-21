@@ -79,5 +79,5 @@ Wrap it in an aggregation if you want a single number per group, for example
 ## Related
 
 * [Use column-valued parameters](column-parameters.md): where those `mu` / `sigma` columns come from.
-* [Explanation / Architecture](../explanation/architecture.md#column-valued-parameters): why a scalar parameter is
-    expanded to a row-aligned expression, and why that keeps these methods elementwise under partitioning.
+* [Explanation / Architecture](../explanation/architecture.md#column-valued-parameters): why a scalar parameter is a
+    length-1 literal, and how Rust broadcasts it so these methods stay elementwise under partitioning.

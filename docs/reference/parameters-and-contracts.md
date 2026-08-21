@@ -22,9 +22,16 @@ parameter rejects an `int`, while a method argument accepts either.
 | `pl.Series` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` |
 | anything else | `TypeError` | `TypeError` | `TypeError` |
 
-A `str` is always a column reference, never a literal value. A Python scalar is expanded to a row-aligned expression
-rather than a broadcast literal, which is what keeps every method elementwise under `over` and `group_by`
+A `str` is always a column reference, never a literal value. A Python scalar becomes `pl.lit(value)`, a length-1
+scalar column that the Rust plugin broadcasts to the call's row count
 (see [Architecture](../explanation/architecture.md#column-valued-parameters)).
+
+Polars' own scalar semantics then apply. An expression whose inputs are *all* constant is a scalar column:
+`df.select(Normal(0.0, 1.0).mean())` returns **one row**, `group_by().agg()` returns a scalar rather than a list per
+group, and a 0-row frame still returns one row. Any column-valued input sets the length instead.
+
+A length-1 *expression* is accepted wherever a column is and broadcasts rather than truncating, so
+`Normal(mu=pl.col("mu").mean(), sigma=1.0).pdf("x")` is full height. Lengths that are neither equal nor 1 raise.
 
 Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
 expected. The count parameter `n` is the exception: its column must already hold integers, of any width up to

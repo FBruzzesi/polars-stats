@@ -4,7 +4,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
-use crate::distributions::validate_params_unary;
+use crate::distributions::{align_inputs, validate_params_unary};
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
     samples_by_index, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
@@ -59,6 +59,7 @@ fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
 /// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
@@ -108,6 +109,7 @@ fn bernoulli_samples_scalar(
 /// Seeding and the null/error contract follow [`samples_per_row`] and [`bernoulli_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();

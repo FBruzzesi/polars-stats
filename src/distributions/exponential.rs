@@ -4,7 +4,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
-use crate::distributions::validate_params_unary;
+use crate::distributions::{align_inputs, validate_params_unary};
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
     samples_f64_output, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
@@ -72,6 +72,7 @@ fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
 /// the binomial draw, see docs/explanation/design.md).
 #[polars_expr(output_type=Float64)]
 fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let rate = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
@@ -121,6 +122,7 @@ fn exponential_samples_scalar(
 /// Seeding and the null/error contract follow [`samples_per_row`] and [`exponential_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let rate = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();

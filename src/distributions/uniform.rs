@@ -4,7 +4,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 use statrs::distribution::Uniform;
 
-use crate::distributions::validate_params_binary;
+use crate::distributions::{align_inputs, validate_params_binary};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -89,6 +89,7 @@ fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
 /// [`draw_half_open`] draws from.
 #[polars_expr(output_type=Float64)]
 fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let min = inputs[0].cast(&DataType::Float64)?;
     let max = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
@@ -147,6 +148,7 @@ fn uniform_samples_scalar(
 /// draw is the shared [`draw_half_open`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let min = inputs[0].cast(&DataType::Float64)?;
     let max = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
@@ -175,6 +177,7 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
 /// silently producing a negative or infinite result.
 #[polars_expr(output_type=Float64)]
 fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let min = inputs[0].cast(&DataType::Float64)?;
     let max = inputs[1].cast(&DataType::Float64)?;
 

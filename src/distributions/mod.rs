@@ -6,10 +6,61 @@ pub mod lognormal;
 pub mod normal;
 pub mod uniform;
 
+use std::borrow::Cow;
+
 use polars::prelude::arity::{
     try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
 };
 use polars::prelude::*;
+
+/// Broadcast every length-1 input to ensure all of `series` have the same length,
+/// and reject lengths that cannot align.
+///
+/// One pass over `inputs`: the first non-unit input anchors the target length, every later
+/// non-unit input must match it, and `has_unit` records whether anything needs expanding at all.
+pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>> {
+    let mut anchor: Option<(&Series, usize)> = None;
+    let mut has_unit = false;
+
+    for input in inputs {
+        let length = input.len();
+        if length == 1 {
+            has_unit = true;
+        } else if let Some((anchor, target_length)) = anchor {
+            polars_ensure!(
+                length == target_length,
+                ShapeMismatch:
+                "inputs have incompatible lengths: '{}' has length {} but '{}' has length {}. \
+                 Every input must share one length, or be length 1 to broadcast",
+                anchor.name(), target_length, input.name(), length
+            );
+        } else {
+            anchor = Some((input, length));
+        }
+    }
+
+    // Nothing to expand borrows instead: `anchor` is `None` when every input is length 1 (or there
+    // are none), and `has_unit` is false when the inputs already agree, which is every call whose
+    // parameters are plain columns.
+    let target_length = match anchor {
+        Some((_, target_length)) if has_unit => target_length,
+        _ => return Ok(Cow::Borrowed(inputs)),
+    };
+
+    // `target_length != 1`, so only the length-1 inputs need expanding.
+    Ok(Cow::Owned(
+        inputs
+            .iter()
+            .map(|input| {
+                if input.len() == 1 {
+                    input.new_from_index(0, target_length)
+                } else {
+                    input.clone()
+                }
+            })
+            .collect(),
+    ))
+}
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
 ///

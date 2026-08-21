@@ -30,29 +30,30 @@ def _coerce(
     scalar_types: type | tuple[type, ...],
     dtype: PolarsDataType | None = None,
 ) -> pl.Expr:
-    """Coerce a scalar-or-`IntoExprColumn` input into a row-aligned `pl.Expr`.
+    """Coerce a scalar-or-`IntoExprColumn` input into a `pl.Expr`.
 
     Every distribution input (constructor parameter or value-keyed method argument) is one of two things, handled
     identically here so the contract lives in one place:
 
     * An `IntoExprColumn`: a `pl.Expr` passes through; a column name `str` becomes `pl.col(name)`, a `pl.Series`
         becomes `pl.lit(series)`.
-    * A Python scalar: expanded with `pl.repeat(value, n=pl.len())` rather than `pl.lit(value)`.
+    * A Python scalar: `pl.lit(value)`, a length-1 scalar column.
 
-    NOTE: The scalar expansion is required to keep the plugin calls `is_elementwise=True`, which is what makes
-    `over` / `group_by` invoke them once per partition rather than as an aggregation. It also guards correctness:
-    the Rust plugins zip their inputs element-wise via `try_*_elementwise`, which truncates to the shortest input rather
-    than broadcasting a length-1 literal. Mixed with a column-valued input, a scalar `pl.lit(value)` would collapse the
-    result to length 1 and silently drop every row past the first. Some Polars versions broadcast the literal upstream
-    and hide this; not all do, so the plugin contract must own row-alignment rather than rely on it.
+    NOTE: Row-alignment belongs to the plugin (`align_inputs` in `src/distributions/mod.rs`), which broadcasts every
+    length-1 input up to the call's row count. Padding scalars here cannot replace it, since `.first()` and `.max()`
+    are length-1 expressions we do not construct.
+
+    A constant parameter therefore stays length 1, so an expression built only from constants is a scalar column with
+    polars' own semantics: height 1 under `select`, broadcast per partition under `over`, a scalar per group under
+    `group_by().agg()`. Any column-valued input sets the length, so a mixed call is full length.
 
     Arguments:
         value: A Python scalar of one of `scalar_types`, or an `IntoExprColumn`.
         name: Input name, used only to build the error message.
         scalar_label: Human description of the accepted scalar (e.g. `"a float"`), for the error.
-        scalar_types: Python scalar type(s) accepted for expansion. `bool` is always rejected
+        scalar_types: Python scalar type(s) accepted as a literal. `bool` is always rejected
             (it is an `int` subclass but never a valid numeric input, so `scalar_types=int` still excludes it).
-        dtype: Dtype for the expanded scalar; `None` lets Polars infer it from `value`.
+        dtype: Dtype for the scalar literal; `None` lets Polars infer it from `value`.
     """
     if isinstance(value, pl.Expr):
         return value
@@ -61,16 +62,16 @@ def _coerce(
     if isinstance(value, pl.Series):
         return pl.lit(value)
     if isinstance(value, scalar_types) and not isinstance(value, bool):
-        return pl.repeat(value, n=pl.len(), dtype=dtype)
+        return pl.lit(value, dtype=dtype)
     msg = f"{name} should be {scalar_label} or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
     raise TypeError(msg)
 
 
 def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
-    """Coerce a float distribution parameter (e.g. `mu`, `sigma`, `p`) into a row-aligned `pl.Expr`.
+    """Coerce a float distribution parameter (e.g. `mu`, `sigma`, `p`) into a `pl.Expr`.
 
     Accepts a strict Python `float` or an `IntoExprColumn`; an `int` or `bool` raises `TypeError`
-    (a probability or scale is a float, not a count). See `_coerce` for the row-alignment rationale.
+    (a probability or scale is a float, not a count). See `_coerce` for the coercion rules.
     """
     return _coerce(value, name=name, scalar_label="a float", scalar_types=float, dtype=pl.Float64())
 
@@ -86,12 +87,12 @@ limit: Rust widens it to `UInt64` and the whole range is a valid trial count.
 
 
 def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
-    """Coerce an integer count parameter (e.g. binomial trial count `n`) into a row-aligned `pl.Expr`.
+    """Coerce an integer count parameter (e.g. binomial trial count `n`) into a `pl.Expr`.
 
     Accepts a Python `int` or an `IntoExprColumn`; a `bool` (an `int` subclass, but not a sensible count),
     a `float`, or any other type raises `TypeError`. An `int` outside `[0, _MAX_SCALAR_COUNT]` raises
     `ValueError`, the one parameter *value* judged at construction rather than at evaluation, because the
-    expanded scalar is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
+    scalar literal is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
     it with a message about `i64` and `u64`. A column keeps its dtype until Rust widens it to `UInt64`,
     which requires an integer dtype and every value `>= 0`. See `_coerce` for the rationale.
     """
@@ -110,7 +111,7 @@ def scalar_float(value: float | IntoExprColumn) -> float | None:
 
     Used by samplers to detect a constant (non-`Expr`) parameter and route it through the
     constant-parameter fast path, which passes it as a plugin kwarg validated once in Rust rather
-    than expanding it into a per-row `pl.repeat` column (see `_coerce`). `bool` is an `int` subclass
+    than as a length-1 input the plugin must broadcast (see `_coerce`). `bool` is an `int` subclass
     but never a valid parameter, so it is excluded and falls back to the per-row path.
     """
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
@@ -138,12 +139,12 @@ def scalar_kwargs(**params: float | None) -> dict[str, float | int] | None:
 
 
 def as_expr(value: float | IntoExprColumn) -> pl.Expr:
-    """Coerce a value-keyed method input (`value` / `quantile`) into a row-aligned `pl.Expr`.
+    """Coerce a value-keyed method input (`value` / `quantile`) into a `pl.Expr`.
 
     More permissive on scalars than `coerce_param`: a support point or quantile may be an `int` (`cdf(0)`, `pmf(1)`) or
-    a `float`, so both are accepted and the expanded dtype is left to Polars to infer.
+    a `float`, so both are accepted and the literal's dtype is left to Polars to infer.
 
-    A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the row-alignment rationale.
+    A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the coercion rules.
     """
     return _coerce(value, name="value", scalar_label="a number (int or float)", scalar_types=(int, float))
 
@@ -217,7 +218,7 @@ class _UnivariateDistribution(ABC):
     @property
     @abstractmethod
     def _param_exprs(self) -> tuple[pl.Expr, ...]:
-        """The distribution's parameters as coerced, row-aligned exprs, in plugin-input order.
+        """The distribution's parameters as coerced exprs, in plugin-input order.
 
         The per-row plugins take these as positional inputs, ahead of `ROW_INDEX_EXPR` for the samplers
         and after `value` for the value-keyed methods.
