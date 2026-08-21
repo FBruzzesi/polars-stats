@@ -14,8 +14,16 @@
 //! A one-shot hash-to-uniform would be cheaper but only serves distributions needing a
 //! single uniform per draw, so it is deliberately not the foundation; see
 //! `docs/explanation/design.md` for the alternatives that were rejected and why.
+//!
+//! Every sampler plugin is a shell over one of the drivers below; none resolves a seed or writes a
+//! row loop itself. They share one argument order, `name, inputs, seed, [size], closures`, and take
+//! their output dtype from the drawn value through [`DrawValue`]. The constant-parameter drivers
+//! cast the index `Series` themselves; the per-row drivers take it pre-cast as `&UInt64Chunked`,
+//! since [`binary_param_rows`] returns an iterator borrowing its inputs and cannot own the cast.
 
+use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
+use polars_arrow::array::ArrayFromIter;
 use polars_arrow::bitmap::Bitmap;
 use polars_arrow::datatypes::reshape::ReshapeDimension;
 use polars_core::utils::rayon::prelude::*;
@@ -80,27 +88,15 @@ pub(crate) struct SampleKwargs {
     pub(crate) seed: Option<u64>,
 }
 
-impl SampleKwargs {
-    /// Resolve the root seed **once** and hand back a per-row RNG source.
-    ///
-    /// Call this a single time per plugin invocation, outside the elementwise loop: it
-    /// draws OS entropy at most once here, after which every [`RowRngs::rng`] is a few
-    /// integer ops. Errs only when the OS entropy source fails (see [`resolve_root_seed`]).
-    #[inline]
-    pub(crate) fn row_rngs(&self) -> PolarsResult<RowRngs> {
-        row_rngs(self.seed)
-    }
-}
-
 /// Resolve a root seed **once** and hand back a per-row RNG source.
 ///
-/// The free-function counterpart to [`SampleKwargs::row_rngs`], for samplers whose static
-/// inputs do not deserialise into a bare [`SampleKwargs`] (e.g. the scalar-parameter fast
-/// paths, which carry the distribution's constant parameters alongside the seed). Both go
-/// through the same resolve-once-then-derive-per-row path, so seeded output is identical
-/// regardless of which entry point a distribution uses.
+/// Every sampler reaches this through a driver, once per plugin invocation and never inside the
+/// row loop: OS entropy is drawn at most once here (only when `seed` is `None`), after which every
+/// [`RowRngs::rng`] is a few integer ops. That single entry point is why seeded output is identical
+/// across the scalar and column paths. Errs only when the OS entropy source fails (see
+/// [`resolve_root_seed`]).
 #[inline]
-pub(crate) fn row_rngs(seed: Option<u64>) -> PolarsResult<RowRngs> {
+fn row_rngs(seed: Option<u64>) -> PolarsResult<RowRngs> {
     Ok(RowRngs {
         root_seed: resolve_root_seed(seed)?,
     })
@@ -113,26 +109,152 @@ pub(crate) fn row_rngs(seed: Option<u64>) -> PolarsResult<RowRngs> {
 /// `pl.int_range(0, len)`. That index is dense and non-null by construction, which lets this skip
 /// the per-row `Option`/validity bookkeeping the general `try_*_elementwise` paths must carry.
 ///
-/// This factors out the boilerplate every fast path shares: cast the index to `UInt64`, resolve the
-/// root seed once, then build the typed output by mapping each row index through `build`. The
-/// builder owns the output element type (so float-, integer- and boolean-valued samplers all reuse
-/// this), and the per-row draw seeds from `(root_seed, index)` exactly as the general path does, so
-/// seeded output is identical between the two.
+/// `draw` takes one value from a `&mut` per-row RNG already seeded `(root_seed, i)`, the same draw
+/// the distribution's per-row plugin performs, so seeded output is identical between the two.
 #[inline]
-pub(crate) fn sample_by_index<T, F>(
+pub(crate) fn sample_by_index<V, Draw>(
+    name: PlSmallStr,
     index: &Series,
     seed: Option<u64>,
-    build: F,
+    draw: Draw,
 ) -> PolarsResult<Series>
 where
-    T: PolarsDataType,
-    ChunkedArray<T>: IntoSeries,
-    F: FnOnce(&UInt64Chunked, &RowRngs) -> ChunkedArray<T>,
+    V: DrawValue,
+    ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
+    Draw: Fn(&mut Pcg64Mcg) -> V,
 {
     let index = index.cast(&DataType::UInt64)?;
     let index_ca = index.u64()?;
     let rngs = row_rngs(seed)?;
-    Ok(build(index_ca, &rngs).into_series())
+
+    let ca = ChunkedArray::<V::Data>::from_iter_values(
+        name,
+        index_ca.into_no_null_iter().map(|i| {
+            let mut rng = rngs.rng(i);
+            draw(&mut rng)
+        }),
+    );
+    Ok(ca.into_series())
+}
+
+/// The output column dtype a drawn value collects into.
+pub(crate) trait DrawValue: Sized {
+    type Data: PolarsDataType<Array: ArrayFromIter<Option<Self>>>;
+}
+
+impl DrawValue for f64 {
+    type Data = Float64Type;
+}
+
+impl DrawValue for u64 {
+    type Data = UInt64Type;
+}
+
+impl DrawValue for bool {
+    type Data = BooleanType;
+}
+
+/// Shared driver for the column-parameter single-draw (`sample`) per-row paths: one parameter
+/// column plus the row index.
+///
+/// The column-parameter counterpart of [`sample_by_index`], and the single-draw counterpart of
+/// [`samples_per_row`]. `build` constructs the row's draw state once per row; `draw` takes one
+/// value from that row's stream. Any null input nulls the row without calling `build`; an invalid
+/// parameterisation `?`-raises out of the row closure.
+///
+/// Seeding follows [`sample_by_index`]: row `i` draws from a stream keyed `(root_seed, i)`, a
+/// function of position only, never of the parameters, so the scalar and column paths stay
+/// bit-identical for the same parameters.
+///
+/// Takes `ChunkedArray`s, not the [`binary_param_rows`] iterator its multi-draw twin consumes:
+/// `try_*_elementwise` walks each concrete arrow chunk, while chaining `ChunkedArray::iter()`s
+/// across chunks costs more per row than the single draw. One draw per row also does not pay for a
+/// fork-join dispatch, so this fills serially and [`PARALLEL_FILL_MIN_DRAWS`] is the multi-draw
+/// path's concern alone.
+///
+/// Keep `build` and `draw` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn` or
+/// a `fn` pointer would cost an indirect call per row.
+#[inline]
+pub(crate) fn sample_per_row_binary<V, A, S, Build, Draw>(
+    name: PlSmallStr,
+    param: &ChunkedArray<A>,
+    index: &UInt64Chunked,
+    seed: Option<u64>,
+    build: Build,
+    draw: Draw,
+) -> PolarsResult<Series>
+where
+    V: DrawValue,
+    ChunkedArray<V::Data>: IntoSeries,
+    A: PolarsNumericType,
+    Build: Fn(A::Native) -> PolarsResult<S>,
+    Draw: Fn(&S, &mut Pcg64Mcg) -> V,
+{
+    let rngs = row_rngs(seed)?;
+
+    let ca: ChunkedArray<V::Data> = try_binary_elementwise(
+        param,
+        index,
+        |param_opt, index_opt| -> PolarsResult<Option<V>> {
+            match (param_opt, index_opt) {
+                (Some(param), Some(index)) => {
+                    let state = build(param)?;
+                    let mut rng = rngs.rng(index);
+                    Ok(Some(draw(&state, &mut rng)))
+                },
+                _ => Ok(None),
+            }
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
+}
+
+/// Two-parameter counterpart of [`sample_per_row_binary`] (e.g. `(mu, sigma)`, `(n, p)`), same
+/// contracts throughout.
+///
+/// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial's
+/// `UInt64` `n` beside its `Float64` `p`) fits, as in [`ternary_param_rows`]: the caller does the
+/// cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`. `S` is whatever `build`
+/// returns, the built distribution for most callers but Uniform's raw `(f64, f64)` bounds for the
+/// one that validates then discards.
+#[inline]
+pub(crate) fn sample_per_row_ternary<V, A, B, S, Build, Draw>(
+    name: PlSmallStr,
+    a: &ChunkedArray<A>,
+    b: &ChunkedArray<B>,
+    index: &UInt64Chunked,
+    seed: Option<u64>,
+    build: Build,
+    draw: Draw,
+) -> PolarsResult<Series>
+where
+    V: DrawValue,
+    ChunkedArray<V::Data>: IntoSeries,
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    Build: Fn(A::Native, B::Native) -> PolarsResult<S>,
+    Draw: Fn(&S, &mut Pcg64Mcg) -> V,
+{
+    let rngs = row_rngs(seed)?;
+
+    let ca: ChunkedArray<V::Data> = try_ternary_elementwise(
+        a,
+        b,
+        index,
+        |a_opt, b_opt, index_opt| -> PolarsResult<Option<V>> {
+            match (a_opt, b_opt, index_opt) {
+                (Some(a), Some(b), Some(index)) => {
+                    let state = build(a, b)?;
+                    let mut rng = rngs.rng(index);
+                    Ok(Some(draw(&state, &mut rng)))
+                },
+                _ => Ok(None),
+            }
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
 }
 
 /// Total draw count below which the multi-draw row fill runs serially: a fork-join dispatch
@@ -167,30 +289,24 @@ where
 /// Shared driver for the constant-parameter multi-draw (`samples`) fast paths.
 ///
 /// The multi-draw counterpart of [`sample_by_index`]: one plugin call returns the
-/// `Array(width=size)` column directly, instead of `size` `sample` plugin calls glued by
-/// `concat_arr` paying the fixed per-call expression and FFI cost `size` times.
+/// `Array(width=size)` column directly, rather than `size` `sample` calls glued by `concat_arr`.
 ///
 /// Row `i`'s `size` draws are **consecutive values from one per-row stream** seeded
-/// `(root_seed, i)`, the same stream `sample` takes its single draw from. So `samples(size=1)`
-/// is bit-identical to `sample` for the same seed, and growing `size` extends each row's array
-/// without changing the existing draws. The root seed resolves once per call (fresh OS entropy
-/// when `None`); a row's stream depends only on `(root_seed, i)`, never on other rows, so
-/// chunk/thread invariance is untouched and rows can fill in parallel (see [`fill_rows`]).
-/// `draw` is one draw from a `&mut` per-row RNG already seeded `(root_seed, i)`, the same draw
-/// the distribution's `sample` plugin performs.
+/// `(root_seed, i)`, the same stream `sample` takes its single draw from. So `samples(size=1)` is
+/// bit-identical to `sample` for the same seed, and growing `size` extends each row's array without
+/// changing the existing draws. Rows can fill in parallel (see [`fill_rows`]).
 #[inline]
-pub(crate) fn samples_by_index<T, V, F>(
+pub(crate) fn samples_by_index<V, Draw>(
     name: PlSmallStr,
     index: &Series,
     seed: Option<u64>,
     size: usize,
-    draw: F,
+    draw: Draw,
 ) -> PolarsResult<Series>
 where
-    T: PolarsDataType,
-    ChunkedArray<T>: NewChunkedArray<T, V> + IntoSeries,
-    V: Default + Clone + Send,
-    F: Fn(&mut Pcg64Mcg) -> V + Sync,
+    V: DrawValue + Default + Clone + Send,
+    ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
+    Draw: Fn(&mut Pcg64Mcg) -> V + Sync,
 {
     // The Python layer rejects `size <= 0` before registering the plugin; this guards the
     // zero-width `Array` reshape against any other caller.
@@ -211,41 +327,36 @@ where
         }
     });
 
-    ChunkedArray::<T>::from_iter_values(name, flat.into_iter())
+    ChunkedArray::<V::Data>::from_iter_values(name, flat.into_iter())
         .into_series()
         .reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
 }
 
 /// Shared driver for the column-parameter multi-draw (`samples`) per-row paths.
 ///
-/// The column-parameter counterpart of [`samples_by_index`]. The caller iterates its parameter
-/// columns and yields, per row, the index and a ready-to-draw state (typically the built
-/// distribution, so it is constructed once per row rather than once per draw). A `None` row (any
-/// null input) becomes a null `Array` element directly, with its inner slots also null (the same
-/// two-layer shape as `pl.lit(None, dtype=Array(...))`); an invalid parameterisation `?`-raises
-/// out of the row iterator.
+/// The column-parameter counterpart of [`samples_by_index`]. `rows` yields, per row, the index and
+/// a ready-to-draw state (typically the built distribution, so it is constructed once per row
+/// rather than once per draw). A `None` row (any null input) becomes a null `Array` element with
+/// its inner slots also null, the same two-layer shape as `pl.lit(None, dtype=Array(...))`; an
+/// invalid parameterisation `?`-raises out of the row iterator.
 ///
-/// Seeding is identical to [`samples_by_index`]: row `i`'s draws are consecutive values from one
-/// stream keyed `(root_seed, i)`, a function of position only, never of the parameters. So the
-/// scalar and column paths stay bit-identical for the same parameters, equal-parameter rows
-/// still draw independently, and rows can fill in parallel (see [`fill_rows`]). Note the
-/// per-draw *consumption* of that stream does depend on the row's parameters (rejection
-/// samplers draw a variable number of words), which is fine: the stream is private to the row.
+/// Seeding follows [`samples_by_index`]. The per-draw *consumption* of a row's stream does depend
+/// on its parameters (rejection samplers draw a variable number of words), which is fine: the
+/// stream is private to the row.
 #[inline]
-pub(crate) fn samples_per_row<T, V, S, I, F>(
+pub(crate) fn samples_per_row<V, S, Rows, Draw>(
     name: PlSmallStr,
+    rows: Rows,
     seed: Option<u64>,
     size: usize,
-    rows: I,
-    draw: F,
+    draw: Draw,
 ) -> PolarsResult<Series>
 where
-    T: PolarsDataType,
-    ChunkedArray<T>: NewChunkedArray<T, V> + IntoSeries,
-    V: Default + Clone + Send,
+    V: DrawValue + Default + Clone + Send,
+    ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
     S: Sync,
-    I: Iterator<Item = PolarsResult<Option<(u64, S)>>>,
-    F: Fn(&S, &mut Pcg64Mcg) -> V + Sync,
+    Rows: Iterator<Item = PolarsResult<Option<(u64, S)>>>,
+    Draw: Fn(&S, &mut Pcg64Mcg) -> V + Sync,
 {
     if size == 0 {
         return Err(PolarsError::InvalidOperation(
@@ -268,7 +379,8 @@ where
         }
     });
 
-    let flat = ChunkedArray::<T>::from_iter_values(name.clone(), flat.into_iter()).into_series();
+    let flat =
+        ChunkedArray::<V::Data>::from_iter_values(name.clone(), flat.into_iter()).into_series();
     let shape = [ReshapeDimension::Infer, ReshapeDimension::new(size as i64)];
 
     let outer_validity: Bitmap = states.iter().map(Option::is_some).collect();
@@ -292,9 +404,7 @@ where
 /// [`samples_per_row`]: zip the parameter column with the row index and, on a fully-non-null row,
 /// run `build` once to make the row's draw state.
 ///
-/// Centralises the null contract every per-row multi-draw plugin shares (any null input nulls the
-/// whole row, matching the single-draw `try_*_elementwise` paths), so each distribution spells only
-/// its cast and its `build`.
+/// Any null input nulls the whole row, matching the single-draw paths.
 pub(crate) fn binary_param_rows<'a, A, S, F>(
     param: &'a ChunkedArray<A>,
     index: &'a UInt64Chunked,
@@ -316,7 +426,7 @@ where
 
 /// Two-parameter counterpart of [`binary_param_rows`] (e.g. `(mu, sigma)`, `(n, p)`): zip both
 /// parameter columns with the row index and, on a fully-non-null row, run `build` once. The two
-/// parameter dtypes are independent, so a mixed `(i64, f64)` parameterisation (Binomial) fits.
+/// parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial) fits.
 pub(crate) fn ternary_param_rows<'a, A, B, S, F>(
     a: &'a ChunkedArray<A>,
     b: &'a ChunkedArray<B>,
@@ -348,6 +458,31 @@ pub(crate) struct SamplesKwargs {
     pub(crate) size: usize,
 }
 
+/// Single-draw fast-path kwargs: a distribution's constant parameters `P` plus the optional root seed.
+///
+/// `P` is flattened, so the wire shape is one flat mapping with `seed` next to the parameter keys.
+/// Composing keeps each distribution's parameter list, and its constructor order, in the one struct
+/// its value-keyed fast paths already use.
+#[derive(Deserialize)]
+pub(crate) struct SampleScalarKwargs<P> {
+    pub(crate) seed: Option<u64>,
+    #[serde(flatten)]
+    pub(crate) params: P,
+}
+
+/// Multi-draw counterpart of [`SampleScalarKwargs`], plus the draw count `size` (the output `Array`
+/// width).
+///
+/// `seed` and `size` sit outside `P` and flatten alongside the parameter keys, so the shared output
+/// functions can read `size` by deserialising the same bytes into [`SamplesKwargs`].
+#[derive(Deserialize)]
+pub(crate) struct SamplesScalarKwargs<P> {
+    pub(crate) seed: Option<u64>,
+    pub(crate) size: usize,
+    #[serde(flatten)]
+    pub(crate) params: P,
+}
+
 fn samples_output(fields: &[Field], width: usize, inner: DataType) -> PolarsResult<Field> {
     Ok(Field::new(
         fields[0].name().clone(),
@@ -370,109 +505,9 @@ pub(crate) fn samples_bool_output(fields: &[Field], kwargs: SamplesKwargs) -> Po
     samples_output(fields, kwargs.size, DataType::Boolean)
 }
 
-/// Generates a distribution's constant-parameter fast paths: both the single-draw `sample`
-/// plugin (driving [`sample_by_index`]) and the multi-draw `samples` plugin (driving
-/// [`samples_by_index`]), from one shared `build` / `draw`.
-///
-/// Emitting the two from one definition is what keeps them from drifting: the multi-draw fast
-/// path is just the single-draw one repeated `size` times on the same per-row stream, so they
-/// must share the exact `build` and `draw`. The five things that vary between distributions are
-/// the macro's inputs:
-///
-/// * the kwargs fields (parameter names and types), reused by both kwargs structs;
-/// * the single-draw output dtype, as the `(logical, physical)` pair `output_type = Float64,
-///   physical = Float64Type` (the two must agree; the logical name feeds `#[polars_expr]`, the
-///   physical one the output `ChunkedArray`);
-/// * the multi-draw twin, named by the `samples = <fn> as <kwargs> -> <output_fn>` clause: the
-///   plugin fn, its kwargs struct (the same parameters plus `size`), and the `Array`-typed
-///   output function (`samples_f64_output` / `_u64_` / `_bool_`);
-/// * `build`: validates the parameters and returns the per-call sampler state, built **once**
-///   (`?` is available). Usually the built distribution; Uniform validates and keeps the raw
-///   bounds instead;
-/// * `draw`: one draw from that state, given a `&mut` per-row RNG already seeded from
-///   `(root_seed, index)`.
-///
-/// `draw` must be the *same* draw the general per-row plugins perform, so the fast paths stay
-/// byte-identical to them for the same `(seed, index, params)`; pinned by
-/// `test_sample_scalar_fast_path_matches_per_row` and `test_samples_scalar_fast_path_matches_per_row`.
-/// Call sites are the distribution modules, which all have `polars::prelude::*` in scope and
-/// import the `samples_*_output` function they name (the expansion relies on both).
-macro_rules! sample_scalar_plugin {
-    (
-        $(#[$kwargs_meta:meta])*
-        struct $kwargs:ident { $($param:ident: $param_ty:ty),+ $(,)? }
-
-        $(#[$fn_meta:meta])*
-        fn $fn_name:ident(output_type = $logical:ident, physical = $physical:ty);
-
-        samples = $samples_fn:ident as $samples_kwargs:ident -> $samples_output:ident;
-
-        build = |$kw:ident| $build:expr;
-        draw = |$state:pat_param, $rng:ident| $draw:expr;
-    ) => {
-        $(#[$kwargs_meta])*
-        #[derive(serde::Deserialize)]
-        struct $kwargs {
-            seed: Option<u64>,
-            $($param: $param_ty,)+
-        }
-
-        $(#[$fn_meta])*
-        #[pyo3_polars::derive::polars_expr(output_type=$logical)]
-        fn $fn_name(inputs: &[Series], kwargs: $kwargs) -> PolarsResult<Series> {
-            let $kw = &kwargs;
-            let $state = $build;
-            let name = inputs[0].name().clone();
-
-            $crate::rng::sample_by_index::<$physical, _>(&inputs[0], kwargs.seed, |index_ca, rngs| {
-                ChunkedArray::<$physical>::from_iter_values(
-                    name,
-                    index_ca.into_no_null_iter().map(|i| {
-                        let mut rng = rngs.rng(i);
-                        let $rng = &mut rng;
-                        $draw
-                    }),
-                )
-            })
-        }
-
-        /// Constant-parameter kwargs for the multi-draw fast path: the single-draw parameters
-        /// plus the draw count `size` (the output `Array` width).
-        #[derive(serde::Deserialize)]
-        struct $samples_kwargs {
-            seed: Option<u64>,
-            size: usize,
-            $($param: $param_ty,)+
-        }
-
-        #[doc = concat!(
-            "Constant-parameter multi-draw fast path: the `samples` twin of [`", stringify!($fn_name),
-            "`]. `size` draws per row in one call, taken as consecutive values from the same \
-             `(seed, row_index)` per-row stream, so `samples(size=1)` matches `sample` bit for bit \
-             and the state is built once per call rather than once per draw. Returns \
-             `Array(inner, size)`."
-        )]
-        #[pyo3_polars::derive::polars_expr(output_type_func_with_kwargs=$samples_output)]
-        fn $samples_fn(inputs: &[Series], kwargs: $samples_kwargs) -> PolarsResult<Series> {
-            let $kw = &kwargs;
-            let $state = $build;
-            let name = inputs[0].name().clone();
-
-            $crate::rng::samples_by_index::<$physical, _, _>(
-                name,
-                &inputs[0],
-                kwargs.seed,
-                kwargs.size,
-                |$rng| $draw,
-            )
-        }
-    };
-}
-pub(crate) use sample_scalar_plugin;
-
 /// Per-call source of per-row RNGs, all derived from one already-resolved root seed.
 ///
-/// The resolve-once step happens at construction (via [`SampleKwargs::row_rngs`]), so the
+/// The resolve-once step happens at construction (via [`row_rngs`]), so the
 /// type enforces the invariant every elementwise sampler depends on: resolve per call,
 /// derive per row.
 pub(crate) struct RowRngs {

@@ -1,7 +1,6 @@
 #![allow(clippy::unused_unit)]
 use std::f64::consts::{LN_2, SQRT_2};
 
-use polars::prelude::arity::try_ternary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -9,10 +8,10 @@ use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{param_validator, value_keyed_per_row, value_keyed_scalar_plugins};
+use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
 use crate::rng::{
-    sample_scalar_plugin, samples_f64_output, samples_per_row, ternary_param_rows, SampleKwargs,
-    SamplesKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
+    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
@@ -28,74 +27,126 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
     })
 }
 
-param_validator! {
-    /// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
-    ///
-    /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
-    /// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
-    /// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
-    fn normal_sigma;
-    params = (mu: DataType::Float64 => f64, sigma: DataType::Float64 => f64);
-    build = build_dist;
-    returns = sigma;
-    output_name = inputs[1];
+/// Normal's constant parameters, deserialised once per call.
+///
+/// The one place this file spells `(mu, sigma)`: every fast path, sampler or value-keyed, reaches the
+/// constructor through [`Self::build`], so the order cannot drift between them.
+#[derive(serde::Deserialize)]
+struct NormalParamsKwargs {
+    mu: f64,
+    sigma: f64,
 }
 
-value_keyed_per_row! {
-    /// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by
-    /// `pdf`, `ln_pdf`, `cdf`, `sf`, `ppf`. `null` propagates; an invalid parameterisation raises
-    /// via [`build_dist`]; `f` may return `None` to null a row on its own terms.
-    fn value_keyed(&Normal);
-    params = (DataType::Float64 => f64, DataType::Float64 => f64);
-    build = build_dist;
+impl NormalParamsKwargs {
+    fn build(&self) -> PolarsResult<Normal> {
+        build_dist(self.mu, self.sigma)
+    }
+
+    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
+    /// bodies: build once per call, then map `f` over the evaluation-point column.
+    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    where
+        F: Fn(&Normal, f64) -> Option<f64>,
+    {
+        let dist = self.build()?;
+        value_keyed_scalar(value, |v| f(&dist, v))
+    }
+}
+
+/// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
+///
+/// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
+/// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
+/// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
+#[polars_expr(output_type=Float64)]
+fn normal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
+    let mu = inputs[0].cast(&DataType::Float64)?;
+    let sigma = inputs[1].cast(&DataType::Float64)?;
+
+    validate_params_binary(mu.f64()?, sigma.f64()?, |mu, sigma| {
+        build_dist(mu, sigma)?;
+        Ok(sigma)
+    })
+}
+
+/// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by `pdf`,
+/// `ln_pdf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
+fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
+where
+    F: Fn(&Normal, f64) -> Option<f64>,
+{
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let mu = inputs[1].cast(&DataType::Float64)?;
+    let sigma = inputs[2].cast(&DataType::Float64)?;
+
+    value_keyed_per_row(
+        value.f64()?,
+        mu.f64()?,
+        sigma.f64()?,
+        inputs[0].name().clone(),
+        build_dist,
+        f,
+    )
+}
+
+/// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Normal sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Normal, rng: &mut impl rand::Rng) -> f64 {
+    RandDistribution::sample(dist, rng)
 }
 
 /// Element-wise Normal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
 /// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
-/// and chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Float64)]
 fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let mu = inputs[0].cast(&DataType::Float64)?;
-    let mu_ca = mu.f64()?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
-    let sigma_ca = sigma.f64()?;
     let index = inputs[2].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: Float64Chunked = try_ternary_elementwise(
-        mu_ca,
-        sigma_ca,
-        index_ca,
-        |mu_opt, sigma_opt, i_opt| -> PolarsResult<Option<f64>> {
-            match (mu_opt, sigma_opt, i_opt) {
-                (Some(m), Some(s), Some(i)) => {
-                    let dist = build_dist(m, s)?;
-                    let mut rng = rngs.rng(i);
-                    let draw: f64 = RandDistribution::sample(&dist, &mut rng);
-                    Ok(Some(draw))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_ternary(
+        name,
+        mu.f64()?,
+        sigma.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
-sample_scalar_plugin! {
-    struct NormalScalarKwargs { mu: f64, sigma: f64 }
+/// Constant-parameter fast path for [`normal_sample`].
+#[polars_expr(output_type=Float64)]
+fn normal_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<NormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`normal_sample`].
-    fn normal_sample_scalar(output_type = Float64, physical = Float64Type);
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = normal_samples_scalar as NormalSamplesScalarKwargs -> samples_f64_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`normal_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
+fn normal_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<NormalParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.mu, kw.sigma)?;
-    draw = |dist, rng| RandDistribution::sample(&dist, rng);
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Normal sampler: `size` draws per row in one call, the distribution
@@ -111,13 +162,7 @@ fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Seri
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<Float64Type, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        RandDistribution::sample,
-    )
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
@@ -285,19 +330,50 @@ fn normal_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
 }
 
-value_keyed_scalar_plugins! {
-    struct NormalParamsKwargs { mu: f64, sigma: f64 }
+/// Constant-parameter fast path for [`normal_pdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], pdf_value)
+}
 
-    build = |kw| build_dist(kw.mu, kw.sigma)?;
+/// Constant-parameter fast path for [`normal_ln_pdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_pdf_value)
+}
 
-    methods {
-        fn normal_pdf_scalar => pdf_value;
-        fn normal_ln_pdf_scalar => ln_pdf_value;
-        fn normal_cdf_scalar => cdf_value;
-        fn normal_sf_scalar => sf_value;
-        fn normal_ln_cdf_scalar => ln_cdf_value;
-        fn normal_ln_sf_scalar => ln_sf_value;
-        fn normal_ppf_scalar => ppf_value;
-        fn normal_isf_scalar => isf_value;
-    }
+/// Constant-parameter fast path for [`normal_cdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], cdf_value)
+}
+
+/// Constant-parameter fast path for [`normal_sf`].
+#[polars_expr(output_type=Float64)]
+fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], sf_value)
+}
+
+/// Constant-parameter fast path for [`normal_ln_cdf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_cdf_value)
+}
+
+/// Constant-parameter fast path for [`normal_ln_sf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ln_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_sf_value)
+}
+
+/// Constant-parameter fast path for [`normal_ppf`].
+#[polars_expr(output_type=Float64)]
+fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ppf_value)
+}
+
+/// Constant-parameter fast path for [`normal_isf`].
+#[polars_expr(output_type=Float64)]
+fn normal_isf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], isf_value)
 }

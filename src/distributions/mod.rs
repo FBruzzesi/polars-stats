@@ -6,7 +6,9 @@ pub mod lognormal;
 pub mod normal;
 pub mod uniform;
 
-use polars::prelude::arity::unary_elementwise;
+use polars::prelude::arity::{
+    try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
+};
 use polars::prelude::*;
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
@@ -26,7 +28,7 @@ use polars::prelude::*;
 ///
 /// `NaN` contract: a `NaN` evaluation point short-circuits to `NaN` (scipy semantics) before `f`
 /// runs, for every method including `ppf`. The short-circuit is central (here and in
-/// [`value_keyed_per_row!`]) rather than per body, because two bodies genuinely need it and none
+/// [`value_keyed_per_row`]) rather than per body, because two bodies genuinely need it and none
 /// may be forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`
 /// (aborting the whole query), and binomial's support mapping saturates (`NaN.floor() as u64` is
 /// `0`), returning a confident `P(X <= 0)`. The Python-side `propagate_null_and_nan` guard cannot
@@ -47,214 +49,117 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Generates a distribution's constant-parameter value-keyed fast paths: one `<method>_scalar`
-/// plugin per Rust-bound method (`pdf`/`pmf`, `ln_*`, `cdf`, `sf`, `ppf`), all over the shared
-/// [`value_keyed_scalar`] driver.
+/// Shared driver for the column-parameter value-keyed per-row paths.
 ///
-/// The constant-parameter counterpart of the per-row `value_keyed` helper, and the value-keyed
-/// twin of [`sample_scalar_plugin!`](crate::rng::sample_scalar_plugin): when every distribution
-/// parameter is a Python scalar, the parameters arrive as kwargs (validated and built into the
-/// distribution **once** per call), and only the evaluation-point column crosses FFI. The three
-/// things that vary between distributions are the macro's inputs:
+/// The column-parameter counterpart of [`value_keyed_scalar`]: at least one distribution parameter
+/// is a column, so `build` validates and constructs once per row instead of once per call. `f` is
+/// the same named per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two
+/// paths cannot drift and agree bit for bit.
 ///
-/// * the kwargs fields (parameter names and types), one `<Name>ParamsKwargs` struct shared by
-///   every method;
-/// * `build`: validates the parameters and returns the `statrs` distribution, built **once** per
-///   call (`?` is available);
-/// * the `methods` list, each `fn <plugin_name> => <body>`, where `<body>` is the same named
-///   per-method function the per-row `value_keyed` path applies (`pdf_value`, `ppf_value`, ...),
-///   so the scalar and per-row paths share one body and cannot drift. The property test only
-///   samples parameterisations; sharing the body is what makes the bit-equality structural.
+/// The caller does the cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`, so a
+/// mixed `(u64, f64)` parameterisation (Binomial's `UInt64` `n` beside its `Float64` `p`) fits, as in
+/// [`ternary_param_rows`](crate::rng::ternary_param_rows). `S` needs no trait bound: it is whatever
+/// `build` returns.
 ///
-/// Every value-keyed method returns `Float64` (a density, probability, or quantile), so the output
-/// dtype is fixed here; that is the structural difference from `sample_scalar_plugin!`, whose dtype
-/// varies. Plugin and struct names stay literal in each invocation (greppable from the Python
-/// layer), so `value_keyed_test.py`'s `test_value_keyed_scalar_fast_path_matches_per_row` keeps
-/// pinning bit-equality with the per-row path. Call sites are the distribution modules, which all
-/// have `polars::prelude::*` in scope.
-macro_rules! value_keyed_scalar_plugins {
-    (
-        $(#[$kwargs_meta:meta])*
-        struct $kwargs:ident { $($param:ident: $param_ty:ty),+ $(,)? }
-
-        build = |$kw:ident| $build:expr;
-
-        methods {
-            $(
-                $(#[$fn_meta:meta])*
-                fn $fn_name:ident => $body:ident;
-            )+
-        }
-    ) => {
-        $(#[$kwargs_meta])*
-        #[derive(serde::Deserialize)]
-        struct $kwargs {
-            $($param: $param_ty,)+
-        }
-
-        $(
-            $(#[$fn_meta])*
-            #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-            fn $fn_name(inputs: &[Series], kwargs: $kwargs) -> PolarsResult<Series> {
-                let $kw = &kwargs;
-                let dist = $build;
-                $crate::distributions::value_keyed_scalar(&inputs[0], |v| $body(&dist, v))
+/// Null contract: any null among `(value, p1, p2)` nulls the row without calling `build`, matching
+/// the samplers.
+///
+/// `NaN` contract: as in [`value_keyed_scalar`], except that the short-circuit runs after `build`,
+/// so an invalid parameterisation still raises on a `NaN` row.
+///
+/// Keep `build` and `f` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn` or a
+/// `fn` pointer would cost an indirect call per row.
+pub(crate) fn value_keyed_per_row<A, B, S, Build, F>(
+    value: &Float64Chunked,
+    p1: &ChunkedArray<A>,
+    p2: &ChunkedArray<B>,
+    name: PlSmallStr,
+    build: Build,
+    f: F,
+) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    Build: Fn(A::Native, B::Native) -> PolarsResult<S>,
+    F: Fn(&S, f64) -> Option<f64>,
+{
+    let ca: Float64Chunked = try_ternary_elementwise(
+        value,
+        p1,
+        p2,
+        |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
+            match (value_opt, p1_opt, p2_opt) {
+                (Some(value), Some(p1), Some(p2)) => {
+                    // Build before the `NaN` short-circuit, so an invalid parameterisation still
+                    // raises on a `NaN` row. Pinned by `tests/distributions/plugin_nan_test.py`.
+                    let dist = build(p1, p2)?;
+                    Ok(if value.is_nan() {
+                        Some(f64::NAN)
+                    } else {
+                        f(&dist, value)
+                    })
+                },
+                _ => Ok(None),
             }
-        )+
-    };
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
 }
-pub(crate) use value_keyed_scalar_plugins;
 
-/// Generates a distribution's per-row `value_keyed` helper: the column-parameter counterpart of
-/// [`value_keyed_scalar`], building and validating the distribution **once per row** over
-/// `(value, p1, p2)` and applying the per-method body `f`.
+/// Shared driver for the two-parameter validation plugins: `validate` builds the distribution per
+/// row and returns the `Float64` to emit, either a parameter itself (`sigma`) or a quantity derived
+/// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
+/// Any null input nulls the row without calling `validate`, matching the samplers.
 ///
-/// The general (non-fast-path) side of the value-keyed methods. Where the scalar fast path builds
-/// the distribution once per call, this rebuilds it per row because at least one parameter is a
-/// column. The three things that vary between distributions are the macro's inputs:
+/// These plugins are what let the closed-form moments and (for Uniform / Bernoulli) value-keyed
+/// methods, which are pure Polars expressions, report an invalid parameterisation through the same
+/// Rust `build_dist`. The constant-parameter fast path calls the same plugin on length-1 `pl.lit`
+/// inputs, so it is built once instead of per row.
 ///
-/// * the distribution type, used in the `F: Fn(&$dist, f64) -> Option<f64>` bound;
-/// * each parameter's `<cast dtype> => <accessor>` pair (binomial's `n` is `Int64`/`.i64()`, the
-///   continuous scales are `Float64`/`.f64()`); the evaluation point is always cast to `Float64`;
-/// * `build`: the distribution constructor (`build_dist`), validating per row and raising on an
-///   invalid parameterisation (`?` is available inside the closure).
+/// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
+/// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
+/// the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`.
 ///
-/// `f` is the same named per-method body the scalar fast path applies, so the two paths share one
-/// body and cannot drift. A `NaN` evaluation point short-circuits to `NaN` after the distribution
-/// is built, so an invalid parameterisation still raises on a `NaN` row; see [`value_keyed_scalar`]
-/// for why the guard lives in the shared drivers. Only the 2-parameter (ternary) arm exists today,
-/// since every current distribution takes two parameters; a 1-parameter distribution would add a
-/// `try_binary_elementwise` arm here. Call sites are the distribution modules
-/// (`polars::prelude::*` in scope).
-macro_rules! value_keyed_per_row {
-    (
-        $(#[$meta:meta])*
-        fn $name:ident(&$dist:ty);
-        params = ($p1_dt:expr => $p1_acc:ident, $p2_dt:expr => $p2_acc:ident);
-        build = $build:path;
-    ) => {
-        $(#[$meta])*
-        fn $name<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-        where
-            F: Fn(&$dist, f64) -> Option<f64>,
-        {
-            let value = inputs[0].cast(&DataType::Float64)?;
-            let value_ca = value.f64()?;
-            let p1 = inputs[1].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let p2 = inputs[2].cast(&$p2_dt)?;
-            let p2_ca = p2.$p2_acc()?;
-            let name = inputs[0].name().clone();
+/// Takes no output name: polars resolves a plugin expression's output name from its first input, so
+/// the frame column follows `inputs[0]` (pinned by `tests/distributions/output_name_test.py`).
+///
+/// Keep `validate` a generic `F: Fn`: it monomorphises into the row loop, where a `&dyn Fn` or a
+/// `fn` pointer would cost an indirect call per row.
+pub(crate) fn validate_params_binary<A, B, F>(
+    a: &ChunkedArray<A>,
+    b: &ChunkedArray<B>,
+    validate: F,
+) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    B: PolarsNumericType,
+    F: Fn(A::Native, B::Native) -> PolarsResult<f64>,
+{
+    let ca: Float64Chunked =
+        try_binary_elementwise(a, b, |a_opt, b_opt| -> PolarsResult<Option<f64>> {
+            match (a_opt, b_opt) {
+                (Some(a), Some(b)) => Ok(Some(validate(a, b)?)),
+                _ => Ok(None),
+            }
+        })?;
 
-            let ca: Float64Chunked = polars::prelude::arity::try_ternary_elementwise(
-                value_ca,
-                p1_ca,
-                p2_ca,
-                |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
-                    match (value_opt, p1_opt, p2_opt) {
-                        (Some(v), Some(a), Some(b)) => {
-                            // Build first so an invalid parameterisation raises on a `NaN` row.
-                            let dist = $build(a, b)?;
-                            Ok(if v.is_nan() { Some(f64::NAN) } else { f(&dist, v) })
-                        },
-                        _ => Ok(None),
-                    }
-                },
-            )?;
-
-            Ok(ca.with_name(name).into_series())
-        }
-    };
+    Ok(ca.into_series())
 }
-pub(crate) use value_keyed_per_row;
 
-/// Generates a two-parameter validation plugin: validate `(p1, p2)` per row by constructing the
-/// distribution, then return a derived `Float64` the closed-form Python methods can build on,
-/// raising identically to the sampler on an invalid parameterisation.
-///
-/// These plugins exist so the closed-form moments and (for Uniform / Bernoulli) value-keyed
-/// methods, which are pure Polars expressions, still report an invalid parameterisation through
-/// the same Rust `build_dist` rather than silently producing a garbage result. The constant-
-/// parameter fast path calls the very same plugin on length-1 `pl.lit` inputs, so it is built
-/// once instead of per row. The four knobs that vary between distributions are the macro's inputs:
-///
-/// * each parameter's `<name>: <cast dtype> => <accessor>` (binomial's `n` is `Int64`/`.i64()`,
-///   the continuous parameters are `Float64`/`.f64()`); the matched values bind to `<name>`;
-/// * `build`: the constructor (`build_dist`), validating per row (`?` is available);
-/// * `returns`: the `Float64` to emit, an expression over the parameter names (a parameter itself,
-///   e.g. `sigma`, or a derived width, e.g. `max - min`);
-/// * `output_name = inputs[i]`: which input column names the output (most return the second
-///   parameter and name after it; Uniform's width names after the first).
-///
-/// Two arms that differ only in arity: a binary one (`normal_sigma`, `lognormal_sigma`,
-/// `binomial_params`, `uniform_range`) and a unary one (`bernoulli_proba`, `exponential_rate`).
-/// A unary validator's `output_name` is always `inputs[0]` (its only input). Call sites are the
-/// distribution modules (`polars::prelude::*` in scope).
-macro_rules! param_validator {
-    (
-        $(#[$meta:meta])*
-        fn $name:ident;
-        params = ($p1:ident: $p1_dt:expr => $p1_acc:ident, $p2:ident: $p2_dt:expr => $p2_acc:ident);
-        build = $build:path;
-        returns = $ret:expr;
-        output_name = inputs[$out_idx:literal];
-    ) => {
-        $(#[$meta])*
-        #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-        fn $name(inputs: &[Series]) -> PolarsResult<Series> {
-            let p1 = inputs[0].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let p2 = inputs[1].cast(&$p2_dt)?;
-            let p2_ca = p2.$p2_acc()?;
-            let name = inputs[$out_idx].name().clone();
-
-            let ca: Float64Chunked = polars::prelude::arity::try_binary_elementwise(
-                p1_ca,
-                p2_ca,
-                |o1, o2| -> PolarsResult<Option<f64>> {
-                    match (o1, o2) {
-                        (Some($p1), Some($p2)) => {
-                            $build($p1, $p2)?;
-                            Ok(Some($ret))
-                        },
-                        _ => Ok(None),
-                    }
-                },
-            )?;
-
-            Ok(ca.with_name(name).into_series())
+/// Single-parameter counterpart of [`validate_params_binary`], same contracts
+/// (`bernoulli_proba`, `exponential_rate`).
+pub(crate) fn validate_params_unary<A, F>(a: &ChunkedArray<A>, validate: F) -> PolarsResult<Series>
+where
+    A: PolarsNumericType,
+    F: Fn(A::Native) -> PolarsResult<f64>,
+{
+    let ca: Float64Chunked = try_unary_elementwise(a, |a_opt| -> PolarsResult<Option<f64>> {
+        match a_opt {
+            Some(a) => Ok(Some(validate(a)?)),
+            None => Ok(None),
         }
-    };
-    (
-        $(#[$meta:meta])*
-        fn $name:ident;
-        params = ($p1:ident: $p1_dt:expr => $p1_acc:ident);
-        build = $build:path;
-        returns = $ret:expr;
-        output_name = inputs[$out_idx:literal];
-    ) => {
-        $(#[$meta])*
-        #[pyo3_polars::derive::polars_expr(output_type=Float64)]
-        fn $name(inputs: &[Series]) -> PolarsResult<Series> {
-            let p1 = inputs[0].cast(&$p1_dt)?;
-            let p1_ca = p1.$p1_acc()?;
-            let name = inputs[$out_idx].name().clone();
+    })?;
 
-            let ca: Float64Chunked = polars::prelude::arity::try_unary_elementwise(
-                p1_ca,
-                |o1| -> PolarsResult<Option<f64>> {
-                    match o1 {
-                        Some($p1) => {
-                            $build($p1)?;
-                            Ok(Some($ret))
-                        },
-                        None => Ok(None),
-                    }
-                },
-            )?;
-
-            Ok(ca.with_name(name).into_series())
-        }
-    };
+    Ok(ca.into_series())
 }
-pub(crate) use param_validator;

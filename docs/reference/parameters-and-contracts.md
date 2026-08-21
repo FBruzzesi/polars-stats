@@ -15,7 +15,7 @@ parameter rejects an `int`, while a method argument accepts either.
 | Input | Float parameter (`mu`, `sigma`, `p`, `rate`, `a`, `b`, `min`, `max`) | Count parameter (`n`) | Method argument (`x`, `q`) |
 |---|---|---|---|
 | `float` | accepted | `TypeError` | accepted |
-| `int` | `TypeError` | accepted | accepted |
+| `int` | `TypeError` | accepted (`0` to `2**63 - 1`) | accepted |
 | `bool` | `TypeError` | `TypeError` | `TypeError` |
 | `str` | read as `pl.col(name)` | read as `pl.col(name)` | read as `pl.col(name)` |
 | `pl.Expr` | passed through | passed through | passed through |
@@ -26,13 +26,19 @@ A `str` is always a column reference, never a literal value. A Python scalar is 
 rather than a broadcast literal, which is what keeps every method elementwise under `over` and `group_by`
 (see [Architecture](../explanation/architecture.md#column-valued-parameters)).
 
-Numeric columns of any width are cast to `Float64` (or `Int64` for `n`) at evaluation, so an integer column works
-wherever a float is expected. A non-numeric column raises at evaluation: Polars fails the query with
-`InvalidOperationError` rather than returning nulls.
+Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
+expected. The count parameter `n` is the exception: its column must already hold integers, of any width up to
+`UInt64`, because casting a float one would silently truncate a fractional count. The rule is judged on the
+dtype, so a float `n` column raises even when every value in it is null; a `Null`-dtype column propagates nulls
+like any other parameter. A non-numeric column raises at
+evaluation: Polars fails the query with `InvalidOperationError` rather than returning nulls.
 
 ## Parameter validity
 
 Values are validated at *evaluation*, not at construction, and identically for scalar and column-valued parameters.
+The count parameter `n` is the exception: a Python `int` outside `[0, 2**63 - 1]` raises `ValueError` at
+construction, since it is expanded to a `UInt64` column and passed to the fast paths as a kwarg. An `n` *column*
+may hold any count its dtype can, up to `UInt64`.
 
 | Distribution | Required | Also required |
 |---|---|---|

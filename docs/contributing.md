@@ -42,7 +42,7 @@ polars-stats/
 ├── rust-toolchain.toml
 ├── src/
 │   ├── lib.rs                # pymodule entry + global allocator
-│   ├── rng.rs                # per-row RNG + sampler drivers (sample_by_index, samples_per_row, sample_scalar_plugin!)
+│   ├── rng.rs                # per-row RNG + the sampler drivers every plugin shells over
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports
@@ -104,19 +104,29 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
 1. **Rust.** Add `src/distributions/<name>.rs`, register it in `src/distributions/mod.rs`, and implement a
    `#[polars_expr]` only for methods that need it:
 
-    * Always the samplers, deriving the RNG from `src/rng.rs` (`let rngs = kwargs.row_rngs();` once outside the loop,
-      then `rngs.rng(i)` inside; never reseed from chunk position; `try_*_elementwise` so a `null` in any input
-      propagates and an invalid parameter raises). The per-row `<name>_sample` / `<name>_samples` (multi-draw, backing
-      `samples`) take the parameter columns plus a row index as the last input; the constant-parameter fast paths
-      `<name>_sample_scalar` / `<name>_samples_scalar` (parameters validated once in `kwargs`) come from the
-      `sample_scalar_plugin!` macro in `src/rng.rs`, generated from one shared `build` / `draw` so they stay
-      byte-identical to the per-row path.
+    * Always the samplers. Every one is a shell over a driver in `src/rng.rs`; none resolves a seed or writes a row
+      loop itself, which is what keeps seeding, `null` propagation (a `null` in any input nulls the row) and the
+      invalid-parameter error contract in one place. The per-row `<name>_sample` / `<name>_samples` (multi-draw,
+      backing `samples`) take the parameter columns plus a row index as the last input: `<name>_sample` calls
+      `sample_per_row_binary` (one parameter column) or `sample_per_row_ternary` (two), passing a `build` that
+      validates and constructs the row's draw state; `<name>_samples` feeds `binary_param_rows` /
+      `ternary_param_rows` into `samples_per_row`. The constant-parameter fast paths `<name>_sample_scalar` /
+      `<name>_samples_scalar` are shells over `sample_by_index` / `samples_by_index`, taking
+      `SampleScalarKwargs<<Name>ParamsKwargs>` / `SamplesScalarKwargs<<Name>ParamsKwargs>` so the parameters are
+      validated once. All five drivers share the argument order `name, inputs, seed, [size], closures` and take the
+      output dtype from what `draw` returns, so no call site names a polars type. The per-row drivers want the index
+      pre-cast (`index.u64()?`, since `*_param_rows` hands back a borrowing iterator); the fast-path drivers take the
+      raw `&inputs[0]` and cast it themselves. Give the distribution one named `fn draw` and call it from the
+      per-row plugin and both shells; that shared call, not a test, is what keeps the three byte-identical.
     * When a method needs a **special function** (`erf`, log-gamma, regularized incomplete beta/gamma, ...) or has
       no elementary closed form: bind it in `statrs` (`pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`,
-      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (from the
-      `value_keyed_per_row!` macro) and the constant-parameter `<name>_<method>_scalar` twin (from the
-      `value_keyed_scalar_plugins!` macro), both over the shared `value_keyed_scalar` driver, so the two paths are
-      byte-identical by construction. All three macros live in `src/distributions/mod.rs`.
+      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (a hand-written
+      shell over the `value_keyed_per_row` driver in `src/distributions/mod.rs`) and the constant-parameter
+      `<name>_<method>_scalar` twin, so the two paths are byte-identical by construction. Write each twin as a
+      one-line `#[polars_expr]` shell over `kwargs.value_keyed(&inputs[0], <method>_value)`, an inherent method on
+      the distribution's `<Name>ParamsKwargs` struct that validates and builds the distribution once per call and
+      then maps the body through the shared `value_keyed_scalar` driver. Putting the driver on the kwargs struct is
+      what makes the hoist structural: a shell cannot build the distribution itself, so it cannot rebuild per row.
     * When a method is an **elementary** closed form (no special function: a Normal's
       `0.5*log(2*pi*e*sigma^2)`, the Uniform / Exponential / Cauchy `pdf` / `cdf` / `ppf`, `mean = n*p`, ...):
       **leave it in Python as a Polars expression, do not bind it in Rust.** A Rust binding for arithmetic Polars does
@@ -138,13 +148,16 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
       statrs-backed method, return `self._value_plugin("<name>_<method>", value)`: the base routes constant parameters
       to the `_scalar` fast path and column parameters to the per-row plugin.
     * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
-      `uniform_range` returns `max - min`). The two-parameter validators are generated by the `param_validator!` macro
-      (`src/distributions/mod.rs`): declare each `<name>: <dtype> => <accessor>`, the `build`, the `returns` expression,
-      and `output_name = inputs[i]`. One-parameter validators (`bernoulli_proba`, `exponential_rate`) use the macro's
-      unary arm (a single `<name>: <dtype> => <accessor>`). For a statrs-backed distribution
-      whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate every closed-form
-      moment through `self._moment(<formula>)`; for a closed-form distribution whose validator is already part of every
-      formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
+      `uniform_range` returns `max - min`). Write it as a `#[polars_expr]` shell over the generic
+      `validate_params_binary` / `validate_params_unary` drivers in `src/distributions/mod.rs`: cast each input,
+      take its accessor (`.f64()` / `.u64()`, so the two parameter dtypes may differ as Binomial's `(n, p)` does),
+      and pass a closure that calls `build_dist` and returns the quantity to emit. Keep that closure a generic
+      `F: Fn` so it monomorphises into the row loop. These drivers take no output name: polars resolves an
+      expression's output name from its first input, so the column follows `inputs[0]` whatever the plugin calls
+      its `Series`. For a statrs-backed
+      distribution whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate
+      every closed-form moment through `self._moment(<formula>)`; for a closed-form distribution whose validator
+      is already part of every formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
     `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.

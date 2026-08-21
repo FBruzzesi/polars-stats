@@ -1,14 +1,14 @@
 #![allow(clippy::unused_unit)]
-use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
-use crate::distributions::param_validator;
+use crate::distributions::validate_params_unary;
 use crate::rng::{
-    binary_param_rows, sample_scalar_plugin, samples_bool_output, samples_per_row, SampleKwargs,
-    SamplesKwargs,
+    binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
+    samples_by_index, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
+    SamplesScalarKwargs,
 };
 
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
@@ -17,63 +17,89 @@ fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     })
 }
 
-param_validator! {
-    /// Element-wise validation of the success probability: returns `p` unchanged, raising
-    /// `InvalidOperation` if `p` is outside `[0, 1]`. `null` propagates.
-    ///
-    /// The closed-form Python methods derive from this so they report an invalid `p` consistently
-    /// with `bernoulli_sample`, instead of silently computing a negative probability.
-    fn bernoulli_proba;
-    params = (proba: DataType::Float64 => f64);
-    build = build_dist;
-    returns = proba;
-    output_name = inputs[0];
+/// Bernoulli's constant success probability, deserialised once per call.
+#[derive(serde::Deserialize)]
+struct BernoulliParamsKwargs {
+    p: f64,
+}
+
+impl BernoulliParamsKwargs {
+    fn build(&self) -> PolarsResult<Bernoulli> {
+        build_dist(self.p)
+    }
+}
+
+/// Element-wise validation of the success probability: returns `p` unchanged, raising
+/// `InvalidOperation` if `p` is outside `[0, 1]`. `null` propagates.
+///
+/// The closed-form Python methods derive from this so they report an invalid `p` consistently
+/// with `bernoulli_sample`, instead of silently computing a negative probability.
+#[polars_expr(output_type=Float64)]
+fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
+    let proba = inputs[0].cast(&DataType::Float64)?;
+
+    validate_params_unary(proba.f64()?, |proba| {
+        build_dist(proba)?;
+        Ok(proba)
+    })
+}
+
+/// One Bernoulli draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
+///
+/// Every Bernoulli sampler draws through here, per-row and fast path alike, so their bit-equality is
+/// structural rather than only sampled by `sample_test.py`.
+#[inline]
+fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
+    <Bernoulli as Distribution<bool>>::sample(dist, rng)
 }
 
 /// Element-wise Bernoulli sampler over `(p, row_index)`, returning `Boolean`.
 ///
 /// Per row, `null` propagates and an invalid `p` raises via [`build_dist`]. Seeding and
-/// chunk-invariance follow [`SampleKwargs::row_rngs`].
+/// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
-    let proba_ca = proba.f64()?;
     let index = inputs[1].cast(&DataType::UInt64)?;
-    let index_ca = index.u64()?;
     let name = inputs[0].name().clone();
 
-    let rngs = kwargs.row_rngs()?;
-
-    let ca: BooleanChunked = try_binary_elementwise(
-        proba_ca,
-        index_ca,
-        |p_opt, i_opt| -> PolarsResult<Option<bool>> {
-            match (p_opt, i_opt) {
-                (Some(p), Some(i)) => {
-                    let dist = build_dist(p)?;
-                    let mut rng = rngs.rng(i);
-                    Ok(Some(<Bernoulli as Distribution<bool>>::sample(
-                        &dist, &mut rng,
-                    )))
-                },
-                _ => Ok(None),
-            }
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
+    sample_per_row_binary(
+        name,
+        proba.f64()?,
+        index.u64()?,
+        kwargs.seed,
+        build_dist,
+        draw,
+    )
 }
 
-sample_scalar_plugin! {
-    struct BernoulliScalarKwargs { p: f64 }
+/// Constant-parameter fast path for [`bernoulli_sample`].
+#[polars_expr(output_type=Boolean)]
+fn bernoulli_sample_scalar(
+    inputs: &[Series],
+    kwargs: SampleScalarKwargs<BernoulliParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    /// Constant-parameter fast path for [`bernoulli_sample`].
-    fn bernoulli_sample_scalar(output_type = Boolean, physical = BooleanType);
+    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+}
 
-    samples = bernoulli_samples_scalar as BernoulliSamplesScalarKwargs -> samples_bool_output;
+/// Constant-parameter multi-draw fast path: the `samples` twin of [`bernoulli_sample_scalar`].
+///
+/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
+/// bit and the distribution is built once per call. Returns `Array(Boolean, size)`.
+#[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
+fn bernoulli_samples_scalar(
+    inputs: &[Series],
+    kwargs: SamplesScalarKwargs<BernoulliParamsKwargs>,
+) -> PolarsResult<Series> {
+    let dist = kwargs.params.build()?;
+    let name = inputs[0].name().clone();
 
-    build = |kw| build_dist(kw.p)?;
-    draw = |dist, rng| <Bernoulli as Distribution<bool>>::sample(&dist, rng);
+    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&dist, rng)
+    })
 }
 
 /// Element-wise multi-draw Bernoulli sampler: `size` draws per row in one call, the distribution
@@ -88,11 +114,5 @@ fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
 
     let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
 
-    samples_per_row::<BooleanType, _, _, _, _>(
-        name,
-        kwargs.seed,
-        kwargs.size,
-        rows,
-        <Bernoulli as Distribution<bool>>::sample,
-    )
+    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

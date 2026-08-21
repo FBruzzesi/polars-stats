@@ -6,7 +6,6 @@ from polars_stats.distributions._base import (
     DiscreteDistribution,
     coerce_n,
     coerce_param,
-    register_plugin,
     scalar_float,
     scalar_int,
     scalar_kwargs,
@@ -25,14 +24,19 @@ class Binomial(DiscreteDistribution):
     (``Binomial(p, n)``); this class follows scipy's ``(n, p)``.
 
     Arguments:
-        n: Number of trials, an integer ``>= 0``. Either a Python ``int`` or an ``IntoExprColumn``
-            (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one count per row.
+        n: Number of trials, an integer ``>= 0``. Either a Python ``int`` (at most ``2**63 - 1``) or an
+            ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one count per
+            row. A column must have an integer dtype, of any width up to ``UInt64``, and may hold any count
+            the dtype can; cast a float one yourself (``pl.col("n").cast(pl.Int64)``).
         p: Success probability in ``[0, 1]``. Either a Python ``float`` or an ``IntoExprColumn``.
 
-    Neither parameter is validated at construction: a negative ``n`` or a ``p`` outside ``[0, 1]``
-    raises ``InvalidOperation`` (a ``ComputeError``) when a method is evaluated, identically to an
-    invalid column row. Construction rejects only wrong *types* (``TypeError``). Null parameters
-    propagate to null.
+    Parameters are validated at evaluation, where a negative ``n`` column, a non-integer ``n`` dtype or a
+    ``p`` outside ``[0, 1]`` raises ``InvalidOperation`` (a ``ComputeError``). A scalar ``n`` is the one
+    exception: it is expanded to a ``UInt64`` column and passed to the fast paths as a kwarg, neither of
+    which can carry an out-of-range count, so it raises ``ValueError`` at construction. Construction
+    otherwise rejects only wrong *types* (``TypeError``). Null parameters propagate to null, a
+    ``Null``-dtype ``n`` column included; the dtype rule is judged first, so a *float* ``n`` column
+    raises even when every value in it is null.
     """
 
     _n: pl.Expr
@@ -99,12 +103,7 @@ class Binomial(DiscreteDistribution):
     def entropy(self) -> pl.Expr:
         """Shannon entropy in nats, the exact support sum ``-sum_k pmf(k) log pmf(k)``.
 
-        ``0`` at the degenerate endpoints ``p in {0, 1}``.
+        ``0`` at the degenerate endpoints ``p in {0, 1}``. There is no closed form, so
+        ``binomial_entropy`` evaluates the sum in Rust.
         """
-        # Unlike ``mean`` / ``variance`` there is no closed form, so the sum is evaluated by ``binomial_entropy``
-        # in Rust. For column parameters that runs once per row; for scalar parameters it is computed **once** on
-        # length-1 inputs and broadcast to length-n behind the ``_moment`` validity gate, so a constant's support sum is
-        # not re-evaluated on every row.
-        if self._scalar_kwargs is None:
-            return register_plugin("binomial_entropy", (self._n, self._p))
-        return self._moment(register_plugin("binomial_entropy", self._scalar_lit_args()))
+        return self._param_plugin("binomial_entropy")
