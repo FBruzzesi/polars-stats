@@ -79,9 +79,20 @@ jobs:
         run: uv sync --group testing --no-install-project
       - name: Install built wheel
         run: uv pip install dist/*.whl
-      - name: Run tests
+      # Both engines, as in pull-request.yml's `test-latest`, but as two steps: these jobs build the
+      # crate themselves, so a second job would pay a second Rust build to re-run a one-minute
+      # suite. `!cancelled()` still reports streaming when in-memory fails.
+      - name: Run tests (in-memory engine)
         run: uv run --no-sync pytest tests
+        env:
+          POLARS_ENGINE_AFFINITY: in-memory
+      - name: Run tests (streaming engine)
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync pytest tests
+        env:
+          POLARS_ENGINE_AFFINITY: streaming
 
+  # polars 1.15.0 predates `POLARS_ENGINE_AFFINITY` (see pull-request.yml's `test-oldest`).
   linux-min-versions-just-test:
     runs-on: ubuntu-latest
     steps:
