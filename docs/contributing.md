@@ -27,6 +27,16 @@ make benchmark  # polars_stats vs scipy comparison report (benchmarks/)
 `make test` caps `POLARS_MAX_THREADS=4` on purpose: it forces multi-thread, multi-chunk execution so the chunk- and
 thread-invariance of `sample` actually gets exercised.
 
+It does not pin a query engine, so it runs whichever one your environment resolves (`POLARS_ENGINE_AFFINITY`, else the
+polars default). CI runs both, because the two chunk a plugin's inputs differently: in-memory calls it once over the
+whole column, streaming once per morsel. A chunk-boundary or input-length bug can therefore pass under one and fail
+under the other. Pin an engine with:
+
+```bash
+POLARS_ENGINE_AFFINITY=in-memory uv run --group testing pytest tests
+POLARS_ENGINE_AFFINITY=streaming uv run --group testing pytest tests
+```
+
 To preview these docs locally:
 
 ```bash

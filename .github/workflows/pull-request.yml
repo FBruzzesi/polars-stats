@@ -20,6 +20,12 @@ env:
   PYTHON_VERSIONS_LATEST: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
   PYTHON_VERSIONS_OLDEST: '["3.10", "3.11", "3.12"]'
   POLARS_OLDEST: "1.15.0"
+  # The engines chunk a plugin's inputs differently: in-memory calls it once over the whole column,
+  # streaming once per morsel. Neither broadcasts a length-1 input, so a plugin that zips rather
+  # than broadcasts truncates under both, but at row counts that differ per engine. Each job pins
+  # its engine, so polars 2 flipping the default to `streaming` leaves the in-memory arm on
+  # in-memory.
+  POLARS_ENGINES: '["in-memory", "streaming"]'
 
 jobs:
   # `strategy.matrix` cannot read the workflow-level `env` context, so this
@@ -34,6 +40,7 @@ jobs:
       python-versions-latest: ${{ env.PYTHON_VERSIONS_LATEST }}
       python-versions-oldest: ${{ env.PYTHON_VERSIONS_OLDEST }}
       polars-oldest: ${{ env.POLARS_OLDEST }}
+      polars-engines: ${{ env.POLARS_ENGINES }}
     steps:
       - run: 'true'
 
@@ -147,7 +154,7 @@ jobs:
         run: uv run --no-sync mypy .
 
   test-latest:
-    name: test-latest / py${{ matrix.python-version }}
+    name: test-latest / py${{ matrix.python-version }} ${{ matrix.engine }}
     needs: [setup, build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -155,6 +162,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ${{ fromJSON(needs.setup.outputs.python-versions-latest) }}
+        engine: ${{ fromJSON(needs.setup.outputs.polars-engines) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -175,7 +183,11 @@ jobs:
         run: uv export --no-annotate --no-hashes --group testing
       - name: Run tests
         run: uv run --no-sync pytest tests
+        env:
+          POLARS_ENGINE_AFFINITY: ${{ matrix.engine }}
 
+  # polars 1.15.0 predates `POLARS_ENGINE_AFFINITY`, `collect(engine=...)` defaults to `cpu`
+  # and nothing reads the variable
   test-oldest:
     name: test-oldest / py${{ matrix.python-version }} polars-${{ needs.setup.outputs.polars-oldest }}
     needs: [setup, build]
