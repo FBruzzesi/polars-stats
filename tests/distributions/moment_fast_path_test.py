@@ -21,7 +21,9 @@ this module pins the parts that test does not reach:
   the asymmetry is intentional and cannot regress silently.
 
 A Python `None` parameter cannot reach either path (`coerce_param` rejects it at construction), so
-there is no null-scalar case here.
+there is no null-scalar case here. Binomial's `n = -1` is absent for the same reason: `coerce_n` raises
+a `ValueError` at construction, so only a column can carry a negative count to a validator, and
+`binomial/validation_test.py` covers that on every method.
 """
 
 from __future__ import annotations
@@ -65,7 +67,6 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "bernoulli p=1.5": (Bernoulli(1.5), Bernoulli(_col(1.5)), True),
     "bernoulli p=-0.1": (Bernoulli(-0.1), Bernoulli(_col(-0.1)), True),
     "bernoulli p=nan": (Bernoulli(_NAN), Bernoulli(_col(_NAN)), True),
-    "binomial n=-1": (Binomial(-1, 0.5), Binomial(_col(-1, pl.Int64()), _col(0.5)), True),
     "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
@@ -96,11 +97,8 @@ def test_scalar_and_column_paths_agree_on_validation(
 
 @pytest.mark.parametrize(
     ("scalar", "per_row"),
-    [
-        (Binomial(-1, 0.5), Binomial(_col(-1, pl.Int64()), _col(0.5))),
-        (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5))),
-    ],
-    ids=["n=-1", "p=1.5"],
+    [(Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)))],
+    ids=["p=1.5"],
 )
 def test_binomial_entropy_scalar_and_column_paths_agree_on_validation(scalar: Binomial, per_row: Binomial) -> None:
     """`Binomial.entropy` has its own scalar branch (the Rust support sum on length-1 inputs).

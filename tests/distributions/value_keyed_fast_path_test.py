@@ -17,7 +17,8 @@ per row. Two properties of that routing are pinned here, both of which the bit-e
   silently.
 
 A Python `None` parameter cannot reach either path: `coerce_param` rejects it as a `TypeError` at construction, covered
-by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here.
+by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here, and none for
+Binomial's `n = -1`, which `coerce_n` rejects as a `ValueError` at construction for the same reason.
 """
 
 from __future__ import annotations
@@ -67,7 +68,6 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     "lognormal sigma=inf (accepted)": (lambda: LogNormal(0.0, _INF), lambda: LogNormal(_col(0.0), _col(_INF)), False),
     "binomial p=nan": (lambda: Binomial(5, _NAN), lambda: Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "binomial p=1.5": (lambda: Binomial(5, 1.5), lambda: Binomial(_col(5, pl.Int64()), _col(1.5)), True),
-    "binomial n=-1": (lambda: Binomial(-1, 0.5), lambda: Binomial(_col(-1, pl.Int64()), _col(0.5)), True),
     "beta a=nan": (lambda: Beta(_NAN, 1.0), lambda: Beta(_col(_NAN), _col(1.0)), True),
     "beta a=0": (lambda: Beta(0.0, 1.0), lambda: Beta(_col(0.0), _col(1.0)), True),
     "beta b=-1": (lambda: Beta(2.0, -1.0), lambda: Beta(_col(2.0), _col(-1.0)), True),

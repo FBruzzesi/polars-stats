@@ -150,7 +150,7 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
     * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
       `uniform_range` returns `max - min`). Write it as a `#[polars_expr]` shell over the generic
       `validate_params_binary` / `validate_params_unary` drivers in `src/distributions/mod.rs`: cast each input,
-      take its accessor (`.f64()` / `.i64()`, so the two parameter dtypes may differ as Binomial's `(n, p)` does),
+      take its accessor (`.f64()` / `.u64()`, so the two parameter dtypes may differ as Binomial's `(n, p)` does),
       and pass a closure that calls `build_dist` and returns the quantity to emit. Keep that closure a generic
       `F: Fn` so it monomorphises into the row loop. These drivers take no output name: polars resolves an
       expression's output name from its first input, so the column follows `inputs[0]` whatever the plugin calls
