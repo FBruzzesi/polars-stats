@@ -28,13 +28,36 @@ from polars.testing import assert_series_equal as _assert_series_equal
 if TYPE_CHECKING:
     from polars import DataFrame, LazyFrame, Series
 
-__all__ = ("arr_explode", "assert_frame_equal", "assert_series_equal", "linear_space")
+__all__ = (
+    "PARTITIONED_BROADCAST_AVAILABLE",
+    "arr_explode",
+    "assert_frame_equal",
+    "assert_series_equal",
+    "linear_space",
+)
 
 PL_VERSION = Version(pl.__version__)
 _NEEDS_RENAMING = Version("1.32.3") > PL_VERSION
 _REL_NAME = "rtol" if _NEEDS_RENAMING else "rel_tol"
 _ABS_NAME = "atol" if _NEEDS_RENAMING else "abs_tol"
 _EXPLODE_HAS_EMPTY_AS_NULL = Version("1.36.0") <= PL_VERSION
+
+PARTITIONED_BROADCAST_AVAILABLE = Version("1.34.0") <= PL_VERSION
+"""Whether polars handles a length-1 input *inside* `over` / `group_by().agg()` correctly.
+
+`align_inputs` broadcasts a length-1 plugin input on every supported version, and a plain `select` /
+`with_columns` is correct throughout. Partitioned contexts are not before polars v1.34, and the two
+upstream defects are the reason the partition suites are gated rather than the broadcast itself:
+
+* an expression whose plugin inputs are **all** length 1 panics under `over` / `group_by().agg()`
+  (`impl error, should be a list at this point`). Broken through 1.33, fixed in 1.34;
+* a length-1 *value* (`pl.col("x").max()`) beside length-n parameters makes `over` return results in
+  group order instead of scattering back to row order. Broken through 1.32, fixed in 1.33.
+
+Both are polars defects, not plugin defects: the same expressions are correct on 1.34 and above with
+an unchanged plugin. Documented for users in `docs/reference/parameters-and-contracts.md`.
+When the polars floor reaches 1.34 this constant and every gate on it can be deleted.
+"""
 
 
 def arr_explode(series: Series) -> Series:

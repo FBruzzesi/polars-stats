@@ -11,6 +11,9 @@ polars decides per context what that means. `moment_test.py` and `value_keyed_te
   is the scalar.
 * **the streaming engine** ingests the source in morsels rather than as one contiguous block.
 
+The two partition contexts are gated on `PARTITIONED_BROADCAST_AVAILABLE`: polars below 1.34 mishandles a
+length-1 input inside them, so there is nothing of ours left to pin there.
+
 A validating plugin that mishandled its length-1 input under partitioning, or a scalar path that stopped being a
 scalar, would fail here while still passing the `select`-only suites.
 """
@@ -26,7 +29,7 @@ from hypothesis import strategies as st
 from packaging.version import Version
 
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
-from tests._polars_compat import PL_VERSION, assert_series_equal, linear_space
+from tests._polars_compat import PARTITIONED_BROADCAST_AVAILABLE, PL_VERSION, assert_series_equal, linear_space
 from tests.property._specs import (
     ALL_SPECS,
     ULP_ABS_TOL,
@@ -83,26 +86,29 @@ def _assert_matches_across_contexts(
         both["fast"], both["slow"], check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
     )
 
-    # `over`: polars broadcasts a scalar to each (uneven) partition's length, then scatters back.
-    assert_series_equal(
-        frame.select(r=fast.over("g"))["r"],
-        frame.select(r=slow.over("g"))["r"],
-        check_exact=exact,
-        rel_tol=ULP_REL_TOL,
-        abs_tol=ULP_ABS_TOL,
-    )
+    # The two partition contexts, on the polars versions that get them right (see
+    # `PARTITIONED_BROADCAST_AVAILABLE`). `select` and the streaming engine still run below that floor.
+    if PARTITIONED_BROADCAST_AVAILABLE:
+        # `over`: polars broadcasts a scalar to each (uneven) partition's length, then scatters back.
+        assert_series_equal(
+            frame.select(r=fast.over("g"))["r"],
+            frame.select(r=slow.over("g"))["r"],
+            check_exact=exact,
+            rel_tol=ULP_REL_TOL,
+            abs_tol=ULP_ABS_TOL,
+        )
 
-    # `group_by().agg()`: a scalar expression aggregates to one scalar per group while the per-row path
-    # gives one (constant) list per group; a full-length expression gives a list on both paths.
-    grouped = frame.group_by("g", maintain_order=True).agg(fast=fast, slow=slow)
-    if fast_height == 1:
-        assert grouped.select(pl.col("slow").list.n_unique())["slow"].to_list() == [1] * grouped.height
-        expected = grouped["slow"].list.first()
-    else:
-        expected = grouped["slow"]
-    assert_series_equal(
-        grouped["fast"], expected, check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
-    )
+        # `group_by().agg()`: a scalar expression aggregates to one scalar per group while the per-row path
+        # gives one (constant) list per group; a full-length expression gives a list on both paths.
+        grouped = frame.group_by("g", maintain_order=True).agg(fast=fast, slow=slow)
+        if fast_height == 1:
+            assert grouped.select(pl.col("slow").list.n_unique())["slow"].to_list() == [1] * grouped.height
+            expected = grouped["slow"].list.first()
+        else:
+            expected = grouped["slow"]
+        assert_series_equal(
+            grouped["fast"], expected, check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
+        )
 
     # streaming engine: the source is split across morsels; non-positional exprs must be invariant.
     if _STREAMING_AVAILABLE:

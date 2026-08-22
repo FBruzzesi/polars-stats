@@ -9,7 +9,7 @@ import pytest
 
 from polars_stats import Binomial, Normal
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
-from tests._polars_compat import assert_series_equal, linear_space
+from tests._polars_compat import PARTITIONED_BROADCAST_AVAILABLE, assert_series_equal, linear_space
 from tests.property._specs import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL
 
 if TYPE_CHECKING:
@@ -54,6 +54,12 @@ def _frame(spec: DistSpec) -> pl.DataFrame:
 
 _FRAMES = {spec.name: _frame(spec) for spec in ALL_SPECS}
 """One frame per spec, built once: no test mutates it."""
+
+_needs_partitioned_broadcast = pytest.mark.skipif(
+    not PARTITIONED_BROADCAST_AVAILABLE,
+    reason="polars < 1.34 mishandles a length-1 input inside over / group_by().agg()",
+)
+"""Gate for the two partition suites below. The plain-`select` suites run on every supported version."""
 
 
 def _call(spec: DistSpec, dist: _UnivariateDistribution, method: str, value: pl.Expr | None) -> pl.Expr:
@@ -197,19 +203,24 @@ def test_zero_row_frame_stays_empty(spec: DistSpec, method: str, column: str | N
 def test_mismatched_lengths_raise() -> None:
     """Lengths that are neither equal nor 1 have no defined broadcast, so they raise.
 
-    Only the in-memory engine surfaces `align_inputs`' own message, which names both lengths; the streaming
-    engine rejects the shape in its own zip node first, so only the raise itself is common to both.
+    *Which layer* rejects the shape is a polars scheduling detail that moves with the version and the engine:
+    `align_inputs` names both lengths, while polars' own zip node reports `non-equal length inputs` when it
+    gets there first. Both are correct rejections, so the message is matched loosely and the raise itself,
+    which is the contract, is asserted strictly. `engine=` is deliberately not passed: `"in-memory"` is not a
+    valid engine name on the oldest supported polars.
     """
     frame = pl.DataFrame({"x": [0.0, 1.0, 2.0, 3.0], "p": [0.5] * 4})
     mismatched = Binomial(n=pl.Series("n", [1, 2, 3]), p=pl.col("p")).pmf(pl.col("x"))
+    message = r"incompatible lengths|non-equal length"
 
-    with pytest.raises(pl.exceptions.PolarsError):
+    with pytest.raises(pl.exceptions.PolarsError, match=message):
         frame.select(mismatched)
 
-    with pytest.raises(pl.exceptions.ComputeError, match=r"length 3.*length 4|length 4.*length 3"):
-        frame.lazy().select(mismatched).collect(engine="in-memory")
+    with pytest.raises(pl.exceptions.PolarsError, match=message):
+        frame.lazy().select(mismatched).collect()
 
 
+@_needs_partitioned_broadcast
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_partition_contexts_broadcast_length_one_parameters(spec: DistSpec) -> None:
     """Under `over` and `group_by().agg()`, length-1 parameters broadcast to the *partition* length."""
@@ -221,6 +232,7 @@ def test_partition_contexts_broadcast_length_one_parameters(spec: DistSpec) -> N
     )
 
 
+@_needs_partitioned_broadcast
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_partition_contexts_broadcast_a_partition_local_value(spec: DistSpec) -> None:
     """A value reduced *within* the partition is the case a fix written against whole-frame length survives."""
