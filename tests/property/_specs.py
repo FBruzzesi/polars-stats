@@ -33,6 +33,19 @@ def _lit(value: float, dtype: PolarsDataType | None = None) -> pl.Expr:
     return pl.lit(value, dtype=dtype)
 
 
+SERIES_ROWS = 64
+"""Length of a `_series` parameter. Longer than any frame a test evaluates it on, and long enough that
+a per-row seeded sampler will not repeat one value by chance."""
+
+
+def _series(value: float, dtype: PolarsDataType | None = None) -> pl.Expr:
+    """The same constant as `_col` but a fixed-length `pl.Series` literal, independent of frame height.
+
+    `_col` follows `pl.len()` and can never outrun the frame. This one can, so the sampler's row
+    index is the *shorter* input."""
+    return pl.lit(pl.Series([value] * SERIES_ROWS, dtype=dtype))
+
+
 def _finite(min_value: float, max_value: float) -> SearchStrategy[float]:
     """Bounded, non-degenerate floats (no NaN/inf), the only inputs a parameter sweep should explore."""
     return st.floats(min_value=min_value, max_value=max_value, allow_nan=False, allow_infinity=False)
@@ -60,6 +73,8 @@ class DistSpec:
             assert the per-row path's null contract without knowing the distribution's parameter names.
         make_literals: Like `make_columns`, but every parameter is a length-1 `pl.lit`, so the plugin has to
             broadcast. Must agree with `make_columns` row for row.
+        make_series: Like `make_columns`, but every parameter is a `SERIES_ROWS`-long `pl.Series` literal, so
+            the parameters outrun the frame and set the call's row count.
         example: One valid parameterisation, for tests that need a fixed frame rather than a sweep.
         density: `pdf` or `pmf` as `(dist, expr) -> expr`. Typed loosely because the method differs by family;
             the concrete distribution is fixed per spec.
@@ -76,6 +91,7 @@ class DistSpec:
     make_columns: Callable[[tuple[float, ...]], _UnivariateDistribution]
     make_masked: Callable[[tuple[float, ...], pl.Expr], _UnivariateDistribution]
     make_literals: Callable[[tuple[float, ...]], _UnivariateDistribution]
+    make_series: Callable[[tuple[float, ...]], _UnivariateDistribution]
     example: tuple[float, ...]
     density: Callable[[Any, pl.Expr], pl.Expr]
     eval_range: Callable[[tuple[float, ...]], tuple[float, float]]
@@ -91,6 +107,7 @@ _BERNOULLI = DistSpec(
     make_columns=lambda p: Bernoulli(p=_col(p[0])),
     make_masked=lambda p, m: Bernoulli(p=pl.when(~m).then(_col(p[0]))),
     make_literals=lambda p: Bernoulli(p=_lit(p[0])),
+    make_series=lambda p: Bernoulli(p=_series(p[0])),
     example=(0.3,),
     density=lambda d, c: d.pmf(c),
     eval_range=lambda _: (-1.0, 2.0),
@@ -107,6 +124,7 @@ _BINOMIAL = DistSpec(
     make_columns=lambda p: Binomial(n=_col(int(p[0]), pl.Int64()), p=_col(p[1])),
     make_masked=lambda p, m: Binomial(n=pl.when(~m).then(_col(int(p[0]), pl.Int64())), p=_col(p[1])),
     make_literals=lambda p: Binomial(n=_lit(int(p[0]), pl.Int64()), p=_lit(p[1])),
+    make_series=lambda p: Binomial(n=_series(int(p[0]), pl.Int64()), p=_series(p[1])),
     example=(7, 0.35),
     density=lambda d, c: d.pmf(c),
     eval_range=lambda p: (-1.0, p[0] + 1.0),
@@ -121,6 +139,7 @@ _NORMAL = DistSpec(
     make_columns=lambda p: Normal(mu=_col(p[0]), sigma=_col(p[1])),
     make_masked=lambda p, m: Normal(mu=pl.when(~m).then(_col(p[0])), sigma=_col(p[1])),
     make_literals=lambda p: Normal(mu=_lit(p[0]), sigma=_lit(p[1])),
+    make_series=lambda p: Normal(mu=_series(p[0]), sigma=_series(p[1])),
     example=(1.5, 2.0),
     density=lambda d, c: d.pdf(c),
     eval_range=lambda p: (p[0] - 6.0 * p[1], p[0] + 6.0 * p[1]),
@@ -137,6 +156,7 @@ _UNIFORM = DistSpec(
     make_columns=lambda p: Uniform(min=_col(p[0]), max=_col(p[1])),
     make_masked=lambda p, m: Uniform(min=pl.when(~m).then(_col(p[0])), max=_col(p[1])),
     make_literals=lambda p: Uniform(min=_lit(p[0]), max=_lit(p[1])),
+    make_series=lambda p: Uniform(min=_series(p[0]), max=_series(p[1])),
     example=(-1.0, 3.0),
     density=lambda d, c: d.pdf(c),
     eval_range=lambda p: (p[0] - 0.5 * (p[1] - p[0]), p[1] + 0.5 * (p[1] - p[0])),
@@ -154,6 +174,7 @@ _LOGNORMAL = DistSpec(
     make_columns=lambda p: LogNormal(mu=_col(p[0]), sigma=_col(p[1])),
     make_masked=lambda p, m: LogNormal(mu=pl.when(~m).then(_col(p[0])), sigma=_col(p[1])),
     make_literals=lambda p: LogNormal(mu=_lit(p[0]), sigma=_lit(p[1])),
+    make_series=lambda p: LogNormal(mu=_series(p[0]), sigma=_series(p[1])),
     example=(0.5, 0.75),
     density=lambda d, c: d.pdf(c),
     # Support is (0, inf); the grid stays on the positive side and out to a 4-sigma-in-log upper tail.
@@ -171,6 +192,7 @@ _EXPONENTIAL = DistSpec(
     make_columns=lambda p: Exponential(rate=_col(p[0])),
     make_masked=lambda p, m: Exponential(rate=pl.when(~m).then(_col(p[0]))),
     make_literals=lambda p: Exponential(rate=_lit(p[0])),
+    make_series=lambda p: Exponential(rate=_series(p[0])),
     example=(1.5,),
     density=lambda d, c: d.pdf(c),
     # Support is [0, inf); the grid spans the `x < 0` zero region through several means.
@@ -192,6 +214,7 @@ _BETA = DistSpec(
     make_columns=lambda p: Beta(a=_col(p[0]), b=_col(p[1])),
     make_masked=lambda p, m: Beta(a=pl.when(~m).then(_col(p[0])), b=_col(p[1])),
     make_literals=lambda p: Beta(a=_lit(p[0]), b=_lit(p[1])),
+    make_series=lambda p: Beta(a=_series(p[0]), b=_series(p[1])),
     example=(2.0, 3.0),
     density=lambda d, c: d.pdf(c),
     # Support is [0, 1]; the grid spans the zero-density regions on both sides.

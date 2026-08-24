@@ -10,7 +10,7 @@ import pytest
 from polars_stats import Binomial, Normal
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import PARTITIONED_BROADCAST_AVAILABLE, assert_series_equal, linear_space
-from tests.property._specs import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL
+from tests.property._specs import ALL_SPECS, SERIES_ROWS, ULP_ABS_TOL, ULP_REL_TOL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -152,6 +152,29 @@ def test_sampler_draws_differ_per_row_under_literals(spec: DistSpec) -> None:
         height=_ROWS,
         exact=True,
     )
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@pytest.mark.parametrize("method", ["sample", "samples"])
+def test_sampler_reseeds_when_a_parameter_outruns_the_frame(spec: DistSpec, method: str) -> None:
+    """A parameter longer than the frame sets the row count, and every row still gets its own seed.
+
+    The row index is the *shorter* input here, and broadcasting it like a parameter would return one
+    draw repeated at the right height, with no error.
+    """
+    call: Callable[[_UnivariateDistribution], pl.Expr] = (
+        (lambda d: d.sample(seed=0)) if method == "sample" else (lambda d: d.samples(size=2, seed=0))
+    )
+    one_row = pl.DataFrame({"a": [0]})
+    drawn = one_row.select(r=call(spec.make_series(spec.example)))["r"]
+
+    assert drawn.len() == SERIES_ROWS
+    assert drawn.n_unique() > 1, "a broadcast row index would seed every row identically"
+
+    # Bit-equal to the frame-shaped spelling, so the index really is `0..n` and not merely non-constant.
+    full_length = pl.DataFrame({"a": range(SERIES_ROWS)})
+    expected = full_length.select(r=call(spec.make_columns(spec.example)))["r"]
+    assert_series_equal(drawn, expected, check_exact=True)
 
 
 @pytest.mark.parametrize("reducer", ["first", "max"])

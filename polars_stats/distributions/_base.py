@@ -15,11 +15,29 @@ if TYPE_CHECKING:
 
 _ROW_INDEX_NAME = "__polars_stats_row_index__"
 ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
-"""Per-row position `0..len` used to derive per-row sub-seeds in samplers.
+"""Per-row position `0..len` used to derive per-row sub-seeds in the constant-parameter samplers.
 
 Evaluated inside the surrounding context, so `pl.len()` is the frame length under
 `select` / `with_columns` and the partition length under `over` / `group_by`.
+
+Usable only when no parameter crosses FFI, i.e. the `*_scalar` fast paths; the per-row samplers take `row_index_expr`.
 """
+
+
+def row_index_expr(params: Iterable[pl.Expr]) -> pl.Expr:
+    """`ROW_INDEX_EXPR` sized by the call's row count instead of the frame height.
+
+    A parameter longer than the frame sets the row count. A `pl.len()`-sized index is then length 1,
+    polars broadcasts it, and every row seeds from position 0 and silently draws the same value. The
+    plugin cannot repair it, because the streaming engine splits such a call into one-row morsels.
+
+    The maximum ignores length-1 parameters, as `align_inputs` does, so a 0-row frame beside a
+    `pl.lit` parameter stays empty. Keep `p.len()` to one mention per parameter: polars evaluates a
+    repeated subexpression once per occurrence, so spelling this as `when(p.len() == 1)...otherwise(
+    p.len())` runs each parameter twice more than the plugin call already does.
+    """
+    spans = (p.len().replace(1, 0) for p in params)
+    return pl.int_range(0, pl.max_horizontal(pl.len(), *spans), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 
 
 def _coerce(
@@ -220,7 +238,7 @@ class _UnivariateDistribution(ABC):
     def _param_exprs(self) -> tuple[pl.Expr, ...]:
         """The distribution's parameters as coerced exprs, in plugin-input order.
 
-        The per-row plugins take these as positional inputs, ahead of `ROW_INDEX_EXPR` for the samplers
+        The per-row plugins take these as positional inputs, ahead of `row_index_expr` for the samplers
         and after `value` for the value-keyed methods.
         The order is part of the contract: output naming follows the first expression (polars root-name semantics,
         pinned by `output_name_test.py`), and the Rust side reads them positionally.
@@ -247,8 +265,9 @@ class _UnivariateDistribution(ABC):
                 (ROW_INDEX_EXPR,),
                 kwargs={"seed": seed, **self._scalar_kwargs},
             ).alias("sample")
+        params = self._param_exprs
         return register_plugin(
-            f"{self._plugin_prefix}_sample", (*self._param_exprs, ROW_INDEX_EXPR), kwargs={"seed": seed}
+            f"{self._plugin_prefix}_sample", (*params, row_index_expr(params)), kwargs={"seed": seed}
         )
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
@@ -292,13 +311,14 @@ class _UnivariateDistribution(ABC):
     def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
         """Register the `<prefix>_samples` multi-draw plugin call for column-valued parameters.
 
-        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
+        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `row_index_expr` as inputs, the root
         `seed` and draw count `size` as kwargs. Called by `_samples`; naming is applied by `samples`, and a
         null-parameter row becomes a null array element inside the plugin.
         """
+        params = self._param_exprs
         return register_plugin(
             f"{self._plugin_prefix}_samples",
-            (*self._param_exprs, ROW_INDEX_EXPR),
+            (*params, row_index_expr(params)),
             kwargs={"seed": seed, "size": size},
         )
 
