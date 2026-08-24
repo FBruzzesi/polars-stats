@@ -9,7 +9,12 @@ import pytest
 
 from polars_stats import Binomial, Normal
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
-from tests._polars_compat import PARTITIONED_BROADCAST_AVAILABLE, assert_series_equal, linear_space
+from tests._polars_compat import (
+    PARTITIONED_BROADCAST_AVAILABLE,
+    arr_explode,
+    assert_series_equal,
+    linear_space,
+)
 from tests.property._specs import ALL_SPECS, SERIES_ROWS, ULP_ABS_TOL, ULP_REL_TOL
 
 if TYPE_CHECKING:
@@ -169,7 +174,9 @@ def test_sampler_reseeds_when_a_parameter_outruns_the_frame(spec: DistSpec, meth
     drawn = one_row.select(r=call(spec.make_series(spec.example)))["r"]
 
     assert drawn.len() == SERIES_ROWS
-    assert drawn.n_unique() > 1, "a broadcast row index would seed every row identically"
+    # `samples` returns `Array`, whose `n_unique` the oldest supported polars does not implement.
+    per_draw = arr_explode(drawn) if method == "samples" else drawn
+    assert per_draw.n_unique() > 1, "a broadcast row index would seed every row identically"
 
     # Bit-equal to the frame-shaped spelling, so the index really is `0..n` and not merely non-constant.
     full_length = pl.DataFrame({"a": range(SERIES_ROWS)})

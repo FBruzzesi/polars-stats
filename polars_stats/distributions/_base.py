@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
+from polars.exceptions import PolarsError
 from polars.plugins import register_plugin_function
 
 from polars_stats._lib import LIB
@@ -12,6 +13,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from polars_stats._typing import IntoExprColumn, PolarsDataType
+
+_LITERAL_LEN_IN_AGG = tuple(int(part) for part in pl.__version__.split(".", 2)[:2]) >= (1, 35)
+"""Whether `pl.lit(...).len()` survives inside `over` / `group_by().agg()`."""
 
 _ROW_INDEX_NAME = "__polars_stats_row_index__"
 ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
@@ -24,6 +28,14 @@ Usable only when no parameter crosses FFI, i.e. the `*_scalar` fast paths; the p
 """
 
 
+def _frame_free_length(param: pl.Expr) -> int | None:
+    """The parameter's length if it can be evaluated without a frame, else `None`."""
+    try:
+        return pl.select(param).height
+    except PolarsError:
+        return None
+
+
 def row_index_expr(params: Iterable[pl.Expr]) -> pl.Expr:
     """`ROW_INDEX_EXPR` sized by the call's row count instead of the frame height.
 
@@ -31,12 +43,32 @@ def row_index_expr(params: Iterable[pl.Expr]) -> pl.Expr:
     polars broadcasts it, and every row seeds from position 0 and silently draws the same value. The
     plugin cannot repair it, because the streaming engine splits such a call into one-row morsels.
 
-    The maximum ignores length-1 parameters, as `align_inputs` does, so a 0-row frame beside a
-    `pl.lit` parameter stays empty. Keep `p.len()` to one mention per parameter: polars evaluates a
-    repeated subexpression once per occurrence, so spelling this as `when(p.len() == 1)...otherwise(
-    p.len())` runs each parameter twice more than the plugin call already does.
+    Length-1 parameters never set the row count, as in `align_inputs`, so a 0-row frame beside a
+    `pl.lit` parameter stays empty. Keep `param.len()` to one mention per parameter: polars evaluates
+    a repeated subexpression once per occurrence, so `when(param.len() == 1)...otherwise(param.len())`
+    would run each parameter twice more than the plugin call already does.
+
+    Below polars 1.35 a literal's length cannot be asked for inside a partition context (see
+    [`_LITERAL_LEN_IN_AGG`]), so the lengths that can be resolved without a frame are resolved here,
+    by `pl.select`, and only the frame-dependent ones are left to `.len()`.
     """
-    spans = (p.len().replace(1, 0) for p in params)
+    # A bare column always has the frame's length, so it can never set the row count.
+    sized = (param for param in params if not param.meta.is_column())
+    spans: list[int | pl.Expr]
+    if _LITERAL_LEN_IN_AGG:
+        spans = [param.len().replace(1, 0) for param in sized]
+    else:
+        spans, fixed = [], 0
+        for param in sized:
+            if (length := _frame_free_length(param)) is None:
+                spans.append(param.len().replace(1, 0))
+            else:
+                fixed = max(fixed, 0 if length == 1 else length)
+        if fixed:
+            spans.insert(0, fixed)
+
+    if not spans:
+        return ROW_INDEX_EXPR
     return pl.int_range(0, pl.max_horizontal(pl.len(), *spans), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 
 
