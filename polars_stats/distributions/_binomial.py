@@ -32,7 +32,7 @@ class Binomial(DiscreteDistribution):
 
     Parameters are validated at evaluation, where a negative ``n`` column, a non-integer ``n`` dtype or a
     ``p`` outside ``[0, 1]`` raises ``InvalidOperation`` (a ``ComputeError``). A scalar ``n`` is the one
-    exception: it is expanded to a ``UInt64`` column and passed to the fast paths as a kwarg, neither of
+    exception: it is coerced to a ``UInt64`` literal and passed to the fast paths as a kwarg, neither of
     which can carry an out-of-range count, so it raises ``ValueError`` at construction. Construction
     otherwise rejects only wrong *types* (``TypeError``). Null parameters propagate to null, a
     ``Null``-dtype ``n`` column included; the dtype rule is judged first, so a *float* ``n`` column

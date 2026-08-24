@@ -64,6 +64,8 @@ polars-stats/
 │   ├── distributions/<name>/ # one folder per distribution, one file per method
 │   ├── property/             # hypothesis-based invariant tests
 │   └── scipy_parity/         # scipy reference-oracle tests
+├── tools/
+│   └── accuracy_audit.py     # the mpmath tail-accuracy audit (`make audit`)
 ├── benchmarks/               # internal benchmark harness (not part of the docs)
 └── docs/                     # this documentation, one directory per Diataxis quadrant
 ```
@@ -108,11 +110,27 @@ Only `polars>=1.15`. No other runtime dependencies.
 ## Adding a distribution
 
 Copy an existing pair, modify, repeat. Use `Uniform` (`_uniform.py` / `uniform.rs`) as the canonical continuous example
-and `Bernoulli` as the discrete one. Each distribution opened up for contribution gets a GitHub issue carrying its
-exact spec and checklist; that issue is canonical if it conflicts with this section.
+and `Bernoulli` as the discrete one.
+
+Each distribution opened up for contribution gets a GitHub issue carrying its exact spec and checklist: the
+parameterisation, the scipy equivalent, every closed form, the contract it settles, and the traps found the last time
+someone tried. **That issue is canonical** if it conflicts with this section, so please say so on the issue when it
+does. Ones labelled **good first issue** need no new Rust math; the rest need a special-function port. Resolve the
+choices the issue flags (a validator arity, a scipy reparameterisation, an out-of-regime convention) before writing
+code rather than halfway through, write the scipy-parity test first, and keep a pull request to one distribution.
 
 1. **Rust.** Add `src/distributions/<name>.rs`, register it in `src/distributions/mod.rs`, and implement a
-   `#[polars_expr]` only for methods that need it:
+   `#[polars_expr]` only for methods that need it. Which ones those are, method by method, is tabulated in
+   [Design notes](explanation/design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust).
+   Whatever you add, every plugin function owes three things:
+
+    * **`align_inputs(inputs)?` first, before any cast**, for any plugin with more than one input. Polars broadcasts
+      nothing into a plugin and `try_*_elementwise` truncates to its shortest input, so skipping it silently drops
+      every row past the first. `tests/distributions/broadcast_test.py` catches a missed one.
+    * **`is_elementwise=True`**, which the shared `register_plugin` shim fixes for you. An aggregating plugin would
+      break `over` and `group_by`, so it is a guard rather than a default.
+    * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
+      which is the one way to lose the contract while writing ordinary-looking Rust.
 
     * Always the samplers. Every one is a shell over a driver in `src/rng.rs`; none resolves a seed or writes a row
       loop itself, which is what keeps seeding, `null` propagation (a `null` in any input nulls the row) and the
@@ -171,8 +189,15 @@ exact spec and checklist; that issue is canonical if it conflicts with this sect
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
     `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.
-3. **Tests.** A new distribution touches its own files **and** several shared registries; missing a registry silently
-   drops it from that suite (the run still passes, so nothing warns you). All of:
+3. **Tests.** A new distribution touches its own files **and** several shared registries.
+
+    !!! warning "Missing a shared registry is silent, and CI stays green"
+
+        The suite does not know your distribution exists, so it cannot report that it skipped it. The run passes, the
+        diff looks complete, and the contract that registry exists to pin is simply not checked. It is the only
+        failure mode here with no signal at all, and the most common concrete mistake.
+
+    All of:
 
     * `tests/distributions/<name>/`: one file per method, mirroring `tests/distributions/bernoulli/`, including a
       `validation_test.py` asserting an invalid parameter raises `ComputeError` (not a null) for both scalar and column
@@ -231,6 +256,12 @@ symmetry the architecture guarantees.
 (`2e-10` through `erfc`, which is what `statrs` holds), `1e-9` for log-scale, `1e-8` for discrete log-mass and
 support-sum entropy, `1e-6` or integer-valued for a discrete binary-search `ppf`. A relaxed tolerance needs a one-line
 reason in the `Case`, not a shrug.
+
+**`statrs`' `inverse_cdf` is not a safe default.** For the discrete families it is a binary search, so its parity
+tolerance is the search's convergence rather than a formula's: state the `1e-6` loosening in the `Case`. Where it is
+*not* a binary search it has been wrong in several ways, including relatively wrong by `6e-3` for `Gamma` in the
+low-quantile tail, and panicking, hanging *and* saturating for `Beta`. A bounded solve with every Newton proposal
+clamped into a bisection bracket is the pattern to copy.
 
 **Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy_audit.py`. A
 distribution absent from the audit is unaudited, exactly as one absent from `tests/property/_specs.py` is untested.
