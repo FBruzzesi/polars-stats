@@ -67,8 +67,8 @@ jobs:
   # A `bump-version` release PR changes version strings only, so the expensive jobs
   # skip on it (the narwhals pattern): the full suite runs once per release, at tag
   # time, inside publish_to_pypi.yml on the exact release commit. `prek` still runs
-  # (it is the cheap job that validates the bump itself: the uv-lock hook and the
-  # CHANGELOG lint). Skipped required checks count as passing for branch protection.
+  # (it is the cheap job that validates the bump itself, via the uv-lock hook).
+  # Skipped required checks count as passing for branch protection.
   rust-lint:
     name: lint / cargo fmt + clippy
     if: github.head_ref != 'bump-version'

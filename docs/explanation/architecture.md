@@ -85,7 +85,14 @@ and growing `size` extends each row's array without changing existing draws.
 
 **Per-row seeding**: the root seed is resolved once per plugin call (`SysRng` when `seed=None`), then each row derives
 its own `Pcg64Mcg` generator from `(root_seed, row_index)` via two splitmix64 mixing draws. The row index arrives as a
-regular input column (`pl.int_range(0, pl.len())`), so it tracks the partition under `over` / `group_by`.
+regular input column, so it tracks the partition under `over` / `group_by`.
+
+The index is an *identity*, not a parameter, which is why it is the one input that must never be broadcast. A
+parameter can be longer than the frame, so the per-row samplers size the index by the call's row count
+(`row_index_expr(params)`) rather than by `pl.len()`. A `pl.len()`-sized index would be length 1 in that case,
+broadcast to position 0 on every row, and return one draw repeated at full height with no error. The plugin cannot
+repair it either, because the streaming engine splits such a call into one-row morsels and the flattened index is all
+it ever sees.
 
 Identical `(root_seed, row_index)` always yields an identical stream, which is exactly what makes `sample`
 elementwise and invariant to chunking and thread count. `Pcg64Mcg` is cheap to construct (a handful of integer ops, no
