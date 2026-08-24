@@ -52,6 +52,13 @@ magnitudes are in the inherited limits below.
   cdf's own precision, so a quantile within `1e-12` *relative* of a cdf step may return the
   neighbouring support point. Parity with `scipy` is gated at integer equality rather than at a
   float tolerance.
+* **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).cdf("x")`
+  and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
+  constant spelling over one row and the column spelling over `n`, and the two kernels do not round
+  identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
+  moments and value-keyed methods, and `Exponential`'s value-keyed methods. The difference is at or below
+  `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs` runs the same Rust body either
+  way and stays bit-identical.
 * **`float64` range, not algorithm.** Some quantities genuinely exceed the type: `LogNormal`'s
   variance overflows above `sigma ~ 18.8`, and `Exponential.pdf` lands in the subnormal range once
   `rate * x` passes ~708, where only one or two significant digits remain. `log_pdf` is exact well

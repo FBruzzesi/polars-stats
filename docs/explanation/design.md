@@ -73,9 +73,10 @@ validating each row.
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
 `pl.when(...)` validity gate. Nothing in the expression is longer than one row, so the moment is a *scalar* column that
-polars broadcasts wherever it meets a longer one: values still match the per-row path bit for bit, only the standalone
-height differs (`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no new plugin and no kwargs, only the
-existing validators called on fewer rows.
+polars broadcasts wherever it meets a longer one; only the standalone height differs
+(`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no new plugin and no kwargs, only the existing
+validators called on fewer rows. The two spellings can disagree in the last bit; see
+[Numerical accuracy](accuracy.md#structural).
 
 It is the same "constant parameters take a fast path" idea as the sampler, applied to validation: nothing leaves Rust,
 and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). For a constant,

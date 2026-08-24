@@ -13,47 +13,43 @@ use polars::prelude::arity::{
 };
 use polars::prelude::*;
 
-/// Broadcast every length-1 input to ensure all of `series` have the same length,
-/// and reject lengths that cannot align.
+/// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
-/// One pass over `inputs`: the first non-unit input anchors the target length, every later
-/// non-unit input must match it, and `has_unit` records whether anything needs expanding at all.
+/// The row count is the one input length that is not 1, so length-1 inputs never set it: an
+/// all-length-1 call stays length 1, and a 0-row frame beside a `pl.lit` stays empty.
 pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>> {
-    let mut anchor: Option<(&Series, usize)> = None;
-    let mut has_unit = false;
+    let mut anchor: Option<&Series> = None;
+    let mut needs_broadcast = false;
 
     for input in inputs {
-        let length = input.len();
-        if length == 1 {
-            has_unit = true;
-        } else if let Some((anchor, target_length)) = anchor {
+        if input.len() == 1 {
+            needs_broadcast = true;
+        } else if let Some(anchor) = anchor {
             polars_ensure!(
-                length == target_length,
+                input.len() == anchor.len(),
                 ShapeMismatch:
                 "inputs have incompatible lengths: '{}' has length {} but '{}' has length {}. \
                  Every input must share one length, or be length 1 to broadcast",
-                anchor.name(), target_length, input.name(), length
+                anchor.name(), anchor.len(), input.name(), input.len()
             );
         } else {
-            anchor = Some((input, length));
+            anchor = Some(input);
         }
     }
 
-    // Nothing to expand borrows instead: `anchor` is `None` when every input is length 1 (or there
-    // are none), and `has_unit` is false when the inputs already agree, which is every call whose
-    // parameters are plain columns.
-    let target_length = match anchor {
-        Some((_, target_length)) if has_unit => target_length,
+    // Borrow when there is nothing to expand: no anchor means every input is already length 1, and
+    // `!needs_broadcast` means they already agree, which is every call whose parameters are columns.
+    let row_count = match anchor {
+        Some(anchor) if needs_broadcast => anchor.len(),
         _ => return Ok(Cow::Borrowed(inputs)),
     };
 
-    // `target_length != 1`, so only the length-1 inputs need expanding.
     Ok(Cow::Owned(
         inputs
             .iter()
             .map(|input| {
                 if input.len() == 1 {
-                    input.new_from_index(0, target_length)
+                    input.new_from_index(0, row_count)
                 } else {
                     input.clone()
                 }

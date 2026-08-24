@@ -30,6 +30,9 @@ Polars' own scalar semantics then apply. An expression whose inputs are *all* co
 `df.select(Normal(0.0, 1.0).mean())` returns **one row**, `group_by().agg()` returns a scalar rather than a list per
 group, and a 0-row frame still returns one row. Any column-valued input sets the length instead.
 
+`sample()` and `samples()` are the exception. They pass a per-row index as a hidden full-length input, so they are
+full height whatever the parameters are, and a 0-row frame returns no rows.
+
 A length-1 *expression* is accepted wherever a column is and broadcasts rather than truncating, so
 `Normal(mu=pl.col("mu").mean(), sigma=1.0).pdf("x")` is full height. Lengths that are neither equal nor 1 raise.
 

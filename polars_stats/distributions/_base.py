@@ -159,8 +159,8 @@ def register_plugin(
 
     Wraps `register_plugin_function` so each call site spells only what varies (the function name, its input exprs,
     and an optional sampler `seed` or constant-parameter kwargs). `plugin_path=LIB`, `is_elementwise` is fixed to
-    `True`: every distribution plugin is per-row by contract (see `coerce_param`), and an aggregating plugin would
-    break `over` / `group_by`, so this is a guard rather than a default.
+    `True`: every distribution plugin is per-row by contract, and an aggregating plugin would break `over` /
+    `group_by`, so this is a guard rather than a default.
 
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
@@ -336,16 +336,18 @@ class _UnivariateDistribution(ABC):
 
         The validating plugins (`normal_sigma`, `uniform_range`, `bernoulli_proba`, ...) are
         elementwise and return the quantity they are named for (the validated `sigma`, the width
-        `max - min`, the validated `p`, ...). Both paths are byte-identical for the same parameters:
+        `max - min`, the validated `p`, ...). Both paths raise on the same parameters:
 
         * **Column parameters**: the per-row plugin over `_param_exprs`, validating each row and
           propagating per-row nulls.
         * **All-scalar parameters**: the same plugin on length-1 `pl.lit` inputs, so it validates a
           single time and still raises the same `ComputeError` on an invalid constant. `validated`
-          (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
-          `self._sigma` or `self._max - self._min`) is returned behind the length-1 validity gate;
-          `pl.when` broadcasts the condition, so the result stays length-n and equals the per-row
-          output element for element.
+          (the same quantity recomputed from the parameters, e.g. `self._sigma` or
+          `self._max - self._min`) is returned behind that length-1 gate, so the whole expression is
+          a scalar column polars broadcasts wherever it meets a longer one.
+
+        The two paths agree bit for bit except where polars folds the scalar branch's arithmetic
+        with a different kernel than the length-n columns of the per-row branch.
         """
         if self._scalar_kwargs is None:
             return register_plugin(plugin_name, self._param_exprs)
@@ -357,8 +359,8 @@ class _UnivariateDistribution(ABC):
 
         The moment counterpart of `_value_plugin`: same constant-parameter routing, no `value` input. With
         column parameters the plugin runs once per row over `_param_exprs`. With all-constant parameters it
-        runs **once** on length-1 `pl.lit` inputs and is broadcast to length-n behind the `_moment` validity
-        gate, so a constant's moment is not re-evaluated on every row.
+        runs **once** on length-1 `pl.lit` inputs behind the `_moment` validity gate, so a constant's moment is
+        a scalar column rather than a value re-evaluated on every row.
 
         The scalar branch routes through `_moment`, so a distribution must define `_checked_params` to
         use this; `Uniform`, `Bernoulli` and `Exponential` deliberately do not.
