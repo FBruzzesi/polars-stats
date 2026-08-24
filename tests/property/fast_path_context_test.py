@@ -1,22 +1,21 @@
 """Constant-parameter fast paths stay byte-identical to the per-row path across polars contexts.
 
-The scalar moment and closed-form value-keyed fast paths build a length-1 validity gate,
-`pl.when(validated_once.is_not_null()).then(<context-length value>)`, where `validated_once` is a validating plugin
-called on length-1 `pl.lit` inputs. The bit-equality tests `moment_test.py` and `value_keyed_test.py` pin the fast path
-against the per-row path under a plain `select`, where the gate broadcasts a length-1 condition against a
-whole-frame value.
+With constant parameters the whole expression is built from length-1 `pl.lit` inputs, so it is a scalar column and
+polars decides per context what that means. `moment_test.py` and `value_keyed_test.py` pin the values under a plain
+`select`; this module pins them where the *shape* differs, which a `select`-only test cannot see:
 
-This module pins the same equality under the contexts where the broadcast target length is *not* the
-whole frame, the cases a `select`-only test cannot see:
+* **`over(group)`** broadcasts the scalar per partition, so both paths are full length there. The partitions here are
+  deliberately uneven, so a path that assumed whole-frame length would diverge.
+* **`group_by(group).agg(...)`** makes the scalar path one *scalar per group* (like `pl.col("x").mean()`) while the
+  per-row path gives one *list per group*. That asymmetry is the contract; the list is constant, so its first element
+  is the scalar.
+* **the streaming engine** ingests the source in morsels rather than as one contiguous block.
 
-* `over(group)` and `group_by(group).agg(...)` partition the frame, so `pl.len()` (the length the
-  length-1 gate must broadcast to) differs per partition, and the partitions here are deliberately
-  uneven;
-* the streaming engine ingests the source in morsels rather than as one contiguous block.
+The two partition contexts are gated on `PARTITIONED_BROADCAST_AVAILABLE`: polars below 1.34 mishandles a
+length-1 input inside them, so there is nothing of ours left to pin there.
 
-A gate that silently assumed whole-frame length, or a validating plugin that mishandled its length-1
-input under partitioning, would diverge from the per-row path here while still passing the
-`select`-only suites.
+A validating plugin that mishandled its length-1 input under partitioning, or a scalar path that stopped being a
+scalar, would fail here while still passing the `select`-only suites.
 """
 
 from __future__ import annotations
@@ -30,8 +29,14 @@ from hypothesis import strategies as st
 from packaging.version import Version
 
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
-from tests._polars_compat import PL_VERSION, assert_series_equal, linear_space
-from tests.property._specs import ALL_SPECS
+from tests._polars_compat import PARTITIONED_BROADCAST_AVAILABLE, PL_VERSION, assert_series_equal, linear_space
+from tests.property._specs import (
+    ALL_SPECS,
+    ULP_ABS_TOL,
+    ULP_REL_TOL,
+    ULP_TOLERANT_MOMENT_SPECS,
+    ULP_TOLERANT_VALUE_SPECS,
+)
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -60,29 +65,57 @@ def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
     raise TypeError(msg)  # pragma: no cover
 
 
-def _assert_matches_across_contexts(frame: pl.DataFrame, fast: pl.Expr, slow: pl.Expr) -> None:
+def _assert_matches_across_contexts(
+    frame: pl.DataFrame, fast: pl.Expr, slow: pl.Expr, *, fast_height: int, exact: bool = True
+) -> None:
     """The scalar fast-path expr equals the per-row expr in every context the frame supports.
 
     `frame` must carry a `"g"` grouping column. Each context is checked independently so a failure
-    names the context that diverged. `check_exact` because the two paths compute the identical value
-    (same Polars formula or same Rust body); only the validation differs, so any difference is a bug.
+    names the context that diverged.
+
+    `fast_height` is the fast path's own height under a plain `select`: 1 when every input is constant
+    (a moment), the frame height when a column-valued `value` sets the length. Asserting it is what
+    keeps this test pinning a *shape* and not only values. `exact` is the default because both paths
+    compute the identical value; the caller relaxes it only for the `ULP_TOLERANT_*` specs.
     """
-    # `select`: the whole-frame context the other suites already cover, re-checked here as the anchor.
-    assert_series_equal(frame.select(r=fast)["r"], frame.select(r=slow)["r"], check_exact=True)
+    # `select`: the fast path holds its own height, and broadcasts against the per-row column beside it.
+    assert frame.select(r=fast).height == fast_height
+    both = frame.select(fast=fast, slow=slow)
+    assert both.height == frame.height
+    assert_series_equal(
+        both["fast"], both["slow"], check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
+    )
 
-    # `over`: the gate must broadcast to each (uneven) partition's length, then scatter back.
-    assert_series_equal(frame.select(r=fast.over("g"))["r"], frame.select(r=slow.over("g"))["r"], check_exact=True)
+    # The two partition contexts, on the polars versions that get them right (see
+    # `PARTITIONED_BROADCAST_AVAILABLE`). `select` and the streaming engine still run below that floor.
+    if PARTITIONED_BROADCAST_AVAILABLE:
+        # `over`: polars broadcasts a scalar to each (uneven) partition's length, then scatters back.
+        assert_series_equal(
+            frame.select(r=fast.over("g"))["r"],
+            frame.select(r=slow.over("g"))["r"],
+            check_exact=exact,
+            rel_tol=ULP_REL_TOL,
+            abs_tol=ULP_ABS_TOL,
+        )
 
-    # `group_by().agg()`: the moment / value-keyed column aggregates to one list per group.
-    grouped_fast = frame.group_by("g", maintain_order=True).agg(r=fast)["r"]
-    grouped_slow = frame.group_by("g", maintain_order=True).agg(r=slow)["r"]
-    assert_series_equal(grouped_fast, grouped_slow, check_exact=True)
+        # `group_by().agg()`: a scalar expression aggregates to one scalar per group while the per-row path
+        # gives one (constant) list per group; a full-length expression gives a list on both paths.
+        grouped = frame.group_by("g", maintain_order=True).agg(fast=fast, slow=slow)
+        if fast_height == 1:
+            assert grouped.select(pl.col("slow").list.n_unique())["slow"].to_list() == [1] * grouped.height
+            expected = grouped["slow"].list.first()
+        else:
+            expected = grouped["slow"]
+        assert_series_equal(
+            grouped["fast"], expected, check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
+        )
 
     # streaming engine: the source is split across morsels; non-positional exprs must be invariant.
     if _STREAMING_AVAILABLE:
-        lazy_fast = frame.lazy().select(r=fast).collect(engine="streaming")["r"]
-        lazy_slow = frame.lazy().select(r=slow).collect(engine="streaming")["r"]
-        assert_series_equal(lazy_fast, lazy_slow, check_exact=True)
+        lazy = frame.lazy().select(fast=fast, slow=slow).collect(engine="streaming")
+        assert_series_equal(
+            lazy["fast"], lazy["slow"], check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
+        )
 
 
 @settings(max_examples=10)
@@ -96,7 +129,8 @@ def test_moment_fast_path_matches_per_row_across_contexts(spec: DistSpec, moment
 
     fast = getattr(spec.make(params), moment)()
     slow = getattr(spec.make_columns(params), moment)()
-    _assert_matches_across_contexts(frame, fast, slow)
+    # Every input is constant, so the moment is a scalar column.
+    _assert_matches_across_contexts(frame, fast, slow, fast_height=1, exact=spec.name not in ULP_TOLERANT_MOMENT_SPECS)
 
 
 @settings(max_examples=10)
@@ -130,4 +164,7 @@ def test_value_keyed_fast_path_matches_per_row_across_contexts(spec: DistSpec, d
         (scalar.ppf(q), per_row.ppf(q)),
     )
     for fast, slow in cases:
-        _assert_matches_across_contexts(frame, fast, slow)
+        # The `value` argument is a column, so it sets the length on both paths.
+        _assert_matches_across_contexts(
+            frame, fast, slow, fast_height=_N_ROWS, exact=spec.name not in ULP_TOLERANT_VALUE_SPECS
+        )

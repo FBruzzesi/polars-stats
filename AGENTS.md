@@ -61,10 +61,17 @@ What matters specifically for an agent:
 
 ## Common pitfalls
 
-* **Row-alignment of scalar params.** Scalars must be coerced via `pl.repeat(value, n=pl.len(), dtype=pl.Float64())`,
-   not `pl.lit(value)`. The reason: `is_elementwise=True` plugins under `over` / `group_by` expect length to track the
-   partition. A bare `pl.lit` breaks this. This applies to the general (per-row) plugins; the sampler's
-   constant-parameter fast path sidesteps it by passing the scalars in `kwargs` rather than as inputs.
+* **Row-alignment belongs to Rust.** Scalars coerce to `pl.lit(value, dtype=...)`, and `align_inputs` broadcasts
+   every length-1 input up to the call's row count. Any new `#[polars_expr]` taking more than one input must call it
+   first, before the casts: polars broadcasts nothing into a plugin, and `try_*_elementwise` truncates to the shortest
+   input rather than raising. Padding at the Python end cannot replace it, because `.first()` and `.max()` are
+   length-1 expressions the user writes. `tests/distributions/broadcast_test.py` catches a missed funnel.
+
+* **The samplers' row index is not a parameter, so it must never be broadcast.** A per-row sampler takes
+   `row_index_expr(params)`, not `ROW_INDEX_EXPR`. A parameter can outrun the frame, and a `pl.len()`-sized index
+   is then length 1, broadcasts to position 0 on every row, and returns one draw repeated at full height with no
+   error. The plugin cannot repair it, because the streaming engine splits such a call into one-row morsels and
+   the flattened index is all it ever sees.
 
 * **The constant-parameter sampler fast path must match the per-row path bit for bit.** `<name>_sample_scalar` and the
    general sampler share `(root_seed, row_index)` seeding and the same draw, so for one seed they must agree. The fast

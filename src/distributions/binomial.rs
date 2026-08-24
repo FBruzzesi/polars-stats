@@ -6,7 +6,9 @@ use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
+use crate::distributions::{
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row, samples_u64_output,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -136,6 +138,7 @@ fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Binomial, f64) -> Option<f64>,
 {
+    let inputs = align_inputs(inputs)?;
     let value = inputs[0].cast(&DataType::Float64)?;
     let n = coerce_n(&inputs[1])?;
     let p = inputs[2].cast(&DataType::Float64)?;
@@ -164,6 +167,7 @@ fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Binomial) -> f64,
 {
+    let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
 
@@ -194,6 +198,7 @@ fn draw(dist: &BinomialSampler, rng: &mut impl rand::Rng) -> u64 {
 /// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
@@ -247,6 +252,7 @@ fn binomial_samples_scalar(
 /// Seeding and the null/error contract follow [`samples_per_row`] and [`binomial_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
@@ -412,6 +418,7 @@ fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> Polar
 /// propagates; invalid raises via [`build_dist`].
 #[polars_expr(output_type=Float64)]
 fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
 

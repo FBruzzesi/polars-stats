@@ -36,6 +36,12 @@ print(df.with_columns(p=ps.Normal(mu="mu", sigma="sigma").pdf("x")))
 Method arguments follow the same rule: `pdf("x")` reads column `x`, exactly like `pdf(pl.col("x"))`. A bare string is
 always a column reference, never a literal.
 
+!!! tip "A constant parameter is faster as a plain number"
+
+    `ps.Normal(mu=0.0, sigma=1.0)` and `ps.Normal(mu=pl.lit(0.0), sigma=pl.lit(1.0))` return the same rows, but only
+    the first takes the constant-parameter fast path, where the parameters ride as plugin kwargs and build one
+    distribution per call. An `Expr` parameter gives that up and rebuilds it per row.
+
 !!! warning "Floats are strict"
 
     A float parameter rejects an `int`: `ps.Normal(mu=0, sigma=1)` raises `TypeError`. Write `0.0` and `1.0`.

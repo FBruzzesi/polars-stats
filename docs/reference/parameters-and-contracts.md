@@ -22,9 +22,40 @@ parameter rejects an `int`, while a method argument accepts either.
 | `pl.Series` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` |
 | anything else | `TypeError` | `TypeError` | `TypeError` |
 
-A `str` is always a column reference, never a literal value. A Python scalar is expanded to a row-aligned expression
-rather than a broadcast literal, which is what keeps every method elementwise under `over` and `group_by`
+A `str` is always a column reference, never a literal value. A Python scalar becomes `pl.lit(value)`, a length-1
+scalar column that the Rust plugin broadcasts to the call's row count
 (see [Architecture](../explanation/architecture.md#column-valued-parameters)).
+
+Polars' own scalar semantics then apply. An expression whose inputs are *all* constant is a scalar column:
+`df.select(Normal(0.0, 1.0).mean())` returns **one row**, `group_by().agg()` returns a scalar rather than a list per
+group, and a 0-row frame still returns one row. Any column-valued input sets the length instead.
+
+`sample()` and `samples()` are the exception. They pass a per-row index as a hidden full-length input, so they are
+full height whatever the parameters are, and a 0-row frame returns no rows.
+
+A length-1 *expression* is accepted wherever a column is and broadcasts rather than truncating, so
+`Normal(mu=pl.col("mu").mean(), sigma=1.0).pdf("x")` is full height. Lengths that are neither equal nor 1 raise.
+
+!!! warning "Length-1 inputs inside `over()` and `group_by().agg()` need polars 1.34"
+
+    Before polars 1.34 a length-1 input is mishandled by polars itself once the expression is evaluated *inside* a
+    partition context. Depending on the distribution and method you get either a `PanicException` or, below 1.33,
+    values returned in group order rather than scattered back to row order. Both defects are fixed upstream and
+    need no change here.
+
+    Nothing else is affected. `select` and `with_columns` broadcast correctly on every supported version, and so
+    does the pattern of aggregating first and applying the distribution to the result:
+
+    ```python
+    (
+        frame.group_by("g")
+        .agg(mu=pl.col("x").mean(), sigma=pl.col("x").std())
+        .with_columns(p=ps.Normal(mu="mu", sigma="sigma").cdf(1.0))
+    )
+    ```
+
+    Computing a parameter with `.over("g")` and using it in a plain `select` is fine too; it is only putting the
+    distribution expression itself inside `over()` or `agg()` that is affected.
 
 Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
 expected. The count parameter `n` is the exception: its column must already hold integers, of any width up to

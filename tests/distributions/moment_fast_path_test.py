@@ -14,11 +14,10 @@ this module pins the parts that test does not reach:
   accept or reject something the per-row path does not. Unlike the value-keyed fast-path test, this
   covers `Uniform` and `Bernoulli` too: their moments *do* route through a validator, so the scalar
   path can drift there.
-* **The validator runs once but only when there is work.** Because the scalar validator rides as a
-  *gated* length-1 plugin input (not as kwargs), an empty frame skips it entirely: both paths return
-  an empty column and neither raises. This differs from the value-keyed fast path, whose kwargs
-  validation raises even on a zero-row frame (`value_keyed_fast_path_test.py`); it is pinned here so
-  the asymmetry is intentional and cannot regress silently.
+* **The validator runs once, whatever the frame height.** A length-1 plugin input exists independently
+  of the frame, so an empty frame still validates and an invalid scalar parameterisation still raises,
+  matching the value-keyed kwargs fast path (`value_keyed_fast_path_test.py`). The scalar moment is then
+  one row on a zero-row frame while the per-row path is empty; that asymmetry is pinned here.
 
 A Python `None` parameter cannot reach either path (`coerce_param` rejects it at construction), so
 there is no null-scalar case here. Binomial's `n = -1` is absent for the same reason: `coerce_n` raises
@@ -90,9 +89,11 @@ def test_scalar_and_column_paths_agree_on_validation(
         with pytest.raises(pl.exceptions.ComputeError):
             frame.select(r=per_row.variance())
     else:
-        fast = frame.select(r=scalar.variance())["r"]
-        slow = frame.select(r=per_row.variance())["r"]
-        assert_series_equal(fast, slow, check_exact=True)
+        # A scalar column beside the per-row column: polars broadcasts it, and every row must agree.
+        both = frame.select(fast=scalar.variance(), slow=per_row.variance())
+        assert frame.select(r=scalar.variance()).height == 1
+        assert both.height == frame.height
+        assert_series_equal(both["fast"], both["slow"], check_names=False, check_exact=True)
 
 
 @pytest.mark.parametrize(
@@ -113,23 +114,24 @@ def test_binomial_entropy_scalar_and_column_paths_agree_on_validation(scalar: Bi
         frame.select(r=per_row.entropy())
 
 
-def test_moment_fast_path_on_empty_frame_matches_per_row() -> None:
-    """On a zero-row frame, valid scalar params give an empty column matching the per-row path.
+def test_moment_fast_path_on_empty_frame_is_a_scalar() -> None:
+    """On a zero-row frame the scalar moment is still one row, and still validates.
 
-    The invalid-parameter case on an empty frame is deliberately *not* asserted. Unlike the
-    value-keyed fast path (whose kwargs validation raises unconditionally, pinned by
-    `value_keyed_fast_path_test.py`), the moment fast path validates via a *gated* length-1 plugin
-    input, and whether polars evaluates that input when the gated output is empty is
-    optimizer-dependent: some versions elide it and return empty, others run it and raise. Both are
-    acceptable for an invalid parameterisation over zero rows, so it is left unspecified rather than
-    pinned to one version's behaviour.
+    Both follow from the scalar path being built from length-1 literals, exactly as
+    `df.head(0).select(pl.lit(1.0))` is one row. The per-row path validates inside its row closure,
+    which never runs on an empty frame, so it returns empty without raising.
     """
     empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
 
     valid_fast = empty.select(r=Normal(0.0, 2.0).variance())
     valid_slow = empty.select(r=Normal(_col(0.0), _col(2.0)).variance())
-    assert valid_fast.height == 0
-    assert_series_equal(valid_fast["r"], valid_slow["r"], check_exact=True)
+    assert valid_fast.height == 1
+    assert valid_fast["r"].to_list() == [4.0]
+    assert valid_slow.height == 0
+
+    with pytest.raises(pl.exceptions.ComputeError):
+        empty.select(r=Normal(0.0, -1.0).variance())
+    assert empty.select(r=Normal(_col(0.0), _col(-1.0)).variance()).height == 0
 
 
 # id -> (scalar instance, equivalent per-row instance, expected constant moment value). Degenerate
@@ -152,7 +154,7 @@ def test_degenerate_valid_params_entropy(
     """Mass-collapsing endpoints (`p in {0, 1}`, `n = 0`) give a finite entropy on both paths."""
     frame = pl.DataFrame({"_": range(4)})
 
-    fast = frame.select(r=scalar.entropy())["r"]
-    slow = frame.select(r=per_row.entropy())["r"]
-    assert_series_equal(fast, slow, check_exact=True)
-    assert fast.to_list() == [expected] * 4
+    assert frame.select(r=scalar.entropy())["r"].to_list() == [expected]
+    both = frame.select(fast=scalar.entropy(), slow=per_row.entropy())
+    assert_series_equal(both["fast"], both["slow"], check_names=False, check_exact=True)
+    assert both["slow"].to_list() == [expected] * 4

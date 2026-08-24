@@ -6,7 +6,9 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::function::beta::ln_beta;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{validate_params_binary, value_keyed_per_row, value_keyed_scalar};
+use crate::distributions::{
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -58,6 +60,7 @@ impl BetaParamsKwargs {
 /// either input propagates; invalid raises via [`build_dist`].
 #[polars_expr(output_type=Float64)]
 fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
 
@@ -73,6 +76,7 @@ fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Beta, f64) -> Option<f64>,
 {
+    let inputs = align_inputs(inputs)?;
     let value = inputs[0].cast(&DataType::Float64)?;
     let a = inputs[1].cast(&DataType::Float64)?;
     let b = inputs[2].cast(&DataType::Float64)?;
@@ -97,6 +101,7 @@ fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Beta) -> f64,
 {
+    let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
 
@@ -122,6 +127,7 @@ fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
 /// binomial draw, see docs/explanation/design.md).
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
@@ -173,6 +179,7 @@ fn beta_samples_scalar(
 /// Seeding and the null/error contract follow [`samples_per_row`] and [`beta_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
+    let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
+from polars.exceptions import PolarsError
 from polars.plugins import register_plugin_function
 
 from polars_stats._lib import LIB
@@ -13,13 +14,62 @@ if TYPE_CHECKING:
 
     from polars_stats._typing import IntoExprColumn, PolarsDataType
 
+_LITERAL_LEN_IN_AGG = tuple(int(part) for part in pl.__version__.split(".", 2)[:2]) >= (1, 35)
+"""Whether `pl.lit(...).len()` survives inside `over` / `group_by().agg()`."""
+
 _ROW_INDEX_NAME = "__polars_stats_row_index__"
 ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
-"""Per-row position `0..len` used to derive per-row sub-seeds in samplers.
+"""Per-row position `0..len` used to derive per-row sub-seeds in the constant-parameter samplers.
 
 Evaluated inside the surrounding context, so `pl.len()` is the frame length under
 `select` / `with_columns` and the partition length under `over` / `group_by`.
+
+Usable only when no parameter crosses FFI, i.e. the `*_scalar` fast paths; the per-row samplers take `row_index_expr`.
 """
+
+
+def _frame_free_length(param: pl.Expr) -> int | None:
+    """The parameter's length if it can be evaluated without a frame, else `None`."""
+    try:
+        return pl.select(param).height
+    except PolarsError:
+        return None
+
+
+def row_index_expr(params: Iterable[pl.Expr]) -> pl.Expr:
+    """`ROW_INDEX_EXPR` sized by the call's row count instead of the frame height.
+
+    A parameter longer than the frame sets the row count. A `pl.len()`-sized index is then length 1,
+    polars broadcasts it, and every row seeds from position 0 and silently draws the same value. The
+    plugin cannot repair it, because the streaming engine splits such a call into one-row morsels.
+
+    Length-1 parameters never set the row count, as in `align_inputs`, so a 0-row frame beside a
+    `pl.lit` parameter stays empty. Keep `param.len()` to one mention per parameter: polars evaluates
+    a repeated subexpression once per occurrence, so `when(param.len() == 1)...otherwise(param.len())`
+    would run each parameter twice more than the plugin call already does.
+
+    Below polars 1.35 a literal's length cannot be asked for inside a partition context (see
+    [`_LITERAL_LEN_IN_AGG`]), so the lengths that can be resolved without a frame are resolved here,
+    by `pl.select`, and only the frame-dependent ones are left to `.len()`.
+    """
+    # A bare column always has the frame's length, so it can never set the row count.
+    sized = (param for param in params if not param.meta.is_column())
+    spans: list[int | pl.Expr]
+    if _LITERAL_LEN_IN_AGG:
+        spans = [param.len().replace(1, 0) for param in sized]
+    else:
+        spans, fixed = [], 0
+        for param in sized:
+            if (length := _frame_free_length(param)) is None:
+                spans.append(param.len().replace(1, 0))
+            else:
+                fixed = max(fixed, 0 if length == 1 else length)
+        if fixed:
+            spans.insert(0, fixed)
+
+    if not spans:
+        return ROW_INDEX_EXPR
+    return pl.int_range(0, pl.max_horizontal(pl.len(), *spans), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 
 
 def _coerce(
@@ -30,29 +80,30 @@ def _coerce(
     scalar_types: type | tuple[type, ...],
     dtype: PolarsDataType | None = None,
 ) -> pl.Expr:
-    """Coerce a scalar-or-`IntoExprColumn` input into a row-aligned `pl.Expr`.
+    """Coerce a scalar-or-`IntoExprColumn` input into a `pl.Expr`.
 
     Every distribution input (constructor parameter or value-keyed method argument) is one of two things, handled
     identically here so the contract lives in one place:
 
     * An `IntoExprColumn`: a `pl.Expr` passes through; a column name `str` becomes `pl.col(name)`, a `pl.Series`
         becomes `pl.lit(series)`.
-    * A Python scalar: expanded with `pl.repeat(value, n=pl.len())` rather than `pl.lit(value)`.
+    * A Python scalar: `pl.lit(value)`, a length-1 scalar column.
 
-    NOTE: The scalar expansion is required to keep the plugin calls `is_elementwise=True`, which is what makes
-    `over` / `group_by` invoke them once per partition rather than as an aggregation. It also guards correctness:
-    the Rust plugins zip their inputs element-wise via `try_*_elementwise`, which truncates to the shortest input rather
-    than broadcasting a length-1 literal. Mixed with a column-valued input, a scalar `pl.lit(value)` would collapse the
-    result to length 1 and silently drop every row past the first. Some Polars versions broadcast the literal upstream
-    and hide this; not all do, so the plugin contract must own row-alignment rather than rely on it.
+    NOTE: Row-alignment belongs to the plugin (`align_inputs` in `src/distributions/mod.rs`), which broadcasts every
+    length-1 input up to the call's row count. Padding scalars here cannot replace it, since `.first()` and `.max()`
+    are length-1 expressions we do not construct.
+
+    A constant parameter therefore stays length 1, so an expression built only from constants is a scalar column with
+    polars' own semantics: height 1 under `select`, broadcast per partition under `over`, a scalar per group under
+    `group_by().agg()`. Any column-valued input sets the length, so a mixed call is full length.
 
     Arguments:
         value: A Python scalar of one of `scalar_types`, or an `IntoExprColumn`.
         name: Input name, used only to build the error message.
         scalar_label: Human description of the accepted scalar (e.g. `"a float"`), for the error.
-        scalar_types: Python scalar type(s) accepted for expansion. `bool` is always rejected
+        scalar_types: Python scalar type(s) accepted as a literal. `bool` is always rejected
             (it is an `int` subclass but never a valid numeric input, so `scalar_types=int` still excludes it).
-        dtype: Dtype for the expanded scalar; `None` lets Polars infer it from `value`.
+        dtype: Dtype for the scalar literal; `None` lets Polars infer it from `value`.
     """
     if isinstance(value, pl.Expr):
         return value
@@ -61,16 +112,16 @@ def _coerce(
     if isinstance(value, pl.Series):
         return pl.lit(value)
     if isinstance(value, scalar_types) and not isinstance(value, bool):
-        return pl.repeat(value, n=pl.len(), dtype=dtype)
+        return pl.lit(value, dtype=dtype)
     msg = f"{name} should be {scalar_label} or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
     raise TypeError(msg)
 
 
 def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
-    """Coerce a float distribution parameter (e.g. `mu`, `sigma`, `p`) into a row-aligned `pl.Expr`.
+    """Coerce a float distribution parameter (e.g. `mu`, `sigma`, `p`) into a `pl.Expr`.
 
     Accepts a strict Python `float` or an `IntoExprColumn`; an `int` or `bool` raises `TypeError`
-    (a probability or scale is a float, not a count). See `_coerce` for the row-alignment rationale.
+    (a probability or scale is a float, not a count). See `_coerce` for the coercion rules.
     """
     return _coerce(value, name=name, scalar_label="a float", scalar_types=float, dtype=pl.Float64())
 
@@ -86,12 +137,12 @@ limit: Rust widens it to `UInt64` and the whole range is a valid trial count.
 
 
 def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
-    """Coerce an integer count parameter (e.g. binomial trial count `n`) into a row-aligned `pl.Expr`.
+    """Coerce an integer count parameter (e.g. binomial trial count `n`) into a `pl.Expr`.
 
     Accepts a Python `int` or an `IntoExprColumn`; a `bool` (an `int` subclass, but not a sensible count),
     a `float`, or any other type raises `TypeError`. An `int` outside `[0, _MAX_SCALAR_COUNT]` raises
     `ValueError`, the one parameter *value* judged at construction rather than at evaluation, because the
-    expanded scalar is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
+    scalar literal is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
     it with a message about `i64` and `u64`. A column keeps its dtype until Rust widens it to `UInt64`,
     which requires an integer dtype and every value `>= 0`. See `_coerce` for the rationale.
     """
@@ -110,7 +161,7 @@ def scalar_float(value: float | IntoExprColumn) -> float | None:
 
     Used by samplers to detect a constant (non-`Expr`) parameter and route it through the
     constant-parameter fast path, which passes it as a plugin kwarg validated once in Rust rather
-    than expanding it into a per-row `pl.repeat` column (see `_coerce`). `bool` is an `int` subclass
+    than as a length-1 input the plugin must broadcast (see `_coerce`). `bool` is an `int` subclass
     but never a valid parameter, so it is excluded and falls back to the per-row path.
     """
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
@@ -138,12 +189,12 @@ def scalar_kwargs(**params: float | None) -> dict[str, float | int] | None:
 
 
 def as_expr(value: float | IntoExprColumn) -> pl.Expr:
-    """Coerce a value-keyed method input (`value` / `quantile`) into a row-aligned `pl.Expr`.
+    """Coerce a value-keyed method input (`value` / `quantile`) into a `pl.Expr`.
 
     More permissive on scalars than `coerce_param`: a support point or quantile may be an `int` (`cdf(0)`, `pmf(1)`) or
-    a `float`, so both are accepted and the expanded dtype is left to Polars to infer.
+    a `float`, so both are accepted and the literal's dtype is left to Polars to infer.
 
-    A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the row-alignment rationale.
+    A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the coercion rules.
     """
     return _coerce(value, name="value", scalar_label="a number (int or float)", scalar_types=(int, float))
 
@@ -158,8 +209,8 @@ def register_plugin(
 
     Wraps `register_plugin_function` so each call site spells only what varies (the function name, its input exprs,
     and an optional sampler `seed` or constant-parameter kwargs). `plugin_path=LIB`, `is_elementwise` is fixed to
-    `True`: every distribution plugin is per-row by contract (see `coerce_param`), and an aggregating plugin would
-    break `over` / `group_by`, so this is a guard rather than a default.
+    `True`: every distribution plugin is per-row by contract, and an aggregating plugin would break `over` /
+    `group_by`, so this is a guard rather than a default.
 
     Arguments:
         function_name: The `#[polars_expr]` function exported by the Rust crate.
@@ -217,9 +268,9 @@ class _UnivariateDistribution(ABC):
     @property
     @abstractmethod
     def _param_exprs(self) -> tuple[pl.Expr, ...]:
-        """The distribution's parameters as coerced, row-aligned exprs, in plugin-input order.
+        """The distribution's parameters as coerced exprs, in plugin-input order.
 
-        The per-row plugins take these as positional inputs, ahead of `ROW_INDEX_EXPR` for the samplers
+        The per-row plugins take these as positional inputs, ahead of `row_index_expr` for the samplers
         and after `value` for the value-keyed methods.
         The order is part of the contract: output naming follows the first expression (polars root-name semantics,
         pinned by `output_name_test.py`), and the Rust side reads them positionally.
@@ -246,8 +297,9 @@ class _UnivariateDistribution(ABC):
                 (ROW_INDEX_EXPR,),
                 kwargs={"seed": seed, **self._scalar_kwargs},
             ).alias("sample")
+        params = self._param_exprs
         return register_plugin(
-            f"{self._plugin_prefix}_sample", (*self._param_exprs, ROW_INDEX_EXPR), kwargs={"seed": seed}
+            f"{self._plugin_prefix}_sample", (*params, row_index_expr(params)), kwargs={"seed": seed}
         )
 
     def samples(self, size: int, seed: int | None = None) -> pl.Expr:
@@ -291,13 +343,14 @@ class _UnivariateDistribution(ABC):
     def _samples_columns(self, size: int, seed: int | None) -> pl.Expr:
         """Register the `<prefix>_samples` multi-draw plugin call for column-valued parameters.
 
-        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `ROW_INDEX_EXPR` as inputs, the root
+        Mirrors `sample`'s per-row plugin shape: the parameter exprs plus `row_index_expr` as inputs, the root
         `seed` and draw count `size` as kwargs. Called by `_samples`; naming is applied by `samples`, and a
         null-parameter row becomes a null array element inside the plugin.
         """
+        params = self._param_exprs
         return register_plugin(
             f"{self._plugin_prefix}_samples",
-            (*self._param_exprs, ROW_INDEX_EXPR),
+            (*params, row_index_expr(params)),
             kwargs={"seed": seed, "size": size},
         )
 
@@ -335,16 +388,18 @@ class _UnivariateDistribution(ABC):
 
         The validating plugins (`normal_sigma`, `uniform_range`, `bernoulli_proba`, ...) are
         elementwise and return the quantity they are named for (the validated `sigma`, the width
-        `max - min`, the validated `p`, ...). Both paths are byte-identical for the same parameters:
+        `max - min`, the validated `p`, ...). Both paths raise on the same parameters:
 
         * **Column parameters**: the per-row plugin over `_param_exprs`, validating each row and
           propagating per-row nulls.
         * **All-scalar parameters**: the same plugin on length-1 `pl.lit` inputs, so it validates a
           single time and still raises the same `ComputeError` on an invalid constant. `validated`
-          (a length-n expr recomputing that quantity from the raw parameter columns, e.g.
-          `self._sigma` or `self._max - self._min`) is returned behind the length-1 validity gate;
-          `pl.when` broadcasts the condition, so the result stays length-n and equals the per-row
-          output element for element.
+          (the same quantity recomputed from the parameters, e.g. `self._sigma` or
+          `self._max - self._min`) is returned behind that length-1 gate, so the whole expression is
+          a scalar column polars broadcasts wherever it meets a longer one.
+
+        The two paths agree bit for bit except where polars folds the scalar branch's arithmetic
+        with a different kernel than the length-n columns of the per-row branch.
         """
         if self._scalar_kwargs is None:
             return register_plugin(plugin_name, self._param_exprs)
@@ -356,8 +411,8 @@ class _UnivariateDistribution(ABC):
 
         The moment counterpart of `_value_plugin`: same constant-parameter routing, no `value` input. With
         column parameters the plugin runs once per row over `_param_exprs`. With all-constant parameters it
-        runs **once** on length-1 `pl.lit` inputs and is broadcast to length-n behind the `_moment` validity
-        gate, so a constant's moment is not re-evaluated on every row.
+        runs **once** on length-1 `pl.lit` inputs behind the `_moment` validity gate, so a constant's moment is
+        a scalar column rather than a value re-evaluated on every row.
 
         The scalar branch routes through `_moment`, so a distribution must define `_checked_params` to
         use this; `Uniform`, `Bernoulli` and `Exponential` deliberately do not.

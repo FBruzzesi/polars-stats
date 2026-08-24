@@ -6,10 +6,57 @@ pub mod lognormal;
 pub mod normal;
 pub mod uniform;
 
+use std::borrow::Cow;
+
 use polars::prelude::arity::{
     try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
 };
 use polars::prelude::*;
+
+/// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
+///
+/// The row count is the one input length that is not 1, so length-1 inputs never set it: an
+/// all-length-1 call stays length 1, and a 0-row frame beside a `pl.lit` stays empty.
+pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>> {
+    let mut anchor: Option<&Series> = None;
+    let mut needs_broadcast = false;
+
+    for input in inputs {
+        if input.len() == 1 {
+            needs_broadcast = true;
+        } else if let Some(anchor) = anchor {
+            polars_ensure!(
+                input.len() == anchor.len(),
+                ShapeMismatch:
+                "inputs have incompatible lengths: '{}' has length {} but '{}' has length {}. \
+                 Every input must share one length, or be length 1 to broadcast",
+                anchor.name(), anchor.len(), input.name(), input.len()
+            );
+        } else {
+            anchor = Some(input);
+        }
+    }
+
+    // Borrow when there is nothing to expand: no anchor means every input is already length 1, and
+    // `!needs_broadcast` means they already agree, which is every call whose parameters are columns.
+    let row_count = match anchor {
+        Some(anchor) if needs_broadcast => anchor.len(),
+        _ => return Ok(Cow::Borrowed(inputs)),
+    };
+
+    Ok(Cow::Owned(
+        inputs
+            .iter()
+            .map(|input| {
+                if input.len() == 1 {
+                    input.new_from_index(0, row_count)
+                } else {
+                    input.clone()
+                }
+            })
+            .collect(),
+    ))
+}
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
 ///

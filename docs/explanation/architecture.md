@@ -9,8 +9,8 @@ questions, see [Design notes](design.md).
 
 ## Three layers
 
-* Python API layer (`polars_stats/`): Distribution classes (Normal, Bernoulli, ...). Coerce params into row-aligned
-    `pl.Expr`, register plugin calls. Implement methods directly as `pl.Expr` when the closed form is trivial.
+* Python API layer (`polars_stats/`): Distribution classes (Normal, Bernoulli, ...). Coerce params into `pl.Expr`,
+    register plugin calls. Implement methods directly as `pl.Expr` when the closed form is trivial.
 
 * FFI layer (`pyo3-polars` plugin functions). One `#[polars_expr]` per (distribution, method) where Rust is required.
     Per-row null propagation; an invalid parameter on a row raises.
@@ -45,9 +45,14 @@ Every distribution `__init__` coerces each parameter with a single shared helper
 parameters like Binomial's `n`). The accepted inputs and their coercions are tabulated in
 [Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs).
 
-A scalar is expanded with `pl.repeat(value, n=pl.len())`, a length-`N` expression rather than `pl.lit`, on purpose: the
-plugin always receives a row-aligned
-input, so it stays elementwise and `over` / `group_by` invoke it once per partition rather than as an aggregation.
+A scalar becomes `pl.lit(value)`, a length-1 scalar column, and Rust owns row-alignment: polars broadcasts nothing
+into a plugin, so `align_inputs` broadcasts every length-1 input up to the call's row count before any cast. It
+aligns by *length*, not by expression kind, so a user-written `.first()` or `.max()` parameter is handled like a
+literal.
+
+An expression whose inputs are *all* constant is therefore a scalar column, so `df.select(Normal(0.0, 1.0).mean())`
+is one row; any column-valued input sets the length instead. See
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs).
 
 On the Rust side, a plugin function receives `inputs: &[Series]` of `(value, param_1, ..., param_k)`, casts each to
 `Float64Chunked`, iterates per chunk, propagates nulls, and constructs the `statrs` distribution per row. `kwargs`
@@ -89,8 +94,8 @@ reproducible across OS and architecture.
 
 **Constant-parameter fast path**: when every distribution parameter is a Python scalar (the common case), the sampler
 takes a dedicated plugin, `<name>_sample_scalar`. The parameters travel in `kwargs` and are validated once; only the row
-index crosses FFI, instead of one full-length `pl.repeat` column per parameter that the general plugin would marshal and
-re-validate on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
+index crosses FFI, instead of one broadcast column per parameter that the general plugin would marshal and re-validate
+on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
 non-null index straight into the typed output. Each distribution writes the two fast-path shells by hand over
 `sample_by_index` / `samples_by_index`, carrying its parameters in `SampleScalarKwargs<P>` / `SamplesScalarKwargs<P>`,
 the generic `seed` / `size` wrappers in `rng.rs` around the distribution's own `<Name>ParamsKwargs`. The shells reuse
