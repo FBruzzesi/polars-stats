@@ -1,10 +1,10 @@
 """Compatibility shims for ``polars`` across supported polars versions.
 
-Polars renamed the tolerance keyword arguments of `assert_frame_equal` and `assert_series_equal` from
-``rtol``/``atol`` to ``rel_tol``/``abs_tol`` in v1.32.3.
-This project supports ``polars>=1.15.0``, so the test suite has to run against both spellings.
+Polars renamed the tolerance keyword arguments of `assert_series_equal` from ``rtol``/``atol`` to
+``rel_tol``/``abs_tol`` in v1.32.3. This project supports ``polars>=1.15.0``, so the test suite has to run
+against both spellings.
 
-These wrappers expose the *latest* signature (``rel_tol``/``abs_tol``) explicitly, by remapping the two tolerance
+The wrapper exposes the *latest* signature (``rel_tol``/``abs_tol``) explicitly, by remapping the two tolerance
 arguments to whatever the installed polars version actually accepts; every other argument has a stable name and is
 forwarded untouched.
 
@@ -22,16 +22,14 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 from packaging.version import Version
-from polars.testing import assert_frame_equal as _assert_frame_equal
 from polars.testing import assert_series_equal as _assert_series_equal
 
 if TYPE_CHECKING:
-    from polars import DataFrame, LazyFrame, Series
+    from polars import Series
 
 __all__ = (
     "PARTITIONED_BROADCAST_AVAILABLE",
     "arr_explode",
-    "assert_frame_equal",
     "assert_series_equal",
     "linear_space",
 )
@@ -68,9 +66,7 @@ def arr_explode(series: Series) -> Series:
     plain `explode` on older supported polars, which has no kwarg and no warning. Every call site
     explodes an `Array` column, whose rows are never empty, so the two paths return identical output.
     """
-    if _EXPLODE_HAS_EMPTY_AS_NULL:
-        return series.arr.explode(empty_as_null=False)
-    return series.arr.explode()
+    return series.arr.explode(empty_as_null=False) if _EXPLODE_HAS_EMPTY_AS_NULL else series.arr.explode()
 
 
 def linear_space(start: float, end: float, num_samples: int) -> Series:
@@ -85,35 +81,6 @@ def linear_space(start: float, end: float, num_samples: int) -> Series:
         raise ValueError(msg)
     step = (end - start) / (num_samples - 1)
     return pl.int_range(0, num_samples, eager=True).cast(pl.Float64) * step + start
-
-
-def assert_frame_equal(  # noqa: PLR0913
-    left: DataFrame | LazyFrame,
-    right: DataFrame | LazyFrame,
-    *,
-    check_row_order: bool = True,
-    check_column_order: bool = True,
-    check_dtypes: bool = True,
-    check_exact: bool = False,
-    rel_tol: float = 1e-05,
-    abs_tol: float = 1e-08,
-    categorical_as_str: bool = False,
-) -> None:
-    """Version-agnostic `polars.testing.assert_frame_equal`.
-
-    Mirrors the latest polars signature. ``rel_tol``/``abs_tol`` are remapped to the
-    spelling the installed polars version supports.
-    """
-    _assert_frame_equal(
-        left,
-        right,
-        check_row_order=check_row_order,
-        check_column_order=check_column_order,
-        check_dtypes=check_dtypes,
-        check_exact=check_exact,
-        categorical_as_str=categorical_as_str,
-        **{_REL_NAME: rel_tol, _ABS_NAME: abs_tol},
-    )
 
 
 def assert_series_equal(  # noqa: PLR0913
