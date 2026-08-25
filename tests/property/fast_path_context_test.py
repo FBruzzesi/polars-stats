@@ -88,7 +88,7 @@ def _assert_matches_across_contexts(
 
     # The two partition contexts, on the polars versions that get them right (see
     # `PARTITIONED_BROADCAST_AVAILABLE`). `select` and the streaming engine still run below that floor.
-    if PARTITIONED_BROADCAST_AVAILABLE:
+    if PARTITIONED_BROADCAST_AVAILABLE:  # pragma: no branch  # false only on CI's test-oldest job
         # `over`: polars broadcasts a scalar to each (uneven) partition's length, then scatters back.
         assert_series_equal(
             frame.select(r=fast.over("g"))["r"],
@@ -111,7 +111,7 @@ def _assert_matches_across_contexts(
         )
 
     # streaming engine: the source is split across morsels; non-positional exprs must be invariant.
-    if _STREAMING_AVAILABLE:
+    if _STREAMING_AVAILABLE:  # pragma: no branch  # false only on CI's test-oldest job
         lazy = frame.lazy().select(fast=fast, slow=slow).collect(engine="streaming")
         assert_series_equal(
             lazy["fast"], lazy["slow"], check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
