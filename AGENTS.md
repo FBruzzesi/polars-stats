@@ -45,8 +45,9 @@ Two things `make test` alone will not catch:
 
 * **The strict docs build**, after any `docs/` edit: `uv run --group docs zensical build --strict`.
 
-Fast loop after a Rust change: `make install-release && uv run pytest tests/distributions/bernoulli/ -x`. Bernoulli
-exercises the whole pipeline. Run `prek` through `make lint`, and do not pass `--no-verify` unless asked.
+Fast loop after a Rust change: `make install-release && uv run pytest --no-cov tests/distributions/bernoulli/ -x`.
+Bernoulli exercises the whole pipeline, and `--no-cov` keeps the 95% floor from failing a deliberately partial run.
+Run `prek` through `make lint`, and do not pass `--no-verify` unless asked.
 
 ## Non-negotiables
 
