@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Geometric, LogNormal, Normal, Uniform
 from tests._polars_compat import assert_series_equal
 
 if TYPE_CHECKING:
@@ -66,6 +66,11 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "bernoulli p=1.5": (Bernoulli(1.5), Bernoulli(_col(1.5)), True),
     "bernoulli p=-0.1": (Bernoulli(-0.1), Bernoulli(_col(-0.1)), True),
     "bernoulli p=nan": (Bernoulli(_NAN), Bernoulli(_col(_NAN)), True),
+    # The geometric support excludes the `p = 0` point mass its Bernoulli counterpart accepts.
+    "geometric p=0": (Geometric(0.0), Geometric(_col(0.0)), True),
+    "geometric p=-0.1": (Geometric(-0.1), Geometric(_col(-0.1)), True),
+    "geometric p=1.5": (Geometric(1.5), Geometric(_col(1.5)), True),
+    "geometric p=nan": (Geometric(_NAN), Geometric(_col(_NAN)), True),
     "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
@@ -141,6 +146,7 @@ def test_moment_fast_path_on_empty_frame_is_a_scalar() -> None:
 _DEGENERATE: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, float]] = {
     "bernoulli p=0 entropy": (Bernoulli(0.0), Bernoulli(_col(0.0)), 0.0),
     "bernoulli p=1 entropy": (Bernoulli(1.0), Bernoulli(_col(1.0)), 0.0),
+    "geometric p=1 entropy": (Geometric(1.0), Geometric(_col(1.0)), 0.0),
     "binomial p=0 entropy": (Binomial(5, 0.0), Binomial(_col(5, pl.Int64()), _col(0.0)), 0.0),
     "binomial p=1 entropy": (Binomial(5, 1.0), Binomial(_col(5, pl.Int64()), _col(1.0)), 0.0),
     "binomial n=0 entropy": (Binomial(0, 0.5), Binomial(_col(0, pl.Int64()), _col(0.5)), 0.0),

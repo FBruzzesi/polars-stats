@@ -23,3 +23,7 @@ classes follow, alphabetically. The members listed under each class include thos
 ::: polars_stats.Binomial
     options:
       inherited_members: true
+
+::: polars_stats.Geometric
+    options:
+      inherited_members: true

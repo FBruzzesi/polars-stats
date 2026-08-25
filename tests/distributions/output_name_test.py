@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -32,6 +32,7 @@ _FRAME = pl.DataFrame({"p": [0.5, 0.5], "mu": [0.0, 0.0], "n": [5, 5]})
 _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
     "bernoulli": Bernoulli(p=0.5),
     "binomial": Binomial(n=5, p=0.5),
+    "geometric": Geometric(p=0.5),
     "normal": Normal(mu=0.0, sigma=1.0),
     "lognormal": LogNormal(mu=0.0, sigma=1.0),
     "uniform": Uniform(min=0.0, max=1.0),
@@ -43,6 +44,7 @@ _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
 _COLUMN_PARAMS: dict[str, tuple[_UnivariateDistribution, str]] = {
     "bernoulli": (Bernoulli(p=pl.col("p")), "p"),
     "binomial": (Binomial(n=pl.col("n"), p=0.5), "n"),
+    "geometric": (Geometric(p=pl.col("p")), "p"),
     "normal": (Normal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "lognormal": (LogNormal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "uniform": (Uniform(min=pl.col("mu"), max=1.0), "mu"),
@@ -107,6 +109,7 @@ _VALIDATOR_FRAME = pl.DataFrame(
 _VALIDATOR_EXPRS: dict[str, tuple[pl.Expr, str]] = {
     "bernoulli_proba": (Bernoulli(p=pl.col("p"))._checked_p, "p"),
     "exponential_rate": (Exponential(rate=pl.col("rate"))._checked_rate, "rate"),
+    "geometric_p": (Geometric(p=pl.col("p"))._checked_p, "p"),
     "uniform_range": (Uniform(min=pl.col("lo"), max=pl.col("hi")).range, "lo"),
     "normal_sigma": (Normal(mu=pl.col("mu"), sigma=pl.col("sigma"))._checked_params, "mu"),
     "lognormal_sigma": (LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma"))._checked_params, "mu"),

@@ -21,6 +21,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Uniform(min, max)` | continuous | `max > min` | `uniform(loc=min, scale=max - min)` |
 | `Bernoulli(p)` | discrete | `0 <= p <= 1` | `bernoulli(p)` |
 | `Binomial(n, p)` | discrete | `n >= 0`, `0 <= p <= 1` | `binom(n, p)` |
+| `Geometric(p)` | discrete | `0 < p <= 1` | `geom(p)` |
 
 Each class names its parameters after the distribution's conventional parameters. `Normal` and `LogNormal` default to
 `mu=0.0, sigma=1.0`; the others have no defaults. Parameter values are validated at evaluation, not at construction.
