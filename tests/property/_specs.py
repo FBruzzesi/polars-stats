@@ -260,8 +260,15 @@ DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 ULP_TOLERANT_VALUE_SPECS = frozenset({"uniform", "exponential"})
 """Specs whose value-keyed methods compare to `ULP_REL_TOL` instead of bit-exactly."""
 
-ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform"})
-"""Specs whose moments compare to `ULP_REL_TOL` instead of bit-exactly."""
+ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform", "geometric"})
+"""Specs whose moments compare to `ULP_REL_TOL` instead of bit-exactly.
+
+`geometric` is here for `std` and `entropy` only, and for a narrower reason than `uniform`: both
+divide by the parameter itself, and `_col`'s `pl.repeat` keeps `p` in polars' scalar-backed
+representation, whose division kernel is a reciprocal multiply rather than an exactly-rounded divide.
+A materialised `p` column and a `pl.lit(pl.Series(...))` one both stay bit-exact against the fast
+path (0 divergences over 300 random `p`); only the `pl.repeat` spelling moves the last bit.
+"""
 
 ULP_REL_TOL = 1e-15
 """~4x a double's ULP."""

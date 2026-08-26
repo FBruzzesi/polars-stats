@@ -65,13 +65,22 @@ magnitudes are in the inherited limits below.
   and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
   identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
-  moments and value-keyed methods, and `Exponential`'s value-keyed methods. The difference is at or below
-  `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs` runs the same Rust body either
-  way and stays bit-identical.
+  moments and value-keyed methods, `Exponential`'s value-keyed methods, and `Geometric.std` / `.entropy`.
+  The difference is at or below `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs`
+  runs the same Rust body either way and stays bit-identical.
+
+    `Geometric`'s two are narrower than the rest: both divide by `p`, and only a `pl.repeat(p, n=pl.len())`
+    parameter moves the last bit, because polars keeps that spelling scalar-backed and divides by it with a
+    reciprocal multiply. A materialised `p` column matches the constant bit for bit.
 * **`float64` range, not algorithm.** Some quantities genuinely exceed the type: `LogNormal`'s
   variance overflows above `sigma ~ 18.8`, and `Exponential.pdf` lands in the subnormal range once
   `rate * x` passes ~708, where only one or two significant digits remain. `log_pdf` is exact well
   past that.
+* **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
+  `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
+  does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%
+  at `1e-20`. `mean()` and the other moments are `Float64` and stay exact far past that. No other
+  sampler has a reachable limit: `Bernoulli` is `Boolean` and `Binomial`'s count is bounded by `n`.
 
 ### Inherited from `statrs` 0.19, tracked upstream
 

@@ -713,9 +713,25 @@ def geometric_entropy(params: Params, _x: float) -> mp.mpf:
     return -(q * mp.log(q) + p * mp.log(p)) / p
 
 
+LOG_SMALLEST_SUBNORMAL = float(mp.log(SMALLEST_SUBNORMAL))
+"""`ln(2**-1074)`, about -744.4: the point `k * log1p(-p)` crosses on its way to a zero linear tail."""
+
+
 def geometric_points(params: Params, rng: random.Random, count: int) -> list[Point]:
-    """The first few support points and their gaps, plus random support integers across the bulk."""
+    """The first few support points and their gaps, random support integers, and the deep tail.
+
+    `k_underflow = ln(2**-1074) / log1p(-p)` is where `(1 - p)**k` reaches `0.0` and only the log
+    methods can still answer. Probing on both sides of it is the whole point of auditing a geometric
+    tail: below it every method is finite, above it `sf` / `cdf` are expected to read `UNDERFLOW`
+    while `log_sf` / `log_cdf` must stay `OK`. The random probes are capped well short of that at a
+    small `p` (`50 / p` is 5e9 at `p = 1e-8`), so without these the sweep never gets there.
+    """
     points: list[Point] = [(v, "danger") for v in (-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0)]
+    # `p = 1` puts the whole mass on `k = 1`: the tail is exactly zero from `k = 2`, `log1p(-p)` has
+    # no value, and there is no underflow point to straddle.
+    if params[0] < 1.0:
+        underflow = LOG_SMALLEST_SUBNORMAL / math.log1p(-params[0])
+        points.extend((float(math.ceil(underflow * fraction)), "danger") for fraction in (0.5, 1.0, 4.0))
     max_probe = int(min(max(50.0, 50.0 / params[0]), 2_000_000))
     points.extend((float(rng.randint(1, max_probe)), "random") for _ in range(count))
     return points

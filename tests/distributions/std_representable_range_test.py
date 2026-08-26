@@ -55,7 +55,8 @@ def test_uniform_std_is_the_span_over_root_twelve(span: float) -> None:
 
 
 # `p` is a probability, so only the underflow half of `_EXTREME_SCALES` is reachable here: `p ** 2`
-# underflows below ~1.49e-162 while `sqrt(1 - p) / p` stays finite to ~5e-324.
+# underflows below ~1.49e-162 while `sqrt(1 - p) / p` stays finite down to ~5.6e-309, where `1 / p`
+# itself overflows.
 _EXTREME_PROBABILITIES = [s for s in _EXTREME_SCALES if s < 1.0]
 
 

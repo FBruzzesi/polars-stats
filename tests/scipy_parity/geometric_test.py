@@ -75,6 +75,24 @@ def test_log_sf_deep_tail_beyond_the_linear_underflow() -> None:
         assert got == pytest.approx(k * math.log1p(-p))
 
 
+@pytest.mark.parametrize("p", [0.001, 0.5])
+def test_linear_tail_underflows_where_the_log_tail_stays_exact(p: float) -> None:
+    """Past `ln(2**-1074) / log1p(-p)` the linear `sf` is exactly `0.0` and only `log_sf` has digits.
+
+    `0.0` is the correctly rounded `sf` there, which is what leaves `log_sf` as the only method that
+    can answer. `tools/accuracy_audit.py::geometric_points` straddles the same crossing; this pins it
+    in CI, which does not run the audit.
+    """
+    log_failure = math.log1p(-p)
+    k_underflow = math.ceil(math.log(5e-324) / log_failure)
+    for k, expect_zero in [(k_underflow // 2, False), (4 * k_underflow, True)]:
+        got = pl.DataFrame({"k": [float(k)]}).select(
+            sf=Geometric(p).sf(pl.col("k")), log_sf=Geometric(p).log_sf(pl.col("k"))
+        )
+        assert (got["sf"].item() == 0.0) is expect_zero
+        assert got["log_sf"].item() == pytest.approx(k * log_failure)
+
+
 def test_ppf_resolves_quantiles_far_below_one_half() -> None:
     """`ppf` matches scipy for quantiles where a collapsed `log(1 - q)` would answer `1`."""
     for p, q in [(0.5, 1e-16), (0.001, 1e-13), (0.9, 1e-20)]:
