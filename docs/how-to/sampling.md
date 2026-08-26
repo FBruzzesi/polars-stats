@@ -66,6 +66,11 @@ print(lazy.with_columns(draw=expr).collect(engine="streaming"))
 Omit `seed` (or pass `None`) for non-reproducible draws seeded from OS entropy. There is no global seed to set: the
 `seed` argument is the only control, which means a sampled column is reproducible from the query alone.
 
+Reproducibility holds **across releases** too, from `0.0.1` onward: for a given seed, row position and parameters,
+`sample` and `samples` return the same values on every later version. Changing a draw algorithm is therefore a
+breaking change, and it will be called out as one in that version's release notes rather than shipped alongside an
+unrelated fix.
+
 Determinism does not depend on evaluation order. Each row derives its own generator from `(seed, row_index)`, so a
 row's draw depends only on its position in the frame, never on how Polars chunked or threaded the data.
 

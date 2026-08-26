@@ -68,7 +68,7 @@ evaluation: Polars fails the query with `InvalidOperationError` rather than retu
 
 Values are validated at *evaluation*, not at construction, and identically for scalar and column-valued parameters.
 The count parameter `n` is the exception: a Python `int` outside `[0, 2**63 - 1]` raises `ValueError` at
-construction, since it is expanded to a `UInt64` column and passed to the fast paths as a kwarg. An `n` *column*
+construction, since it is coerced to a `UInt64` literal and passed to the fast paths as a kwarg. An `n` *column*
 may hold any count its dtype can, up to `UInt64`.
 
 | Distribution | Required | Also required |
@@ -127,7 +127,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in
-[Design notes](../explanation/design.md#moments-that-are-undefined).
+[Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf).
 
 ## Related
 

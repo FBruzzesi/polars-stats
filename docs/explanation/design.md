@@ -28,6 +28,35 @@ Three options were considered:
 The result is **1 & 3**. Closed-form methods sit happily in Python as `pl.Expr`; only methods that go through `statrs`
 get a Rust plugin function.
 
+Rust gets the RNG, the special functions (`erf`, log-gamma, the regularized incomplete beta or gamma), and anything
+with no elementary closed form. A Rust binding for arithmetic Polars does natively is dead FFI surface: more to
+compile, one more plugin name to keep literal, one more path to hold in parity with its own fast-path twin, and no
+accuracy or speed gain for it. Method by method:
+
+| Method | In Rust? | Notes |
+|---|---|---|
+| `sample` / `samples` | **always** | Not derivable in Python. Usually `statrs`' own `Distribution::sample`. |
+| parameter validation | **always** | One validation-only round-trip per distribution, since a bare `pl.Expr` cannot raise per row. |
+| `pdf` / `pmf`, `cdf` | if special-function | Native `Continuous::pdf` / `Discrete::pmf`, `*CDF::cdf`. Elementary forms stay in Polars. |
+| `ppf` | if special-function | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. |
+| `log_pdf` / `log_pmf` | override the default | The base default is `_pdf(x).log()`, which underflows. Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one. |
+| `sf` | override the default | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
+| `log_cdf` / `log_sf` | override the default | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
+| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, or log-gamma plus digamma. |
+| `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
+| `std`, `isf` | Polars, and override | Both base defaults (`variance().sqrt()`, `ppf(1 - q)`) saturate long before the answer does. |
+
+### Expose the conventional parameterisation, document the scipy mapping
+
+A distribution takes the parameters it is conventionally defined by, which is also what `statrs` takes. A
+scipy-spelled alias is never added: `Exponential` takes `rate`, not scipy's `scale = 1 / rate`, and gains nothing from
+accepting both. An alias has to be coerced, validated, tested on both fast paths, and explained forever.
+
+Where the two conventions genuinely differ, the divergence gets **exactly three mentions**: the class docstring, the
+catalogue row in the [API reference](../reference/index.md#catalogue), and
+[How-to / Migrate from scipy.stats](../how-to/migrate-from-scipy.md). Diverge from scipy's *convention* rather than
+just its spelling only where scipy's is a footgun, and say why in the docstring.
+
 ### Sampling derives a fresh per-row RNG from `(root_seed, row_index)`
 
 Every sampler needs one property: a deterministic, independent stream per row that depends only on
@@ -115,14 +144,26 @@ because scalars are coerced to columns and validated per row exactly like column
 *types*. A closed-form distribution cannot raise from a bare `pl.Expr`, so it routes parameters through one small
 validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)).
 
-### Moments that are undefined
+### Moments that are undefined return null; divergent ones return `+inf`
 
 Every distribution shipped today has finite moments on its valid parameter range, so this policy does not bite yet; it
-governs distributions on the roadmap. Two cases, handled differently on purpose:
+governs distributions on the roadmap. Three outcomes, and the distinction is what the quantity does rather than
+whether the user asked a reasonable question:
 
-* **Permanently undefined** (e.g. a Cauchy mean): raise `NotImplementedError`. Silently returning null would hide a
-  modelling error from a user who chains `.mean().sum()`.
-* **Undefined only in part of the parameter range** (e.g. a Student-t mean with `df <= 1`, defined for `df > 1`):
-  return `null`. A user sweeping a parameter across the threshold should not get an exception that breaks the sweep.
+* **Undefined**, permanently or only on part of the range (a Cauchy mean; a Student-t mean at `df <= 1`): **null**.
+  It is Polars' own representation of "no value here", it is what scipy's `nan` maps to under the Polars idiom, and it
+  keeps a parameter sweep across the threshold from dying on an exception.
+* **Divergent** (a Pareto mean at `shape <= 1`): **`+inf`**, matching scipy. The integral has an answer and it is
+  infinite, which is different from having none.
+* **Invalid parameterisation**: raises, as everywhere else. This is the case the other two must not be confused with,
+  so a moment with no formula at all still routes through the parameter validator: `Cauchy.mean()` is null for a valid
+  `scale` and raises for a negative one.
 
-Inconsistent on its face, defensible per case. Each class will document which case applies as it lands.
+**An undefined moment is null, not `NotImplementedError`.** An earlier version of this note said the opposite for the
+permanently-undefined case. It was reversed because the two cases are indistinguishable to a user sweeping a
+parameter, and because raising makes a mixed `select` unusable: one column having no mean should not fail the query.
+
+The cost is real and belongs in the class docstring rather than being hidden: a null is silently absorbed by a
+downstream `.mean()`, `.sum()` or `.drop_nulls()`, so a user who does not know `Cauchy.mean()` is null can lose rows
+without noticing. `NotImplementedError` is reserved for a quantity this library has not implemented, such as a
+`NegativeBinomial` entropy with no closed form at all.

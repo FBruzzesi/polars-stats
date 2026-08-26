@@ -64,14 +64,35 @@ class Uniform(ContinuousDistribution):
         return self._checked("uniform_range", self._max - self._min)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """``1 / (max - min)`` on ``[min, max]``, ``0`` outside."""
+        """``1 / (max - min)`` on ``[min, max]``, ``0`` outside, null where a bound is null.
+
+        The null branch is explicit because ``is_between`` yields null on a null bound, and a bare
+        ``when(in_range).then(...).otherwise(0.0)`` would take the ``otherwise``, reporting a confident
+        "outside the support" for a row whose support is unknown. ``_cdf`` and ``_sf`` need no such
+        branch, because their ``otherwise`` is the arithmetic and nulls on its own.
+        """
         in_range = value.is_between(self._min, self._max, closed="both")
-        return pl.when(in_range).then(1 / self.range).otherwise(0.0)
+        return (
+            pl.when(in_range.is_null())
+            .then(pl.lit(None, dtype=pl.Float64))
+            .when(in_range)
+            .then(1 / self.range)
+            .otherwise(0.0)
+        )
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
-        """``-log(max - min)`` on the support, ``-inf`` outside."""
+        """``-log(max - min)`` on the support, ``-inf`` outside, null where a bound is null.
+
+        Same null branch as ``_pdf``, for the same reason.
+        """
         in_range = value.is_between(self._min, self._max, closed="both")
-        return pl.when(in_range).then(-self.range.log()).otherwise(float("-inf"))
+        return (
+            pl.when(in_range.is_null())
+            .then(pl.lit(None, dtype=pl.Float64))
+            .when(in_range)
+            .then(-self.range.log())
+            .otherwise(float("-inf"))
+        )
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """``(value - min) / (max - min)`` clamped to ``[0, 1]``."""

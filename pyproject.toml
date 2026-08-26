@@ -78,8 +78,12 @@ docs = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-  "--import-mode=importlib",
+  # `--cov` must not be last. It takes an *optional* value, so a path passed on the command line is
+  # swallowed as that value and `testpaths` takes over, covering the whole suite instead of the path
+  # asked for. A flag after it keeps the next token starting with `-`, which the parser will not
+  # consume, leaving the value unset so the sources stay the ones under `[tool.coverage.run]`.
   "--cov",
+  "--import-mode=importlib",
 ]
 filterwarnings = [
   "error",

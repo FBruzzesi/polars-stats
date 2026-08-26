@@ -5,7 +5,7 @@ with no `Float64` cast. That relies on two polars behaviours, both verified on e
 version (1.15.0 through current) and pinned here so a regression in either direction surfaces:
 
 * `is_nan` returns `False` for integer dtypes (an integer can never hold a `NaN`), so an
-  integer-typed value column, or the integer `pl.repeat` expansion of a scalar like `cdf(0)`,
+  integer-typed value column, or the integer literal a scalar like `cdf(0)` coerces to,
   flows through the guard and must evaluate exactly as its `Float64`-cast equivalent. The Rust
   plugins cast the evaluation point to `Float64` internally; the closed-form hooks combine it
   under polars supertype rules; both are exact for the integer grids used here.
@@ -100,7 +100,7 @@ def test_integer_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_integer_scalar_value_matches_float_scalar(spec: DistSpec, data: st.DataObject) -> None:
-    """`cdf(1)` (expanded by `as_expr` to an integer `pl.repeat` column) equals `cdf(1.0)`.
+    """`cdf(1)` (coerced by `as_expr` to a length-1 integer literal) equals `cdf(1.0)`.
 
     One method suffices: the `as_expr` coercion and the `propagate_null_and_nan` guard this scalar
     routes through are shared by every value-keyed method.

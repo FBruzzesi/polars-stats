@@ -16,10 +16,10 @@ def test_log_pdf_equals_log_of_pdf(value_grid: list[float]) -> None:
 
 
 def test_log_pdf_finite_in_the_upper_1e9_band() -> None:
-    # statrs 0.19 compares the evaluation point to 1.0 with an absolute epsilon of 1e-9
-    # (`prec::ulps_eq!`), so its endpoint branch swallows the whole band `1 - 1e-9 <= x < 1` and
-    # returns -inf regardless of shape, where the true log-density is finite (positive for
-    # small shapes). The Rust body computes that band directly; this pins several shape regimes.
+    # The log-density is finite right up to the endpoint (positive for small shapes), so no value
+    # below 1 may return -inf. statrs 0.19.0 collapsed this whole band to -inf by comparing the
+    # evaluation point to 1.0 with an absolute epsilon; 0.19.1 restored the exact comparison. The
+    # expectation is the closed form rather than a recorded number, so this stays a live check.
     x = 1.0 - 1e-9
     df = pl.DataFrame({"x": [x]})
     for a, b in [(2.0, 3.0), (0.05, 0.05), (5.0, 1e-3)]:
