@@ -45,6 +45,24 @@ def test_isf_deep_tail_keeps_full_precision(unit_frame: pl.DataFrame) -> None:
     assert got == expected
 
 
+def test_isf_overshoots_by_one_at_an_exact_step_boundary(unit_frame: pl.DataFrame) -> None:
+    """At `q = sf(1)` the answer is `2`, where `sf(1) <= q` already makes `1` the definition's answer.
+
+    The `ppf` twin of this lands on the *other* side of its boundary, which is the shape of the
+    caveat: at a representable step the log-domain tie-break can miss in either direction. `sf(1)`
+    is exact here (`1 - 1e-8` is representable), so nothing but the tie-break is in play. One ulp
+    above the boundary the answer is `1` as expected, so the miss is one-sided in `q`, not a shifted
+    support. Pinned, not fixed; see the reasoning on the `ppf` twin and in
+    docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step boundary".
+    """
+    p, support_floor, next_point = 1e-8, 1.0, 2.0
+    sf_at_floor = unit_frame.select(v=Geometric(p=p).sf(support_floor)).item(0, "v")
+
+    assert unit_frame.select(v=Geometric(p=p).isf(sf_at_floor)).item(0, "v") == next_point
+    assert unit_frame.select(v=Geometric(p=p).isf(math.nextafter(sf_at_floor, 0.0))).item(0, "v") == next_point
+    assert unit_frame.select(v=Geometric(p=p).isf(math.nextafter(sf_at_floor, 1.0))).item(0, "v") == support_floor
+
+
 @pytest.mark.parametrize("quantile", [-0.1, 1.5])
 def test_isf_out_of_range_quantile_is_null(quantile: float, unit_frame: pl.DataFrame) -> None:
     result = unit_frame.select(v=Geometric(p=0.3).isf(quantile)).item(0, "v")

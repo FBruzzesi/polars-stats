@@ -132,20 +132,19 @@ _BINOMIAL = DistSpec(
 )
 
 
-def _geometric_tail_k(p: float) -> int:
+def _geometric_support_limit(p: float) -> int:
     """Smallest `k` whose tail mass `(1 - p)**k` falls below `1e-15`.
 
-    The geometric support is infinite, so its finite-support sum truncates where the missing tail
-    sits far below the suite's mass tolerance. At the degenerate `p = 1` the whole mass sits on
-    `k = 1`."""
+    The geometric support is infinite, so the suite truncates it where the missing tail sits far
+    below its mass tolerance. At the degenerate `p = 1` the whole mass sits on `k = 1`."""
     return 1 if p >= 1.0 else ceil(log(1e-15) / log1p(-p))
 
 
 _GEOMETRIC = DistSpec(
     name="geometric",
     continuous=False,
-    # `p` spans `(0, 1]`: unlike Bernoulli there is no `p = 0` point mass, "never succeeds" has no
-    # moments and statrs rejects it.
+    # `p` spans `(0, 1]`: unlike Bernoulli there is no `p = 0` point mass, since "never succeeds"
+    # has no moments and statrs rejects it.
     params=st.tuples(_finite(0.05, 1.0)),
     make=lambda p: Geometric(p=p[0]),
     make_columns=lambda p: Geometric(p=_col(p[0])),
@@ -154,8 +153,8 @@ _GEOMETRIC = DistSpec(
     make_series=lambda p: Geometric(p=_series(p[0])),
     example=(0.3,),
     density=lambda d, c: d.pmf(c),
-    eval_range=lambda p: (-1.0, float(_geometric_tail_k(p[0]) + 1)),
-    support=lambda p: [float(k) for k in range(1, _geometric_tail_k(p[0]) + 1)],
+    eval_range=lambda p: (-1.0, float(_geometric_support_limit(p[0]) + 1)),
+    support=lambda p: [float(k) for k in range(1, _geometric_support_limit(p[0]) + 1)],
 )
 
 _NORMAL = DistSpec(

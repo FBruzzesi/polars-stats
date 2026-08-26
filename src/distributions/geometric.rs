@@ -10,10 +10,8 @@ use crate::rng::{
     samples_u64_output, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Geometric`, mapping the invalid-parameter case to a `ComputeError`.
-///
-/// `statrs::Geometric::new` rejects a `NaN` `p` or a `p` outside `(0, 1]`, so unlike `Bernoulli`
-/// the degenerate `p = 0` point mass is not representable.
+/// `statrs::Geometric::new` rejects `NaN` and any `p` outside `(0, 1]`, so unlike `Bernoulli` the
+/// degenerate `p = 0` point mass is not representable.
 fn build_dist(proba: f64) -> PolarsResult<Geometric> {
     Geometric::new(proba).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in (0, 1], got {proba}: {e}").into())

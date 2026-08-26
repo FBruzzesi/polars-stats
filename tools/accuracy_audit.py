@@ -716,8 +716,8 @@ def geometric_entropy(params: Params, _x: float) -> mp.mpf:
 def geometric_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """The first few support points and their gaps, plus random support integers across the bulk."""
     points: list[Point] = [(v, "danger") for v in (-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0)]
-    hi = int(min(max(50.0, 50.0 / params[0]), 2_000_000))
-    points.extend((float(rng.randint(1, hi)), "random") for _ in range(count))
+    max_probe = int(min(max(50.0, 50.0 / params[0]), 2_000_000))
+    points.extend((float(rng.randint(1, max_probe)), "random") for _ in range(count))
     return points
 
 

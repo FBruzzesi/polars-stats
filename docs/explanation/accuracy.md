@@ -33,9 +33,10 @@ recorded in the report with its reason rather than dropped.
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
-distributions (`Uniform`, `Exponential`, `Bernoulli`), `log_cdf` and `log_sf` stay finite far past
-that and are the right methods for tail scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those
-five: forming the complement quantises the tail mass to `1.1e-16` absolute before any inverse runs.
+distributions (`Uniform`, `Exponential`, `Bernoulli`, `Geometric`), `log_cdf` and `log_sf` stay
+finite far past that and are the right methods for tail scoring. Likewise `isf(q)` rather than
+`ppf(1 - q)` on those six: forming the complement quantises the tail mass to `1.1e-16` absolute
+before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
 are the linear value's logarithm, so they return `-inf` at exactly the point where `cdf` / `sf`
@@ -50,8 +51,16 @@ magnitudes are in the inherited limits below.
 
 * **Discrete `ppf` / `isf` at a step boundary.** `Binomial.ppf` is a binary search resolved to the
   cdf's own precision, so a quantile within `1e-12` *relative* of a cdf step may return the
-  neighbouring support point. Parity with `scipy` is gated at integer equality rather than at a
-  float tolerance.
+  neighbouring support point. `Geometric.ppf` / `isf` decide the same tie in the log domain, testing
+  `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`. That is deliberate and it is
+  the more accurate rule: across 1997 probes sitting on and either side of exact step boundaries it
+  disagrees with exact rational arithmetic 357 times, against 490 for the alternative. The price is
+  that `ppf` and `cdf` are not exact mutual inverses there, and the miss goes both ways. At
+  `p = 0.1` with `q` one ulp above `cdf(10)`, `ppf(q)` is `10` where `11` is the answer; at
+  `p = 1e-8` with `q = sf(1)`, `isf(q)` is `2` where `1` is. Both are single support points, and in
+  both the `cdf` / `sf` value is itself exact, so it is the tie-break and nothing else. `scipy` made
+  the opposite trade (it tests against its own `cdf`, so it is self-consistent and less accurate).
+  Parity is gated at integer equality rather than at a float tolerance.
 * **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).cdf("x")`
   and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round

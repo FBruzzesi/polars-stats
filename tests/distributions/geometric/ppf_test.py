@@ -41,6 +41,25 @@ def test_ppf_matches_closed_form_for_small_p(unit_frame: pl.DataFrame) -> None:
     assert got == expected
 
 
+def test_ppf_undershoots_by_one_at_an_exact_step_boundary(unit_frame: pl.DataFrame) -> None:
+    """One ulp above `cdf(10)` the answer stays `10`, where the definition asks for `11`.
+
+    `cdf(10)` is exact here (`1 - 0.9**10` is representable), so this is the tie-break alone: the
+    step-down test compares `k * log1p(-p)` against `log1p(-q)`, and at a representable step those
+    two roundings can fall either side of the answer. Pinned, not fixed. Re-deciding the tie against
+    `cdf(k)` would get this point right and cost accuracy overall (1997 boundary probes: 357
+    disagreements with exact arithmetic against 490). scipy answers `10` here too. See
+    docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step boundary", and the `isf` twin,
+    which lands on the other side.
+    """
+    p, step = 0.1, 10.0
+    cdf_at_step = unit_frame.select(v=Geometric(p=p).cdf(step)).item(0, "v")
+    quantile = math.nextafter(cdf_at_step, 1.0)
+
+    assert unit_frame.select(v=Geometric(p=p).ppf(quantile)).item(0, "v") == step
+    assert cdf_at_step < quantile
+
+
 @pytest.mark.parametrize("quantile", [-0.1, 1.5])
 def test_ppf_out_of_range_quantile_is_null(quantile: float, unit_frame: pl.DataFrame) -> None:
     result = unit_frame.select(v=Geometric(p=0.3).ppf(quantile)).item(0, "v")
