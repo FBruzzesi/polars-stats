@@ -70,11 +70,6 @@ The defects below live in the `statrs` 0.19 routines this release binds. Each is
 upstream: filed reports are linked, and the remaining links are added here as each one is filed. Per
 the contract at the bottom of this page, a bullet comes out of this list when a fix lands.
 
-One `statrs` 0.19 regression is already intercepted inside `polars-stats` and is deliberately *not*
-listed: `Beta.log_pdf` for `x` within `1e-9` below `1`, where `statrs` returns `-inf` across the
-whole band. `beta.rs::ln_pdf_value` computes that band directly and agrees with `statrs` 0.18 to
-1 ulp, so the method behaves correctly here.
-
 * **`Beta.ppf` / `isf` in the extreme lower tail.** The `statrs` inverse (AS 64) has an unguarded
   Newton step and an unbounded step-halving loop, which costs three regimes. Below `q ~ 1e-165` it
   **panics**, and a panic inside the plugin aborts the whole query, not just the row. For `q` in
@@ -83,7 +78,8 @@ whole band. `beta.rs::ln_pdf_value` computes that band directly and agrees with 
   relative, so results **saturate** to one constant across decades: `Beta(0.05, 0.05).ppf(q)` returns
   the same value from `q = 1e-40` all the way down to `1e-160`. `q >= ~1e-40` at ordinary shapes is
   well-behaved. `isf` composes `ppf(1 - q)`, so it shares all three regimes on top of the complement
-  quantisation above.
+  quantisation above. Filed upstream:
+  [statrs#435](https://github.com/statrs-dev/statrs/issues/435).
 * **`Beta` and `Binomial` `log_cdf` / `log_sf` are linear compositions.** They return `-inf` as soon
   as `cdf` / `sf` underflows: `Beta(200, 2).log_cdf(0.001)` is `-inf` against a true `-1376.25`, and
   `Binomial(100_000, 0.001).log_sf(5000)` is `-inf` against a true `-14791.39`. `scipy`'s `logcdf` /
@@ -94,28 +90,11 @@ whole band. `beta.rs::ln_pdf_value` computes that band directly and agrees with 
   incomplete-beta continued fraction, which stops at 141 terms. That cap is first exceeded somewhere
   between shapes of `1e4` and `1e5`, after which the fraction truncates silently: `Beta(s, s).cdf(0.5)`
   is exactly `0.5` by symmetry, and statrs returns `0.4912` at `s = 1e6`, `0.2129` at `1e7`, and
-  `-1.147` at `1e8`, a probability outside `[0, 1]`. The audited range covers shapes to `1e3`.
-* **`Beta.sf` saturates in the lower corner for shapes below 1.** `statrs` evaluates it as
-  `beta_reg(b, a, 1 - x)`, passing the complement as the argument, which rounds to exactly `1` below
-  `x ~ 1e-16`: `Beta(0.05, 0.05).sf(1e-16)` returns `1.0` where the true value is `0.9205`. Filed
-  upstream: [statrs#432](https://github.com/statrs-dev/statrs/issues/432).
-* **`Beta.pdf` and `log_pdf` disagree at a boundary whose shape is below 1.** The true density
-  diverges there (`scipy` returns `inf`). `statrs`' `pdf` returns `inf` at small shapes but `0.0`
-  once the opposite shape passes ~80 and it switches to evaluating `ln_pdf().exp()`:
-  `Beta(0.5, 0.5).pdf(0.0)` is `inf` while `Beta(0.5, 100).pdf(0.0)` is `0.0`. `log_pdf` is `-inf`
-  at both endpoints regardless of shape.
+  `-1.147` at `1e8`, a probability outside `[0, 1]`. The audited range covers shapes to `1e3`. Filed
+  upstream: [statrs#434](https://github.com/statrs-dev/statrs/issues/434).
 * **`LogNormal.pdf` underflows in a left-tail band.** It returns `0.0` across up to 49 decades where
   the density is finite and representable: `LogNormal(0, 5).pdf(1.38e-87)` is `0.0` against a true
   `2.11e-262`. `log_pdf` is exact there (`-602.55` at that point) and is the workaround.
-* **`Binomial.entropy` returns `NaN` once any mass underflows.** The support sum takes
-  `pmf * ln(pmf)` without the `x ln x -> 0` limit, so a single underflowed term poisons the whole
-  sum: `Binomial(50, 1e-8)` and `Binomial(1000, 0.999)` both return `NaN` where the true entropy is
-  finite.
-* **`statrs` 0.19 widens two parameter-space branches** (an absolute `1e-9` epsilon on parameter
-  comparisons; bounded effect, accepted as-is). `Binomial` with `p` within `1e-9` of `1` is treated
-  as the degenerate `p = 1`: `Binomial(10^6, 1 - 1e-10).pmf(10^6)` is `1.0` against a true
-  `0.99990`. `Beta` with *both* shapes within `1e-9` of `1` takes the uniform closed form, a
-  relative error of at most ~`1e-9`.
 
 ## What to do if you find a defect
 
