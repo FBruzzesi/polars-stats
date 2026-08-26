@@ -14,7 +14,17 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    DiscreteUniform,
+    Exponential,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 from polars_stats.distributions._base import ContinuousDistribution
 
 if TYPE_CHECKING:
@@ -27,6 +37,7 @@ DISTRIBUTIONS: list[tuple[_UnivariateDistribution, str]] = [
     (Uniform(min="lo", max="hi"), "Uniform"),
     (Bernoulli(p="p"), "Bernoulli"),
     (Binomial(n="n", p="p"), "Binomial"),
+    (DiscreteUniform(min="n", max="n"), "DiscreteUniform"),  # min == max is a valid point mass
     (Geometric(p="p"), "Geometric"),
     (Exponential(rate="p"), "Exponential"),  # `p` is positive on every row, a valid rate
     (Beta(a="p", b="sigma"), "Beta"),  # both columns are positive on every row, valid shapes

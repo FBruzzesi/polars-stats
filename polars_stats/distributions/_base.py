@@ -157,6 +157,18 @@ def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.UInt64())
 
 
+def coerce_int(value: int | IntoExprColumn, *, name: str) -> pl.Expr:
+    """Coerce a signed integer parameter (e.g. discrete uniform bounds) into a `pl.Expr`.
+
+    The signed counterpart of `coerce_n`: accepts a Python `int` or an `IntoExprColumn` (a `bool`
+    raises on type, as everywhere), coerces the literal to an `Int64` column, and judges no *value*
+    at construction — negatives are legitimate bounds, so validity is left to evaluation like every
+    other parameter. A scalar outside `Int64` range is refused by polars when the plugin reads it,
+    consistent with a column of the same values. See `_coerce` for the coercion rules.
+    """
+    return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
+
+
 def scalar_float(value: float | IntoExprColumn) -> float | None:
     """Return `value` as a `float` if it is a plain numeric scalar, else `None`.
 

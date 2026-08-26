@@ -54,7 +54,17 @@ from typing import TYPE_CHECKING, Literal, cast
 import mpmath as mp
 import polars as pl
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    DiscreteUniform,
+    Exponential,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -737,6 +747,79 @@ def geometric_points(params: Params, rng: random.Random, count: int) -> list[Poi
     return points
 
 
+# DiscreteUniform oracles. `params` is `(min, max)`, both bounds inclusive.
+
+
+def _discrete_uniform_n(params: Params) -> int:
+    """The support count `max - min + 1`, as a Python int."""
+    return int(params[1]) - int(params[0]) + 1
+
+
+def discrete_uniform_pmf(params: Params, x: float) -> mp.mpf:
+    """`1 / N` on the inclusive integer support `{min, ..., max}`, `0` off it."""
+    lo, hi = int(params[0]), int(params[1])
+    if x < lo or x > hi or not x.is_integer():
+        return mp.mpf(0)
+    return 1 / mp.mpf(_discrete_uniform_n(params))
+
+
+def discrete_uniform_log_pmf(params: Params, x: float) -> mp.mpf:
+    """`ln` of [`discrete_uniform_pmf`], taken at oracle precision."""
+    return ln(discrete_uniform_pmf(params, x))
+
+
+def discrete_uniform_cdf(params: Params, x: float) -> mp.mpf:
+    """`(clamp(floor(x) - min + 1, 0, N)) / N`, so `cdf(max)` is exactly `1`."""
+    n = _discrete_uniform_n(params)
+    k = math.floor(x) - int(params[0]) + 1
+    k = max(0, min(k, n))
+    return mp.mpf(k) / n
+
+
+def discrete_uniform_sf(params: Params, x: float) -> mp.mpf:
+    """`(N - clamp(floor(x) - min + 1, 0, N)) / N`, the exact complement of [`discrete_uniform_cdf`]."""
+    n = _discrete_uniform_n(params)
+    k = math.floor(x) - int(params[0]) + 1
+    k = max(0, min(k, n))
+    return mp.mpf(n - k) / n
+
+
+def discrete_uniform_ppf(params: Params, q: float) -> mp.mpf:
+    """Smallest support point with `cdf(k) >= q`, by exact binary search over the oracle cdf."""
+    if q <= 0:
+        return mp.mpf(int(params[0]))
+    if q >= 1:
+        return mp.mpf(int(params[1]))
+    target = mp.mpf(q)
+    lo = int(params[0])
+    found = smallest_satisfying(_discrete_uniform_n(params), lambda k: discrete_uniform_cdf(params, lo + k) >= target)
+    return mp.mpf(lo + int(found))
+
+
+def discrete_uniform_isf(params: Params, q: float) -> mp.mpf:
+    """Smallest support point with `sf(k) <= q`, by exact binary search over the oracle sf."""
+    if q >= 1:
+        return mp.mpf(int(params[0]))
+    if q <= 0:
+        # `sf(max) = 0` already satisfies the inequality at the top support point.
+        return mp.mpf(int(params[1]))
+    target = mp.mpf(q)
+    lo = int(params[0])
+    found = smallest_satisfying(_discrete_uniform_n(params), lambda k: discrete_uniform_sf(params, lo + k) <= target)
+    return mp.mpf(lo + int(found))
+
+
+def discrete_uniform_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """Both bounds and their outside, half-integers between them, and random support integers."""
+    lo, hi = int(params[0]), int(params[1])
+    points: list[Point] = [
+        (v, "danger")
+        for v in (lo - 2.5, lo - 1.0, lo - 0.5, float(lo), lo + 0.5, (lo + hi) / 2, hi - 0.5, float(hi), hi + 1.5)
+    ]
+    points.extend((float(rng.randint(lo, hi)), "random") for _ in range(count))
+    return points
+
+
 # Shared moment oracles, lifted into the standard signature.
 
 
@@ -1282,6 +1365,51 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     constant(lambda p: (1 - mp.mpf(p[0])) / mp.mpf(p[0]) ** 2),
                     at_median(geometric_ppf),
                     geometric_entropy,
+                    CLOSED_FORM_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="DiscreteUniform",
+            build=lambda p: DiscreteUniform(min=p[0], max=p[1]),
+            param_names=("min", "max"),
+            param_dtypes=(pl.Int64(), pl.Int64()),
+            # Both bounds inclusive. The regimes cover negative bounds, a one-point mass (`min ==
+            # max`), a two-point support, and a wide span that stresses the inverse searches.
+            params=(
+                (0, 5),
+                (-4, 4),
+                (1, 2),
+                (3, 3),
+                (7, 60),
+                (-20, -10),
+                (-1000, 1000),
+                (0, 10**6),
+            ),
+            methods=(
+                MethodSpec("pmf", discrete_uniform_pmf, CLOSED_FORM_RTOL, discrete_uniform_points),
+                MethodSpec("log_pmf", discrete_uniform_log_pmf, LOG_RTOL, discrete_uniform_points),
+                MethodSpec("cdf", discrete_uniform_cdf, CLOSED_FORM_RTOL, discrete_uniform_points),
+                MethodSpec(
+                    "log_cdf",
+                    log_pair(discrete_uniform_cdf, discrete_uniform_sf),
+                    LOG_RTOL,
+                    discrete_uniform_points,
+                ),
+                MethodSpec("sf", discrete_uniform_sf, CLOSED_FORM_RTOL, discrete_uniform_points),
+                MethodSpec(
+                    "log_sf",
+                    log_pair(discrete_uniform_sf, discrete_uniform_cdf),
+                    LOG_RTOL,
+                    discrete_uniform_points,
+                ),
+                MethodSpec("ppf", discrete_uniform_ppf, DISCRETE_PPF_RTOL, quantile_points),
+                MethodSpec("isf", discrete_uniform_isf, DISCRETE_PPF_RTOL, survival_points),
+                *moments(
+                    constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
+                    constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
+                    constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
+                    constant(lambda p: mp.log(_discrete_uniform_n(p))),
                     CLOSED_FORM_RTOL,
                 ),
             ),
