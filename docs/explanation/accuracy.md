@@ -55,12 +55,17 @@ magnitudes are in the inherited limits below.
   `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`. That is deliberate and it is
   the more accurate rule: across 1997 probes sitting on and either side of exact step boundaries it
   disagrees with exact rational arithmetic 357 times, against 490 for the alternative. The price is
-  that `ppf` and `cdf` are not exact mutual inverses there, and the miss goes both ways. At
-  `p = 0.1` with `q` one ulp above `cdf(10)`, `ppf(q)` is `10` where `11` is the answer; at
-  `p = 1e-8` with `q = sf(1)`, `isf(q)` is `2` where `1` is. Both are single support points, and in
-  both the `cdf` / `sf` value is itself exact, so it is the tie-break and nothing else. `scipy` made
-  the opposite trade (it tests against its own `cdf`, so it is self-consistent and less accurate).
-  Parity is gated at integer equality rather than at a float tolerance.
+  that `ppf` and `cdf` are not exact mutual inverses there, and the miss goes both ways, by at most
+  one support point: at `p = 1e-8` with `q = sf(1)`, `isf(q)` is `2` where `1` is the answer. On a
+  step the two roundings decide the last bit, so which side a given quantile falls on is also the
+  platform's `exp` and `log1p` and not the rule alone: at `p = 0.1` with `q` one ulp above `cdf(10)`,
+  `ppf(q)` is `10` on [Apple's libm](https://github.com/apple-oss-distributions/Libm) and `11` on
+  [glibc](https://www.gnu.org/software/libc/manual/html_node/Errors-in-Math-Functions.html), because
+  their `exp` puts `cdf(10)` itself an ulp apart, inside the few ulps of error a libm permits itself.
+  Only the one-support-point bound is portable, so it is the only thing pinned. `scipy`'s
+  [`geom._ppf`](https://github.com/scipy/scipy/blob/main/scipy/stats/_discrete_distns.py) made the
+  opposite trade (it tests against its own `_cdf`, so it is self-consistent and less accurate). Parity
+  is gated at integer equality rather than at a float tolerance.
 * **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).cdf("x")`
   and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
@@ -88,11 +93,13 @@ The defects below live in the `statrs` 0.19 routines this release binds. Each is
 upstream: filed reports are linked, and the remaining links are added here as each one is filed. Per
 the contract at the bottom of this page, a bullet comes out of this list when a fix lands.
 
-* **`Beta.ppf` / `isf` in the extreme lower tail.** The `statrs` inverse (AS 64) has an unguarded
-  Newton step and an unbounded step-halving loop, which costs three regimes. Below `q ~ 1e-165` it
-  **panics**, and a panic inside the plugin aborts the whole query, not just the row. For `q` in
-  roughly `[1e-150, 1e-60]` at some shapes below 1 it **does not return** in reasonable time (over
-  15 s for a *single* row at `(a, b) = (200, 2)`). And its convergence floor is absolute rather than
+* **`Beta.ppf` / `isf` in the extreme lower tail.** The `statrs` inverse
+  ([`inv_beta_reg`](https://github.com/statrs-dev/statrs/blob/v0.19.1/src/function/beta.rs#L269), an
+  implementation of [AS 64](https://www.jstor.org/stable/2346798)) has an unguarded Newton step and an
+  unbounded step-halving loop, which costs three regimes. Below `q ~ 1e-165` it **panics**, and a panic
+  inside the plugin aborts the whole query, not just the row. For `q` in roughly `[1e-150, 1e-60]` at
+  some shapes below 1 it **does not return** in reasonable time (over 15 s for a *single* row at
+  `(a, b) = (200, 2)`). And its convergence floor is absolute rather than
   relative, so results **saturate** to one constant across decades: `Beta(0.05, 0.05).ppf(q)` returns
   the same value from `q = 1e-40` all the way down to `1e-160`. `q >= ~1e-40` at ordinary shapes is
   well-behaved. `isf` composes `ppf(1 - q)`, so it shares all three regimes on top of the complement
@@ -105,11 +112,13 @@ the contract at the bottom of this page, a bullet comes out of this list when a 
   a log-space regularized incomplete beta, tracked upstream as
   [statrs PR #421](https://github.com/statrs-dev/statrs/pull/421).
 * **`Beta` and `Binomial` at very large shapes.** `cdf` / `sf` run `statrs`' regularized
-  incomplete-beta continued fraction, which stops at 141 terms. That cap is first exceeded somewhere
-  between shapes of `1e4` and `1e5`, after which the fraction truncates silently: `Beta(s, s).cdf(0.5)`
-  is exactly `0.5` by symmetry, and statrs returns `0.4912` at `s = 1e6`, `0.2129` at `1e7`, and
-  `-1.147` at `1e8`, a probability outside `[0, 1]`. The audited range covers shapes to `1e3`. Filed
-  upstream: [statrs#434](https://github.com/statrs-dev/statrs/issues/434).
+  incomplete-beta continued fraction
+  ([`beta_reg`](https://github.com/statrs-dev/statrs/blob/v0.19.1/src/function/beta.rs#L130)), which
+  stops at 141 terms. That cap is first exceeded somewhere between shapes of `1e4` and `1e5`, after
+  which the fraction truncates silently: `Beta(s, s).cdf(0.5)` is exactly `0.5` by symmetry, and statrs
+  returns `0.4912` at `s = 1e6`, `0.2129` at `1e7`, and `-1.147` at `1e8`, a probability outside
+  `[0, 1]`. The audited range covers shapes to `1e3`. Filed upstream:
+  [statrs#434](https://github.com/statrs-dev/statrs/issues/434).
 * **`LogNormal.pdf` underflows in a left-tail band.** It returns `0.0` across up to 49 decades where
   the density is finite and representable: `LogNormal(0, 5).pdf(1.38e-87)` is `0.0` against a true
   `2.11e-262`. `log_pdf` is exact there (`-602.55` at that point) and is the workaround.

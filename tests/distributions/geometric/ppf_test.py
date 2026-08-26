@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import polars as pl
 import pytest
@@ -41,23 +42,43 @@ def test_ppf_matches_closed_form_for_small_p(unit_frame: pl.DataFrame) -> None:
     assert got == expected
 
 
-def test_ppf_undershoots_by_one_at_an_exact_step_boundary(unit_frame: pl.DataFrame) -> None:
-    """One ulp above `cdf(10)` the answer stays `10`, where the definition asks for `11`.
+def _smallest_support_point_exact(p: float, quantile: float) -> int:
+    """Smallest `k >= 1` with `cdf(k) >= quantile`, evaluated without rounding.
 
-    `cdf(10)` is exact here (`1 - 0.9**10` is representable), so this is the tie-break alone: the
-    step-down test compares `k * log1p(-p)` against `log1p(-q)`, and at a representable step those
-    two roundings can fall either side of the answer. Pinned, not fixed. Re-deciding the tie against
-    `cdf(k)` would get this point right and cost accuracy overall (1997 boundary probes: 357
-    disagreements with exact arithmetic against 490). scipy answers `10` here too. See
-    docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step boundary", and the `isf` twin,
-    which lands on the other side.
+    `1 - (1 - p)**k >= q` over `Fraction`s, so this is the definition itself rather than a second
+    floating-point implementation of it to compare against.
     """
-    p, step = 0.1, 10.0
-    cdf_at_step = unit_frame.select(v=Geometric(p=p).cdf(step)).item(0, "v")
-    quantile = math.nextafter(cdf_at_step, 1.0)
+    failure, target = 1 - Fraction(p), Fraction(quantile)
+    k, tail = 1, failure
+    while 1 - tail < target:
+        k += 1
+        tail *= failure
+    return k
 
-    assert unit_frame.select(v=Geometric(p=p).ppf(quantile)).item(0, "v") == step
-    assert cdf_at_step < quantile
+
+@pytest.mark.parametrize(("p", "step"), [(0.1, 10), (0.3, 4), (0.5, 20), (0.05, 13)])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_ppf_at_an_exact_step_boundary_can_miss_by_one(
+    p: float, step: int, offset: int, unit_frame: pl.DataFrame
+) -> None:
+    """On a step the answer is the definition's support point or a neighbour, and no further.
+
+    The tie-break compares `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`.
+    That is deliberate and the more accurate rule (1997 boundary probes: 357 disagreements with
+    exact arithmetic against 490 for the alternative), and the price is that `ppf` and `cdf` are not
+    exact mutual inverses on a step: the two roundings decide the last bit there. Which side they
+    fall on is the platform's `exp` and `log1p`, not the rule, so only the bound is portable and
+    only the bound is pinned. At `p = 0.1` one ulp above `cdf(10)`, Apple's libm answers `10` and
+    glibc `11`, because their `exp` puts `cdf(10)` itself an ulp apart. Away from a step the answer
+    is exact, as the scalar cases above and the `isf` twin, whose probe amplifies a round trip well
+    past a last bit, pin. See docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step
+    boundary".
+    """
+    cdf_at_step = unit_frame.select(v=Geometric(p=p).cdf(float(step))).item(0, "v")
+    quantile = cdf_at_step if offset == 0 else math.nextafter(cdf_at_step, float(offset > 0))
+
+    got = unit_frame.select(v=Geometric(p=p).ppf(quantile)).item(0, "v")
+    assert abs(got - _smallest_support_point_exact(p, quantile)) <= 1
 
 
 @pytest.mark.parametrize("quantile", [-0.1, 1.5])

@@ -48,12 +48,12 @@ def test_isf_deep_tail_keeps_full_precision(unit_frame: pl.DataFrame) -> None:
 def test_isf_overshoots_by_one_at_an_exact_step_boundary(unit_frame: pl.DataFrame) -> None:
     """At `q = sf(1)` the answer is `2`, where `sf(1) <= q` already makes `1` the definition's answer.
 
-    The `ppf` twin of this lands on the *other* side of its boundary, which is the shape of the
-    caveat: at a representable step the log-domain tie-break can miss in either direction. `sf(1)`
-    is exact here (`1 - 1e-8` is representable), so nothing but the tie-break is in play. One ulp
-    above the boundary the answer is `1` as expected, so the miss is one-sided in `q`, not a shifted
-    support. Pinned, not fixed; see the reasoning on the `ppf` twin and in
-    docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step boundary".
+    The direction is pinnable here, unlike on the `ppf` twin. `sf(1)` sits so close to `1` that the
+    `log` back out of it is quantised to the spacing of `1.0`, which is `1e-8` *relative* at this
+    `p`: the ratio misses the integer by `5e-9` rather than by a last bit, so every libm agrees on
+    which side it falls. One ulp above the boundary the answer is `1` as expected, so the miss is
+    one-sided in `q`, not a shifted support. Pinned, not fixed; see the reasoning on the `ppf` twin
+    and in docs/explanation/accuracy.md, "Discrete `ppf` / `isf` at a step boundary".
     """
     p, support_floor, next_point = 1e-8, 1.0, 2.0
     sf_at_floor = unit_frame.select(v=Geometric(p=p).sf(support_floor)).item(0, "v")
