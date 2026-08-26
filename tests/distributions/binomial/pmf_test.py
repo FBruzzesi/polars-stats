@@ -16,6 +16,13 @@ def test_pmf_integer_support_matches_scipy(p: float, unit_frame: pl.DataFrame) -
         assert result == pytest.approx(float(scipy_binom.pmf(k, N_TRIALS, p)))
 
 
+def test_pmf_does_not_round_a_near_one_p_to_the_degenerate_case(unit_frame: pl.DataFrame) -> None:
+    n, p = 10**6, 1 - 1e-10
+    result = unit_frame.select(v=Binomial(n, p).pmf(float(n))).item(0, "v")
+    assert result < 1.0
+    assert result == pytest.approx(float(scipy_binom.pmf(n, n, p)), rel=1e-14)
+
+
 @pytest.mark.parametrize("value", [-1.0, 2.5, 11.0, 100.0])
 def test_pmf_off_support_is_zero(value: float, unit_frame: pl.DataFrame) -> None:
     # Below zero, non-integer, and above n all carry zero mass.

@@ -21,6 +21,12 @@ def test_entropy_degenerate_endpoints_are_zero(p: float, unit_frame: pl.DataFram
     assert result == 0.0
 
 
+@pytest.mark.parametrize(("n", "p"), [(50, 1e-8), (1000, 0.999)])
+def test_entropy_survives_an_underflowing_mass_term(n: int, p: float, unit_frame: pl.DataFrame) -> None:
+    result = unit_frame.select(v=Binomial(n, p).entropy()).item(0, "v")
+    assert result == pytest.approx(float(scipy_binom.entropy(n, p)), rel=1e-8)
+
+
 def test_entropy_propagates_null_in_params(params_with_null: pl.DataFrame) -> None:
     result = params_with_null.select(v=Binomial(pl.col("n"), pl.col("p")).entropy())["v"]
     expected = pl.Series("v", [scipy_binom.entropy(10, 0.3), None, scipy_binom.entropy(8, 0.8)], dtype=pl.Float64)

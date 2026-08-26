@@ -20,12 +20,19 @@ def test_pdf_outside_support_is_zero() -> None:
     assert_series_equal(result, expected)
 
 
-def test_pdf_diverges_at_boundaries_for_shapes_below_one() -> None:
-    # A shape < 1 makes the density divergent at the matching boundary .
-    df = pl.DataFrame({"x": [0.0, 1.0]})
-    result = df.select(r=Beta(a=0.5, b=0.5).pdf(pl.col("x")))["r"]
-    expected = pl.Series("r", [float("inf"), float("inf")], dtype=pl.Float64)
+@pytest.mark.parametrize("opposite", [0.5, 2.0, 100.0])
+def test_pdf_diverges_at_the_boundary_of_a_shape_below_one(opposite: float) -> None:
+    df = pl.DataFrame({"x": [0.0]})
+    result = df.select(r=Beta(a=0.5, b=opposite).pdf(pl.col("x")))["r"]
+    expected = pl.Series("r", [float("inf")], dtype=pl.Float64)
     assert_series_equal(result, expected)
+
+
+def test_pdf_and_log_pdf_agree_at_a_divergent_boundary() -> None:
+    df = pl.DataFrame({"x": [0.0]})
+    got = df.select(pdf=Beta(a=0.5, b=100.0).pdf(pl.col("x")), log_pdf=Beta(a=0.5, b=100.0).log_pdf(pl.col("x")))
+    assert got["pdf"].item() == float("inf")
+    assert got["log_pdf"].item() == float("inf")
 
 
 def test_pdf_column_params() -> None:
