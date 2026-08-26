@@ -80,10 +80,11 @@ Method = Literal[
 """A benchmarkable method. `density` / `log_density` resolve to `pdf` / `log_pdf` (continuous) or
 `pmf` / `log_pmf` (discrete) per distribution; `log_cdf` / `log_sf` call scipy's `logcdf` / `logsf`.
 
-`mean` / `variance` / `std` / `entropy` are the parameter-only moments: they take no value column, so
-polars_stats returns a length-`rows` column of the (constant, for scalar params) moment while scipy
-returns a single scalar. The comparison is therefore inherently O(n) vs O(1); it exists to track the
-polars_stats cost (time and peak memory) across a change, not to "beat" scipy on a scalar reduction.
+`mean` / `variance` / `std` / `entropy` are the parameter-only moments: they take no value column, and
+the registry's parameters are scalars, so the expression is built only from constants and `select`
+returns a height-1 scalar column (see `_coerce` in `polars_stats/distributions/_base.py`), matching
+scipy's single scalar. Both sides are therefore O(1) and `rows` does not scale the work: the cell tracks
+the polars_stats per-call overhead (time and peak memory) across a change, not a length-`rows` cost.
 """
 
 ALL_METHODS: tuple[Method, ...] = (
@@ -111,7 +112,7 @@ _VALUE_METHODS: frozenset[Method] = frozenset(
 )
 
 _MOMENT_METHODS: frozenset[Method] = frozenset({"mean", "variance", "std", "entropy"})
-"""Parameter-only moments: no value column, one expression evaluated over the length frame."""
+"""Parameter-only moments: no value column, and with constant parameters no dependence on the frame's length."""
 
 OutputFormat = Literal["markdown", "json", "rich"]
 """How a report is emitted: a markdown file, a JSON file, or a rich table printed to the terminal."""
@@ -321,7 +322,7 @@ def _build_fn(comp: Comparison, method: Method, config: RunConfig, side: Side) -
                 return lambda: fn(values)
             if method in _MOMENT_METHODS:
                 # scipy's variance is `var`; `mean` / `std` / `entropy` share the name. Each is one
-                # scalar (O(1)), the baseline the length-n polars_stats moment is measured against.
+                # scalar, the baseline the equally scalar polars_stats moment is measured against.
                 # The bound method is itself the zero-arg callable the timing loop invokes.
                 return getattr(frozen, "var" if method == "variance" else method)  # type: ignore[no-any-return]
             size: int | tuple[int, int] = rows if method == "sample" else (rows, n)
@@ -352,13 +353,13 @@ def _matches(method: Method, config: RunConfig, polars_out: object, scipy_out: o
     """
     assert isinstance(polars_out, pl.DataFrame)  # noqa: S101  # help the type checker
     if method in _MOMENT_METHODS:
-        # polars_stats returns a length-`rows` column of the (constant) moment; scipy returns one
-        # scalar. Gate on the column length and on every entry matching the scipy scalar.
+        # Built only from the constant parameters, the moment expression is a scalar column, so
+        # `select` returns height 1 whatever the frame's length (see `_coerce` in
+        # `polars_stats/distributions/_base.py`); scipy returns one scalar. Gate on that shape and on
+        # the single entry matching the scipy scalar.
         ours = polars_out.to_series().cast(pl.Float64).to_numpy()
         theirs = np.asarray(scipy_out, dtype=np.float64)
-        return polars_out.height == config.rows and np.allclose(
-            ours, theirs, rtol=_MATCH_RTOL, atol=_MATCH_ATOL, equal_nan=True
-        )
+        return polars_out.height == 1 and np.allclose(ours, theirs, rtol=_MATCH_RTOL, atol=_MATCH_ATOL, equal_nan=True)
     assert isinstance(scipy_out, np.ndarray)  # noqa: S101  # help the type checker
     if method == "samples":
         dtype = polars_out.to_series().dtype
