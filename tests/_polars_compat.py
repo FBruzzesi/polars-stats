@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from polars import Series
 
 __all__ = (
+    "LITERAL_DISPLAYS_AS_VALUE",
     "PARTITIONED_BROADCAST_AVAILABLE",
     "arr_explode",
     "assert_series_equal",
@@ -39,6 +40,20 @@ _NEEDS_RENAMING = Version("1.32.3") > PL_VERSION
 _REL_NAME = "rtol" if _NEEDS_RENAMING else "rel_tol"
 _ABS_NAME = "atol" if _NEEDS_RENAMING else "abs_tol"
 _EXPLODE_HAS_EMPTY_AS_NULL = Version("1.36.0") <= PL_VERSION
+
+LITERAL_DISPLAYS_AS_VALUE = Version("1.36.1") <= PL_VERSION
+"""Whether `str()` of a dtype-typed literal expression is just the value.
+
+`coerce_param` builds every constant parameter as `pl.lit(value, dtype=...)`. Through polars 1.35.2 that
+is a dyn literal plus a cast, and `str` shows the whole tree (`dyn float: 1.0.strict_cast(Float64)`); from
+1.36.1 the literal carries the dtype and `str` gives `1.0`. 1.36.0 is yanked, so 1.36.1 is the first
+installable version with the new form.
+
+Only a *mixed* parameterisation is affected: with every parameter constant, `__repr__` renders from
+`_scalar_kwargs` and never consults polars' display. `col("m")` and `Series[lo]` are identical on every
+supported version. When the polars floor reaches 1.36.1 this constant and its gate can be deleted.
+"""
+
 
 PARTITIONED_BROADCAST_AVAILABLE = Version("1.34.0") <= PL_VERSION
 """Whether polars handles a length-1 input *inside* `over` / `group_by().agg()` correctly.
