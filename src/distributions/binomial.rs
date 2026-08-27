@@ -1,4 +1,3 @@
-#![allow(clippy::unused_unit)]
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -45,20 +44,20 @@ fn build_sampler(n: u64, p: f64) -> PolarsResult<BinomialSampler> {
 /// Widen an `n` column to the `UInt64` both distribution types take. The Rust half of `coerce_n`, and
 /// the single place an `n` *column* becomes a `u64`, so no row converts one again.
 ///
-/// A float dtype is refused rather than cast: a bare `cast(&DataType::Int64)` truncated `2.7` to `2`
-/// here while the Python closed-form moments kept `2.7`. Refusing leaves the caller to say how a
-/// fraction rounds, and matches `coerce_n`, which refuses a scalar `2.0` on type.
+/// A float dtype is refused rather than cast: a bare `cast(&DataType::Int64)` would truncate `2.7`
+/// to `2` here while the Python closed-form moments keep `2.7`. Refusing leaves the caller to say
+/// how a fraction rounds, and matches `coerce_n`, which refuses a scalar `2.0` on type.
 ///
 /// The sign comes free from a *strict* cast, since a negative has no `u64` to widen to; the
 /// default `cast` is `NonStrict` and would null the row instead. Polars' message names the column and
 /// every offending value. Unlike the row loops this reads the whole column, so a negative `n` raises
 /// even on a row another parameter nulls; a null `n` still propagates.
 ///
-/// Widening rather than narrowing is also what lets the whole `u64` range reach `statrs`: the old
-/// `Int64` funnel mapped anything above `i64::MAX` to `null`, turning a trial count `statrs` accepts
-/// into a silent null row. A `UInt64` column now costs nothing, since an equal-dtype cast is a clone;
-/// any other width pays one pass, measurable only on `mean` / `variance` (~5% at 1M rows) and cheaper
-/// than the `max()` scan plus down-cast a `UInt64` column used to pay.
+/// Widening rather than narrowing is also what lets the whole `u64` range reach `statrs`: funnelling
+/// through `Int64` maps anything above `i64::MAX` to `null`, turning a trial count `statrs` accepts
+/// into a silent null row. A `UInt64` column costs nothing, since an equal-dtype cast is a clone;
+/// any other width pays one pass, measurable only on `mean` / `variance` (~5% at 1M rows) and
+/// cheaper than the `max()` scan plus down-cast that narrowing would need.
 fn coerce_n(n: &Series) -> PolarsResult<UInt64Chunked> {
     let dtype = n.dtype();
     // A `Null`-dtype column (e.g. `pl.DataFrame({"n": [None]})`) has no values the integer rule
@@ -162,7 +161,7 @@ where
 ///
 /// `n == u64::MAX` is refused here rather than in [`build_dist`]: it is a valid trial count for
 /// every other method, but `statrs` evaluates the support-sum moments by iterating `(0..n + 1)`,
-/// which wraps to an empty range at `u64::MAX` in release and returned a confident `0.0` entropy.
+/// which wraps to an empty range at `u64::MAX` in release and returns a confident `0.0` entropy.
 fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Binomial) -> f64,
@@ -338,8 +337,8 @@ const PPF_CDF_TOL: f64 = 1e-12;
 /// `DiscreteCDF::inverse_cdf` does not provide.
 ///
 /// The step slack is **relative** ([`PPF_CDF_TOL`] scaled by `q`), not absolute: an absolute slack
-/// exceeds every quantile below it, so `cdf(0) + tol >= q` held for any `q <= 1e-12` and the search
-/// collapsed to `0`. The caller maps the closed endpoints, so `q` here is interior.
+/// exceeds every quantile below it, so `cdf(0) + tol >= q` would hold for any `q <= 1e-12`,
+/// collapsing the search to `0`. The caller maps the closed endpoints, so `q` here is interior.
 fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
     let threshold = q * (1.0 - PPF_CDF_TOL);
     let mut lo = 0u64;
@@ -436,5 +435,8 @@ fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
 /// numerically equivalent Polars expression to move it to.
 #[polars_expr(output_type=Float64)]
 fn binomial_entropy(inputs: &[Series]) -> PolarsResult<Series> {
-    params_keyed(inputs, |dist| dist.entropy().unwrap())
+    params_keyed(inputs, |dist| {
+        dist.entropy()
+            .expect("Binomial::entropy is Some for every valid (n, p)")
+    })
 }

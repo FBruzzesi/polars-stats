@@ -1,4 +1,3 @@
-#![allow(clippy::unused_unit)]
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
@@ -59,9 +58,9 @@ impl UniformParamsKwargs {
 /// by `sample_test.py`.
 ///
 /// This deliberately bypasses `statrs`' `Distribution::sample`, which rebuilds a
-/// `rand::distributions::Uniform` float sampler (scale/bias/rejection-zone setup) on *every*
-/// call: that fixed per-draw cost dwarfs the single multiply-add here and is what made the
-/// sampler slower than scipy.
+/// `rand::distr::Uniform` float sampler (scale/bias/rejection-zone setup) on *every* call: that
+/// fixed per-draw cost dwarfs the single multiply-add here, enough to leave the sampler slower
+/// than scipy.
 ///
 /// `u < 1` does not survive the multiply-add's rounding: `lo + (hi - lo) * u` can land exactly on
 /// `hi` (or one ulp above) when `u` is close to 1, so the result is nudged back to the largest

@@ -1,4 +1,3 @@
-#![allow(clippy::unused_unit)]
 use std::f64::consts::{LN_2, SQRT_2};
 
 use polars::prelude::*;
