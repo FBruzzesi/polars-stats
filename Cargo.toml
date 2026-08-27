@@ -19,21 +19,21 @@ default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-pyo3 = { version = "0.26.0", features = ["abi3-py310"] }
-pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-array"] }
+pyo3 = { version = "0.29.2", features = ["abi3-py310"] }
+pyo3-polars = { version = "0.28.0", features = ["derive", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
 # The narrow integer dtypes are enabled for correctness, not reach: a parameter column whose dtype
 # this polars build lacks *panics* at the plugin boundary instead of raising.
-polars = { version = "0.52.0", default-features = false, features = [
+polars = { version = "0.55.2", default-features = false, features = [
     "dtype-i8",
     "dtype-i16",
     "dtype-u8",
     "dtype-u16",
 ] }
-polars-arrow = { version = "0.52.0", default-features = false }
-# Already in polars' tree; depended on directly for POOL and its rayon re-export, so the
+polars-arrow = { version = "0.55.2", default-features = false }
+# Already in polars' tree; depended on directly for `runtime::RAYON` and its rayon re-export, so the
 # multi-draw samplers parallelise on the same thread pool polars itself uses.
-polars-core = { version = "0.52.0", default-features = false }
+polars-core = { version = "0.55.2", default-features = false }
 # Trim statrs to what this crate uses. `default-features = false` drops the optional `nalgebra` feature
 # (and its matrixmultiply / num-complex / num-rational / num-integer subtree), which statrs pulls only for
 # its multivariate distributions (MultivariateNormal, Dirichlet, ...) that this crate does not use.

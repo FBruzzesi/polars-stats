@@ -1198,7 +1198,7 @@ testing = [
     { name = "covdefaults", specifier = ">=2.3.0" },
     { name = "hypothesis", specifier = ">=6.100.0" },
     { name = "packaging", specifier = ">=26.2" },
-    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
 ]
 typing = [
@@ -1211,7 +1211,7 @@ typing = [
     { name = "psutil", specifier = ">=5.9" },
     { name = "pyrefly", specifier = ">=0.62.0" },
     { name = "pyright", specifier = ">=1.1.409" },
-    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "scipy-stubs", specifier = ">=1.15.3.0" },
