@@ -18,9 +18,17 @@ if TYPE_CHECKING:
 class Bernoulli(DiscreteDistribution):
     """Bernoulli distribution with success probability ``p``.
 
+    Equivalent to ``scipy.stats.bernoulli(p)``.
+
     Arguments:
-        p: Success probability of Bernoulli distribution. Either a Python ``float`` or an ``IntoExprColumn``
+        p: Success probability, with ``0 <= p <= 1``. Either a Python ``float`` or an ``IntoExprColumn``
             (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one probability per row.
+
+    An invalid ``p`` (``p < 0``, ``p > 1`` or ``NaN``) is not checked at construction; matching every other
+    distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
+
+    A null ``p`` propagates to null wherever the result depends on ``p``; the off-support constants
+    (``pmf(2) = 0``, ``cdf(-1) = 0``, ``sf(1) = 0``) do not.
     """
 
     _p: pl.Expr
