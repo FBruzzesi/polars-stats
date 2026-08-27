@@ -1,4 +1,3 @@
-#![allow(clippy::unused_unit)]
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -298,5 +297,8 @@ fn beta_ppf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<
 /// it to (the same reasoning as `binomial_entropy`).
 #[polars_expr(output_type=Float64)]
 fn beta_entropy(inputs: &[Series]) -> PolarsResult<Series> {
-    params_keyed(inputs, |dist| dist.entropy().unwrap())
+    params_keyed(inputs, |dist| {
+        dist.entropy()
+            .expect("Beta::entropy is Some for every valid (a, b)")
+    })
 }
