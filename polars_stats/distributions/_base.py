@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
@@ -237,6 +238,40 @@ def propagate_null_and_nan(value: pl.Expr, result: pl.Expr) -> pl.Expr:
     guarded = pl.when(value.is_null()).then(pl.lit(None)).when(value.is_nan()).then(float("nan")).otherwise(result)
     name = value.meta.output_name(raise_if_undetermined=False)
     return guarded if name is None else guarded.alias(name)
+
+
+_LN_2 = math.log(2.0)
+"""`log(2)`, the leading term of `log_abs_expm1`."""
+
+
+def expm1(t: pl.Expr) -> pl.Expr:
+    """`exp(t) - 1`, spelled so that the subtraction never cancels.
+
+    Polars exposes no `expm1`, and the literal `exp(t) - 1` cancels to `0` below `|t| ~ 1.1e-16`. The
+    identity `exp(t) - 1 = 2 exp(t / 2) sinh(t / 2)` has no subtraction and holds for either sign of
+    `t`.
+
+    `sinh(t / 2)` overflows above `|t| ~ 1420`. For `t > 0` that is moot: the true `exp(t) - 1`
+    overflows at `t ~ 710`, so the identity fails no earlier than the answer does. For `t < 0` the
+    answer is within an ulp of `-1` long before `-1420`, so reaching the far tail needs a cut-over to
+    a direct form; callers on that side pick their own crossover.
+    """
+    half = t / 2
+    return 2 * half.exp() * half.sinh()
+
+
+def log_abs_expm1(t: pl.Expr) -> pl.Expr:
+    """`log|exp(t) - 1|`, the log of `expm1` without forming it.
+
+    `log(2) + t / 2 + log|sinh(t / 2)|`, which is `expm1`'s identity read term by term on the log
+    scale. Each term is large exactly where the answer is large, so the rounding stays relative;
+    `expm1(t).log()` would instead round the answer's own magnitude away.
+
+    The absolute value carries both signs of `t`: a no-op for `t > 0`, and for `t < 0` it makes this
+    the log of the complement `1 - exp(t)`. The overflow and cut-over limits of `expm1` are unchanged.
+    """
+    half = t / 2
+    return _LN_2 + half + half.sinh().abs().log()
 
 
 class _UnivariateDistribution(ABC):

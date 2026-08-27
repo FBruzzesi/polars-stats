@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, ClassVar
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
+    expm1,
+    log_abs_expm1,
     scalar_float,
     scalar_kwargs,
 )
@@ -18,9 +20,6 @@ if TYPE_CHECKING:
 
 _TWO_PI_E = math.tau * math.e
 """2 * pi * e, the constant inside the log-normal's differential entropy `mu + 0.5 * log(2 * pi * e * sigma^2)`."""
-
-_LN_2 = math.log(2.0)
-"""`log(2)`, the constant in the `expm1` identity below."""
 
 
 class LogNormal(ContinuousDistribution):
@@ -115,7 +114,7 @@ class LogNormal(ContinuousDistribution):
 
     @property
     def _half_sigma_sq(self) -> pl.Expr:
-        """``sigma ** 2 / 2``, the argument both moment identities below are written in."""
+        """``sigma ** 2 / 2``, the exponent `mean` and `std` are written in."""
         return self._sigma**2 / 2
 
     def mean(self) -> pl.Expr:
@@ -125,13 +124,11 @@ class LogNormal(ContinuousDistribution):
     def variance(self) -> pl.Expr:
         """Variance, ``(exp(sigma ** 2) - 1) * exp(2 * mu + sigma ** 2)``.
 
-        The leading factor is spelled ``2 * exp(t / 2) * sinh(t / 2)``, which is ``expm1(t)``
-        identically. Polars has no ``expm1``, and the literal ``exp(t) - 1`` cancels for a small
-        ``sigma``. The identity holds full precision on both sides and overflows no earlier than the
-        result does.
+        The leading factor goes through `expm1`, since the literal ``exp(sigma ** 2) - 1`` cancels
+        for a small ``sigma``. It needs no cut-over: the argument is positive, so the identity
+        overflows no earlier than the result does.
         """
-        half = self._half_sigma_sq
-        return self._moment(2 * half.exp() * half.sinh() * (2 * self._mu + self._sigma**2).exp())
+        return self._moment(expm1(self._sigma**2) * (2 * self._mu + self._sigma**2).exp())
 
     def std(self) -> pl.Expr:
         """Standard deviation, ``exp(0.5 * log(exp(sigma ** 2) - 1) + mu + sigma ** 2 / 2)``.
@@ -144,7 +141,7 @@ class LogNormal(ContinuousDistribution):
         at a large ``sigma``, because one is representable and the other is not.
         """
         half = self._half_sigma_sq
-        return self._moment((0.5 * (_LN_2 + half + half.sinh().log()) + self._mu + half).exp())
+        return self._moment((0.5 * log_abs_expm1(self._sigma**2) + self._mu + half).exp())
 
     def median(self) -> pl.Expr:
         """Median, ``exp(mu)``."""

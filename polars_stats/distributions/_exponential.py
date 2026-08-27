@@ -8,6 +8,7 @@ import polars as pl
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
+    expm1,
     scalar_float,
     scalar_kwargs,
 )
@@ -15,8 +16,8 @@ from polars_stats.distributions._base import (
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn
 
-_CDF_SINH_MAX_HALF = 0.5
-"""Crossover of `Exponential._cdf`, in units of `rate * x / 2`.
+_CDF_SINH_MAX = 1.0
+"""Crossover of `Exponential._cdf`, in units of `rate * x`.
 
 Above `rate * x = 1` the plain `1 - exp(-t)` is already exact, and the `sinh` identity that replaces
 it below would overflow past `t ~ 1420`. The two branches agree to `1e-16` here.
@@ -86,20 +87,12 @@ class Exponential(ContinuousDistribution):
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``, keeping the left tail exact.
 
-        Polars exposes no ``expm1``, and ``1 - exp(-t)`` cancels to ``0`` below ``t ~ 1.1e-16``.
-        The identity ``1 - exp(-t) = 2 exp(-t / 2) sinh(t / 2)`` has no subtraction and is spellable
-        with what Polars does expose, so the small branch keeps full relative precision. ``sinh``
-        overflows above ``t ~ 1420``, hence the split at ``t = 1``, where the plain form is already
-        exact; the two agree to ``1e-16`` at the crossover.
+        ``1 - exp(-t)`` cancels to ``0`` below ``t ~ 1.1e-16``, so the small branch reads it as
+        ``-expm1(-t)``. ``sinh`` overflows above ``t ~ 1420``, hence the split at `_CDF_SINH_MAX`,
+        where the plain form is already exact; the two agree to ``1e-16`` at the crossover.
         """
-        half = self._checked_rate * value / 2
-        return (
-            pl.when(value < 0)
-            .then(0.0)
-            .when(half < _CDF_SINH_MAX_HALF)
-            .then(2 * (-half).exp() * half.sinh())
-            .otherwise(1 - (-2 * half).exp())
-        )
+        t = self._checked_rate * value
+        return pl.when(value < 0).then(0.0).when(t < _CDF_SINH_MAX).then(-expm1(-t)).otherwise(1 - (-t).exp())
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
         """``log(cdf)`` in the left tail, ``log1p(-sf)`` in the right; ``-inf`` for ``x <= 0``.
