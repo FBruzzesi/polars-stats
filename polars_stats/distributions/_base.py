@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
@@ -311,6 +312,17 @@ class _UnivariateDistribution(ABC):
         pinned by `output_name_test.py`), and the Rust side reads them positionally.
         Constant parameters additionally ride in `_scalar_kwargs` for the fast path.
         """
+
+    def __repr__(self) -> str:
+        """One line shaped like the constructor call, e.g.: `Normal(mu=0.0, sigma=col("s"))`.
+
+        Names come from the subclass's `__init__` signature, values from `str` of each `_param_exprs`
+        entry, so a new distribution needs no per-class code.
+        """
+        cls = type(self)
+        _self, *names = inspect.signature(cls.__init__).parameters
+        params = ", ".join(f"{name}={expr!s}" for name, expr in zip(names, self._param_exprs, strict=True))
+        return f"{cls.__name__}({params})"
 
     def sample(self, seed: int | None = None) -> pl.Expr:
         """Draw one random variate per row.
