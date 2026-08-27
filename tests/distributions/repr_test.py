@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 import polars_stats as ps
+from tests._polars_compat import LITERAL_DISPLAYS_AS_VALUE
 from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
@@ -46,18 +47,31 @@ def test_column_parameters_repr_without_an_address(spec: DistSpec) -> None:
 
 
 def test_documented_forms() -> None:
-    """One exact string per kind of parameter a constructor accepts."""
+    """One exact string per kind of parameter a constructor accepts, on every supported polars."""
     assert repr(ps.Normal(0.0, 1.0)) == "Normal(mu=0.0, sigma=1.0)"
     assert repr(ps.Normal()) == "Normal(mu=0.0, sigma=1.0)"
     assert repr(ps.Binomial(10, 0.5)) == "Binomial(n=10, p=0.5)"
-    assert repr(ps.Normal(pl.col("m"), 1.0)) == 'Normal(mu=col("m"), sigma=1.0)'
     assert repr(ps.Normal("m", "s")) == 'Normal(mu=col("m"), sigma=col("s"))'
+
+
+@pytest.mark.skipif(not LITERAL_DISPLAYS_AS_VALUE, reason="polars < 1.36.1 renders a typed literal with its cast")
+def test_documented_forms_with_a_mixed_parameterisation() -> None:
+    """A constant beside a column-valued parameter renders through polars, not through `_scalar_kwargs`.
+
+    One column-valued parameter collapses `_scalar_kwargs` to `None`, so the constant takes the
+    expression path and inherits polars' display form for a typed literal, which changed in 1.36.1.
+    """
+    assert repr(ps.Normal(pl.col("m"), 1.0)) == 'Normal(mu=col("m"), sigma=1.0)'
     assert repr(ps.Uniform(pl.Series("lo", [0.0, 1.0]), 2.0)) == "Uniform(min=Series[lo], max=2.0)"
 
 
 def test_disagreeing_constructor_and_param_exprs_raise(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A length mismatch between `__init__` and `_param_exprs` raises instead of mislabelling parameters."""
-    dist = ps.Normal(0.0, 1.0)
+    """A length mismatch between `__init__` and `_param_exprs` raises instead of mislabelling parameters.
+
+    Column-valued so the expression path runs: an all-constant distribution renders from
+    `_scalar_kwargs`, which is keyed by name and never reads `_param_exprs`.
+    """
+    dist = ps.Normal(pl.col("m"), pl.col("s"))
     monkeypatch.setattr(type(dist), "_param_exprs", property(lambda self: (self._mu,)))
 
     with pytest.raises(ValueError, match="argument 2 is shorter"):

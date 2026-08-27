@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
@@ -316,12 +315,19 @@ class _UnivariateDistribution(ABC):
     def __repr__(self) -> str:
         """One line shaped like the constructor call, e.g.: `Normal(mu=0.0, sigma=col("s"))`.
 
-        Names come from the subclass's `__init__` signature, values from `str` of each `_param_exprs`
-        entry, so a new distribution needs no per-class code.
+        All-constant parameters render from `_scalar_kwargs`, keyed by the constructor's own parameter
+        names, so the values stay exact. With any column-valued parameter that dict is `None` and each
+        value becomes `str` of its `_param_exprs` entry, polars' one-line display, under names read
+        positionally off the `__init__` signature.
         """
         cls = type(self)
-        _self, *names = inspect.signature(cls.__init__).parameters
-        params = ", ".join(f"{name}={expr!s}" for name, expr in zip(names, self._param_exprs, strict=True))
+        if (scalars := self._scalar_kwargs) is not None:
+            params = ", ".join(f"{name}={value}" for name, value in scalars.items())
+        else:
+            import inspect  # noqa: PLC0415
+
+            _self, *names = inspect.signature(cls.__init__).parameters
+            params = ", ".join(f"{name}={expr!s}" for name, expr in zip(names, self._param_exprs, strict=True))
         return f"{cls.__name__}({params})"
 
     def sample(self, seed: int | None = None) -> pl.Expr:
