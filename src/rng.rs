@@ -26,8 +26,8 @@ use polars::prelude::*;
 use polars_arrow::array::ArrayFromIter;
 use polars_arrow::bitmap::Bitmap;
 use polars_arrow::datatypes::reshape::ReshapeDimension;
+use polars_core::runtime::RAYON;
 use polars_core::utils::rayon::prelude::*;
-use polars_core::POOL;
 use rand::rngs::SysRng;
 use rand::TryRng;
 use rand_pcg::Pcg64Mcg;
@@ -274,7 +274,7 @@ where
     F: Fn(usize, &mut [V]) + Sync,
 {
     if flat.len() >= PARALLEL_FILL_MIN_DRAWS {
-        POOL.install(|| {
+        RAYON.install(|| {
             flat.par_chunks_mut(size)
                 .enumerate()
                 .for_each(|(row, slot)| fill_row(row, slot));
