@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
@@ -8,15 +7,14 @@ import polars as pl
 from polars_stats.distributions._base import (
     DiscreteDistribution,
     coerce_param,
+    expm1,
+    log_abs_expm1,
     scalar_float,
     scalar_kwargs,
 )
 
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn
-
-_LN_2 = math.log(2.0)
-"""The constant in the `expm1` identity `Geometric._cdf` and `Geometric._log_cdf` are spelled through."""
 
 _CDF_DIRECT_COMPLEMENT_MAX = -20.0
 """Crossover of `Geometric._cdf`, in units of `log(sf)`.
@@ -146,17 +144,13 @@ class Geometric(DiscreteDistribution):
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         """``0`` below the support, else ``-expm1(log_tail)``.
 
-        Polars has no ``expm1``, so it is spelled through the identity
-        ``expm1(t) = 2 exp(t / 2) sinh(t / 2)``, and read directly as ``1 - exp(t)`` past
-        `_CDF_DIRECT_COMPLEMENT_MAX`. The literal ``1 - (1 - p)**k`` would instead inherit the
-        rounding of both ``1 - p`` and the subtraction against ``1``.
+        Below `_CDF_DIRECT_COMPLEMENT_MAX` it is read directly as ``1 - exp(log_tail)``. The literal
+        ``1 - (1 - p)**k`` would instead inherit the rounding of both ``1 - p`` and the subtraction
+        against ``1``.
         """
         log_tail = self._log_tail(value)
-        half = log_tail / 2
         complement = (
-            pl.when(log_tail <= _CDF_DIRECT_COMPLEMENT_MAX)
-            .then(1.0 - log_tail.exp())
-            .otherwise(-2.0 * half.exp() * half.sinh())
+            pl.when(log_tail <= _CDF_DIRECT_COMPLEMENT_MAX).then(1.0 - log_tail.exp()).otherwise(-expm1(log_tail))
         )
         return pl.when(value < 1).then(0.0).otherwise(self._when_p_valid(complement))
 
@@ -165,15 +159,12 @@ class Geometric(DiscreteDistribution):
 
         Two regimes, split at `_LOG_CDF_LOG1P_MAX` where the answer's own magnitude stops dwarfing
         the absolute granularity of the pieces. Below it ``log1p`` carries the difference from ``1``
-        exactly; above it the `_cdf` pieces assemble on the log scale, each one large precisely where
-        the answer is large, so their rounding stays relative.
+        exactly; above it `log_abs_expm1` assembles the answer on the log scale, keeping the rounding
+        relative.
         """
         log_tail = self._log_tail(value)
-        half = log_tail / 2
         log_complement = (
-            pl.when(log_tail <= _LOG_CDF_LOG1P_MAX)
-            .then((-log_tail.exp()).log1p())
-            .otherwise(_LN_2 + half + (-half.sinh()).log())
+            pl.when(log_tail <= _LOG_CDF_LOG1P_MAX).then((-log_tail.exp()).log1p()).otherwise(log_abs_expm1(log_tail))
         )
         return pl.when(value < 1).then(float("-inf")).otherwise(self._when_p_valid(log_complement))
 
