@@ -59,10 +59,11 @@ magnitudes are in the inherited limits below.
   one support point: at `p = 1e-8` with `q = sf(1)`, `isf(q)` is `2` where `1` is the answer. On a
   step the two roundings decide the last bit, so which side a given quantile falls on is also the
   platform's `exp` and `log1p` and not the rule alone: at `p = 0.1` with `q` one ulp above `cdf(10)`,
-  `ppf(q)` is `10` on [Apple's libm](https://github.com/apple-oss-distributions/Libm) and `11` on
-  [glibc](https://www.gnu.org/software/libc/manual/html_node/Errors-in-Math-Functions.html), because
-  their `exp` puts `cdf(10)` itself an ulp apart, inside the few ulps of error a libm permits itself.
-  Only the one-support-point bound is portable, so it is the only thing pinned. `scipy`'s
+  `ppf(q)` is `10` on Apple's libm and `11` on glibc, because their `exp` puts `cdf(10)` itself an ulp
+  apart. Neither libm is [correctly rounded](https://core-math.gitlabpages.inria.fr/), and a last-bit
+  difference sits well inside
+  [the error glibc documents](https://www.gnu.org/software/libc/manual/html_node/Errors-in-Math-Functions.html)
+  for it. Only the one-support-point bound is portable, so it is the only thing pinned. `scipy`'s
   [`geom._ppf`](https://github.com/scipy/scipy/blob/main/scipy/stats/_discrete_distns.py) made the
   opposite trade (it tests against its own `_cdf`, so it is self-consistent and less accurate). Parity
   is gated at integer equality rather than at a float tolerance.
