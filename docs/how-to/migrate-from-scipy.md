@@ -39,6 +39,7 @@ Some of these translations are not identities, so check this table rather than g
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
+| `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |
 
 Two further differences apply everywhere:
 

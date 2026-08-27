@@ -80,6 +80,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
 | `Binomial(n, p)` | `n >= 0`, `0 <= p <= 1` | `n` integral |
+| `Geometric(p)` | `0 < p <= 1` | `p = 0` rejected, unlike `Bernoulli` |
 
 A violation raises `ComputeError` and fails the whole evaluation. See
 [nulls, NaNs and errors](#nulls-nans-and-errors) below.
@@ -94,7 +95,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | Distribution | Sample dtype |
 |---|---|
 | `Bernoulli` | `Boolean` |
-| `Binomial` | `UInt64` |
+| `Binomial`, `Geometric` | `UInt64` |
 | `Beta`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
 
 | Aspect | Behaviour |

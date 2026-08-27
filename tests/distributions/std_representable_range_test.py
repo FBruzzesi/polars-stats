@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Exponential, LogNormal, Normal, Uniform
+from polars_stats import Exponential, Geometric, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
-    from polars_stats.distributions._base import ContinuousDistribution
+    from polars_stats.distributions._base import _UnivariateDistribution
 
 # One parameter per decade band that the squaring round trip destroys: `x ** 2` overflows above
 # ~1.34e154 and underflows below ~1.49e-162, while `x` itself is representable to 1.8e308 / 5e-324.
@@ -54,6 +54,20 @@ def test_uniform_std_is_the_span_over_root_twelve(span: float) -> None:
     assert got == pytest.approx(span / math.sqrt(12.0), rel=1e-15, abs=0.0)
 
 
+# `p` is a probability, so only the underflow half of `_EXTREME_SCALES` is reachable here: `p ** 2`
+# underflows below ~1.49e-162 while `sqrt(1 - p) / p` stays finite down to ~5.6e-309, where `1 / p`
+# itself overflows.
+_EXTREME_PROBABILITIES = [s for s in _EXTREME_SCALES if s < 1.0]
+
+
+@pytest.mark.parametrize("p", _EXTREME_PROBABILITIES, ids=lambda p: f"p={p:.0e}")
+def test_geometric_std_is_sqrt_one_minus_p_over_p(p: float) -> None:
+    """`Geometric(p).std()` is `sqrt(1 - p) / p` where the squared-variance route returns `inf`."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Geometric(p=p).std())["r"].item()
+    assert math.isfinite(got)
+    assert got == pytest.approx(math.sqrt(1 - p) / p, rel=1e-15, abs=0.0)
+
+
 @pytest.mark.parametrize("sigma", [1.0, 18.0, 20.0, 26.0], ids=lambda s: f"sigma={s}")
 def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
     """`LogNormal.std()` stays finite past `sigma ~ 18.8`, where the variance genuinely overflows.
@@ -74,11 +88,12 @@ def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
         (Normal(mu=0.0, sigma=2.0), 2.0),
         (Exponential(rate=4.0), 0.25),
         (Uniform(min=-3.0, max=7.0), 10.0 / math.sqrt(12.0)),
+        (Geometric(p=0.25), math.sqrt(0.75) / 0.25),
     ],
-    ids=["normal", "exponential", "uniform"],
+    ids=["normal", "exponential", "uniform", "geometric"],
 )
 def test_std_squared_still_agrees_with_variance_in_the_ordinary_range(
-    dist: ContinuousDistribution, expected: float
+    dist: _UnivariateDistribution, expected: float
 ) -> None:
     """The overrides must not drift from `variance()` where both are representable."""
     frame = pl.DataFrame({"z": [0.0]})

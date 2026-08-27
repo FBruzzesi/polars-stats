@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import mpmath as mp
 import polars as pl
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -630,6 +630,113 @@ def binomial_entropy(params: Params, _x: float) -> mp.mpf:
     return total
 
 
+# Geometric oracles.
+
+
+def geometric_pmf(params: Params, x: float) -> mp.mpf:
+    """`p (1 - p)**(k - 1)` on the positive integers, `0` off them."""
+    p = mp.mpf(params[0])
+    if x < 1 or not x.is_integer():
+        return mp.mpf(0)
+    k = int(x)
+    return p * (1 - p) ** (k - 1)
+
+
+def geometric_log_pmf(params: Params, x: float) -> mp.mpf:
+    """`ln` of [`geometric_pmf`], taken at oracle precision."""
+    return ln(geometric_pmf(params, x))
+
+
+def geometric_cdf(params: Params, x: float) -> mp.mpf:
+    """`1 - (1 - p)**floor(x)` from the support floor up, `0` below it."""
+    p = mp.mpf(params[0])
+    if x < 1:
+        return mp.mpf(0)
+    k = math.floor(x)
+    return mp.mpf(1) - (1 - p) ** k
+
+
+def geometric_sf(params: Params, x: float) -> mp.mpf:
+    """`(1 - p)**floor(x)`, the memoryless tail above the floor of `x`."""
+    p = mp.mpf(params[0])
+    if x < 1:
+        return mp.mpf(1)
+    k = math.floor(x)
+    return (1 - p) ** k
+
+
+def _geometric_search_limit(params: Params) -> int:
+    """Support point past which the tail mass `(1 - p)**k` has sunk below `1e-320`.
+
+    Bounds the discrete inverse searches ([`smallest_satisfying`] wants a finite bracket): the
+    smallest probed quantile is `1e-300`, so a bracket this deep always contains the answer while
+    staying inside float64's exact-integer range for every audited `p`.
+    """
+    p = params[0]
+    if p >= 1.0:
+        return 1
+    return max(2, math.ceil(math.log(1e-320) / math.log1p(-p)))
+
+
+def geometric_ppf(params: Params, q: float) -> mp.mpf:
+    """Smallest support point with `cdf(k) >= q`, by exact binary search over the oracle cdf."""
+    if q <= 0:
+        return mp.mpf(1)
+    if q >= 1:
+        # Below the degenerate `p = 1` point mass no finite `k` accumulates all the mass; at it,
+        # every quantile inverts to the support floor.
+        return mp.mpf(1) if params[0] >= 1.0 else mp.inf
+    target = mp.mpf(q)
+    limit = _geometric_search_limit(params)
+    return smallest_satisfying(limit, lambda k: geometric_cdf(params, float(k)) >= target)
+
+
+def geometric_isf(params: Params, q: float) -> mp.mpf:
+    """Smallest support point with `sf(k) <= q`, the exact inverse survival function."""
+    if q >= 1:
+        return mp.mpf(1)
+    if q <= 0:
+        # At the `p = 1` point mass `sf(1) = 0` already satisfies the inequality; below it the tail
+        # never reaches zero.
+        return mp.mpf(1) if params[0] >= 1.0 else mp.inf
+    target = mp.mpf(q)
+    limit = _geometric_search_limit(params)
+    return smallest_satisfying(limit, lambda k: geometric_sf(params, float(k)) <= target)
+
+
+def geometric_entropy(params: Params, _x: float) -> mp.mpf:
+    """`(-p ln p - (1 - p) ln(1 - p)) / p`, the elementary closed form."""
+    p = mp.mpf(params[0])
+    if p == 1:
+        return mp.mpf(0)
+    q = 1 - p
+    return -(q * mp.log(q) + p * mp.log(p)) / p
+
+
+LOG_SMALLEST_SUBNORMAL = float(mp.log(SMALLEST_SUBNORMAL))
+"""`ln(2**-1074)`, about -744.4: the point `k * log1p(-p)` crosses on its way to a zero linear tail."""
+
+
+def geometric_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """The first few support points and their gaps, random support integers, and the deep tail.
+
+    `k_underflow = ln(2**-1074) / log1p(-p)` is where `(1 - p)**k` reaches `0.0` and only the log
+    methods can still answer. Probing on both sides of it is the whole point of auditing a geometric
+    tail: below it every method is finite, above it `sf` / `cdf` are expected to read `UNDERFLOW`
+    while `log_sf` / `log_cdf` must stay `OK`. The random probes are capped well short of that at a
+    small `p` (`50 / p` is 5e9 at `p = 1e-8`), so without these the sweep never gets there.
+    """
+    points: list[Point] = [(v, "danger") for v in (-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0)]
+    # `p = 1` puts the whole mass on `k = 1`: the tail is exactly zero from `k = 2`, `log1p(-p)` has
+    # no value, and there is no underflow point to straddle.
+    if params[0] < 1.0:
+        underflow = LOG_SMALLEST_SUBNORMAL / math.log1p(-params[0])
+        points.extend((float(math.ceil(underflow * fraction)), "danger") for fraction in (0.5, 1.0, 4.0))
+    max_probe = int(min(max(50.0, 50.0 / params[0]), 2_000_000))
+    points.extend((float(rng.randint(1, max_probe)), "random") for _ in range(count))
+    return points
+
+
 # Shared moment oracles, lifted into the standard signature.
 
 
@@ -1139,6 +1246,43 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                         SPECIAL_RTOL,
                     ),
                     MethodSpec("entropy", binomial_entropy, DISCRETE_LOG_RTOL, max_first_param=1000.0),
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="Geometric",
+            build=lambda p: Geometric(p=p[0]),
+            param_names=("p",),
+            param_dtypes=(pl.Float64(),),
+            # `0.5` makes every power-of-two quantile boundary (`q = 0.75` against `p = 0.5`) land
+            # exactly at oracle precision, which is where a discrete inverse most wants to slip an
+            # off-by-one; `1e-8` is the smallest audited `p` because smaller values push the inverse
+            # search bracket past float64's exact-integer range.
+            params=(
+                (0.3,),
+                (0.5,),
+                (0.9,),
+                (0.999,),
+                (0.001,),
+                (1e-8,),
+                (1 - 1e-12,),
+                (1.0,),
+            ),
+            methods=(
+                MethodSpec("pmf", geometric_pmf, CLOSED_FORM_RTOL, geometric_points),
+                MethodSpec("log_pmf", geometric_log_pmf, LOG_RTOL, geometric_points),
+                MethodSpec("cdf", geometric_cdf, CLOSED_FORM_RTOL, geometric_points),
+                MethodSpec("log_cdf", log_pair(geometric_cdf, geometric_sf), LOG_RTOL, geometric_points),
+                MethodSpec("sf", geometric_sf, CLOSED_FORM_RTOL, geometric_points),
+                MethodSpec("log_sf", log_pair(geometric_sf, geometric_cdf), LOG_RTOL, geometric_points),
+                MethodSpec("ppf", geometric_ppf, DISCRETE_PPF_RTOL, quantile_points),
+                MethodSpec("isf", geometric_isf, DISCRETE_PPF_RTOL, survival_points),
+                *moments(
+                    constant(lambda p: 1 / mp.mpf(p[0])),
+                    constant(lambda p: (1 - mp.mpf(p[0])) / mp.mpf(p[0]) ** 2),
+                    at_median(geometric_ppf),
+                    geometric_entropy,
+                    CLOSED_FORM_RTOL,
                 ),
             ),
         ),

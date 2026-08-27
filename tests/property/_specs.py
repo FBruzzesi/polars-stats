@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp
+from math import ceil, exp, log, log1p
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -131,6 +131,32 @@ _BINOMIAL = DistSpec(
     support=lambda p: [float(k) for k in range(int(p[0]) + 1)],
 )
 
+
+def _geometric_support_limit(p: float) -> int:
+    """Smallest `k` whose tail mass `(1 - p)**k` falls below `1e-15`.
+
+    The geometric support is infinite, so the suite truncates it where the missing tail sits far
+    below its mass tolerance. At the degenerate `p = 1` the whole mass sits on `k = 1`."""
+    return 1 if p >= 1.0 else ceil(log(1e-15) / log1p(-p))
+
+
+_GEOMETRIC = DistSpec(
+    name="geometric",
+    continuous=False,
+    # `p` spans `(0, 1]`: unlike Bernoulli there is no `p = 0` point mass, since "never succeeds"
+    # has no moments and statrs rejects it.
+    params=st.tuples(_finite(0.05, 1.0)),
+    make=lambda p: Geometric(p=p[0]),
+    make_columns=lambda p: Geometric(p=_col(p[0])),
+    make_masked=lambda p, m: Geometric(p=pl.when(~m).then(_col(p[0]))),
+    make_literals=lambda p: Geometric(p=_lit(p[0])),
+    make_series=lambda p: Geometric(p=_series(p[0])),
+    example=(0.3,),
+    density=lambda d, c: d.pmf(c),
+    eval_range=lambda p: (-1.0, float(_geometric_support_limit(p[0]) + 1)),
+    support=lambda p: [float(k) for k in range(1, _geometric_support_limit(p[0]) + 1)],
+)
+
 _NORMAL = DistSpec(
     name="normal",
     continuous=True,
@@ -222,7 +248,7 @@ _BETA = DistSpec(
     integration_bounds=lambda _: (0.0, 1.0),
 )
 
-ALL_SPECS = [_BERNOULLI, _BINOMIAL, _NORMAL, _UNIFORM, _LOGNORMAL, _EXPONENTIAL, _BETA]
+ALL_SPECS = [_BERNOULLI, _BINOMIAL, _GEOMETRIC, _NORMAL, _UNIFORM, _LOGNORMAL, _EXPONENTIAL, _BETA]
 CONTINUOUS_SPECS = [s for s in ALL_SPECS if s.continuous]
 DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 
@@ -234,8 +260,15 @@ DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 ULP_TOLERANT_VALUE_SPECS = frozenset({"uniform", "exponential"})
 """Specs whose value-keyed methods compare to `ULP_REL_TOL` instead of bit-exactly."""
 
-ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform"})
-"""Specs whose moments compare to `ULP_REL_TOL` instead of bit-exactly."""
+ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform", "geometric"})
+"""Specs whose moments compare to `ULP_REL_TOL` instead of bit-exactly.
+
+`geometric` is here for `std` and `entropy` only, and for a narrower reason than `uniform`: both
+divide by the parameter itself, and `_col`'s `pl.repeat` keeps `p` in polars' scalar-backed
+representation, whose division kernel is a reciprocal multiply rather than an exactly-rounded divide.
+A materialised `p` column and a `pl.lit(pl.Series(...))` one both stay bit-exact against the fast
+path (0 divergences over 300 random `p`); only the `pl.repeat` spelling moves the last bit.
+"""
 
 ULP_REL_TOL = 1e-15
 """~4x a double's ULP."""

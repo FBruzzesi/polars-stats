@@ -7,8 +7,8 @@ In Rust both plugins call the same named per-method body, so for any parameteris
 must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]`` contract. A
 divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
 
-Bit-equality holds wherever a single Rust body feeds both paths. ``bernoulli``, ``uniform`` and ``exponential``
-have no Rust value-keyed plugin: both evaluate the same Polars expression, and the scalar path does it on
+Bit-equality holds wherever a single Rust body feeds both paths. ``bernoulli``, ``uniform``, ``exponential`` and
+``geometric`` have no Rust value-keyed plugin: both evaluate the same Polars expression, and the scalar path does it on
 length-1 operands, so polars may fold it differently. Where that moves the last bit
 (``ULP_TOLERANT_VALUE_SPECS``) the comparison is 1 ULP; the rest stay exact.
 """
