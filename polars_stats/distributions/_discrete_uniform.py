@@ -5,10 +5,8 @@ from typing import TYPE_CHECKING, ClassVar
 import polars as pl
 
 from polars_stats.distributions._base import (
-    ROW_INDEX_EXPR,
     DiscreteDistribution,
     coerce_int,
-    register_plugin,
     scalar_int,
     scalar_kwargs,
 )
@@ -16,9 +14,13 @@ from polars_stats.distributions._base import (
 if TYPE_CHECKING:
     from polars_stats._typing import IntoExprColumn
 
-_INV_12 = 1 / 12
-"""The correctly rounded ``1 / 12``, multiplied rather than divided against so the constant-parameter
-and per-row kernels cannot disagree in the last bit (see `n`)."""
+_ONE_TWELFTH = 1 / 12
+"""The correctly rounded ``1 / 12``.
+
+Multiplied by rather than divided against: polars spells ``column / 12`` as an honest division up to
+eight rows and as a reciprocal multiply above, so dividing would make ``variance`` row-count
+dependent. Costs a third of an ulp against a correctly rounded quotient.
+"""
 
 
 class DiscreteUniform(DiscreteDistribution):
@@ -26,7 +28,11 @@ class DiscreteUniform(DiscreteDistribution):
 
     Equivalent to ``scipy.stats.randint(low=min, high=max + 1)``. The ``max`` argument is
     **inclusive**, unlike scipy's exclusive ``high``: the support is ``{min, ..., max}`` and
-    ``cdf(max) == 1``. This is the single most common trap when porting scipy code.
+    ``cdf(max) == 1``.
+
+    Two further divergences from scipy: ``median`` is the midpoint ``(min + max) / 2``, not the
+    support point scipy's ``ppf(0.5)`` reports, and ``ppf(0)`` / ``isf(1)`` clamp to the support
+    rather than answering its below-support sentinel ``min - 1``.
 
     Arguments:
         min: Inclusive lower bound, an integer. Either a Python ``int`` or an ``IntoExprColumn``
@@ -34,10 +40,9 @@ class DiscreteUniform(DiscreteDistribution):
         max: Inclusive upper bound, with ``max >= min`` (``min == max`` is a one-point mass). Same
             accepted types as ``min``.
 
-    An invalid parameterisation (``max < min``, or a width ``max - min + 1`` that overflows
-    ``Int64``) is not checked at construction; matching every other distribution, it raises
-    ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Null bounds propagate
-    to null.
+    An invalid parameterisation (``max < min``, or a width ``max - min + 1`` overflowing ``Int64``)
+    is not checked at construction; as everywhere, it raises ``InvalidOperation`` (a
+    ``ComputeError``) when a method is evaluated. Null bounds propagate to null.
     """
 
     _min: pl.Expr
@@ -54,54 +59,111 @@ class DiscreteUniform(DiscreteDistribution):
         return (self._min, self._max)
 
     @property
-    def n(self) -> pl.Expr:
-        """Support count ``N = max - min + 1``, computed by the Rust range validator as ``Float64``.
+    def support_size(self) -> pl.Expr:
+        """Support count ``N = max - min + 1``, as ``Float64``.
 
-        Every closed-form method divides by this, so the validator is what makes them raise on an
-        invalid parameterisation (``max < min``, an overflowing width) consistently with the sampler;
-        null bounds propagate. Both the constant-parameter and the per-row routing consume the
-        validator's own output rather than a Polars-recomputed fallback: with literals, folding
-        ``max - min + 1`` into a constant lets the engine turn those divisions into reciprocal
-        multiplies, which drifts the scalar path a few ulps from the per-row kernel and breaks
-        fast-path bit-equality on exactly the methods this distribution exists to provide.
+        Validated in Rust so every closed form raises on an invalid parameterisation (``max < min``,
+        an overflowing width) consistently with the sampler; null bounds propagate. Above ``2**53``
+        the count itself is rounded. Each mention is one validator pass over the bounds.
         """
-        if self._scalar_kwargs is None:
-            return register_plugin("discreteuniform_range", self._param_exprs)
-        return register_plugin("discreteuniform_range", self._scalar_lit_args())
+        return self._checked_plugin_output("discreteuniform_range")
 
     @property
     def _checked_params(self) -> pl.Expr:
-        """The validated support count; see `n`."""
-        return self.n
+        """The validated support count; see `support_size`."""
+        return self.support_size
 
     @property
-    def _inv_n(self) -> pl.Expr:
-        """``1 / n``, read off the validator once so every consumer multiplies by the same rounded reciprocal.
+    def _point_mass(self) -> pl.Expr:
+        """``1 / support_size``, the mass on each support point.
 
-        Dividing by ``n`` directly is not bit-stable across the two parameter routings: polars
-        divides a column by a broadcast scalar through a different code path than column by column,
-        and the two disagree in the last bit. Multiplying by a single materialised ``1 / n`` removes
-        the fork -- every method below performs the very same multiplication on both paths.
+        Read off the validator once so every consumer multiplies the same reciprocal: polars divides
+        a column by a broadcast scalar through a different code path than column by column, and the
+        two disagree in the last bit. Costs one or two ulp against an exact quotient.
         """
-        return 1 / self.n
+        return 1 / self.support_size
 
-    def _on_support(self, value: pl.Expr) -> pl.Expr:
+    @property
+    def _min_f64(self) -> pl.Expr:
+        """``min`` as ``Float64``, the operand the inverses clip against."""
+        return self._min.cast(pl.Float64())
+
+    @property
+    def _max_f64(self) -> pl.Expr:
+        """``max`` as ``Float64``, the operand the inverses clip against."""
+        return self._max.cast(pl.Float64())
+
+    @property
+    def _midpoint(self) -> pl.Expr:
+        """``(min + max) / 2``, formed as ``min + (max - min) // 2`` to stay in ``Int64``.
+
+        ``min + max`` overflows well inside the range the validator accepts, and casting each bound to
+        ``Float64`` first rounds both before they cancel (``1.2e-13`` relative for bounds straddling
+        zero). The width is exact in ``Int64`` and ``min + width // 2`` lies in ``[min, max]``, so the
+        cast is the only rounding.
+        """
+        width = self._max - self._min
+        return (self._min + width // 2).cast(pl.Float64()) + (width % 2) * 0.5
+
+    def _is_on_support(self, value: pl.Expr) -> pl.Expr:
         """Whether ``value`` is an integer inside ``[min, max]``, where the mass sits."""
         return (value >= self._min) & (value <= self._max) & (value.floor() == value)
+
+    def _points_at_or_below(self, value: pl.Expr) -> pl.Expr:
+        """``k``, the number of support points at or below ``value``.
+
+        Only ever read where ``k`` lies in ``[1, N - 1]``, which is what keeps the subtraction in
+        ``Int64`` where it is exact. Rows outside the support do evaluate it and may wrap; their
+        branch discards the result.
+        """
+        return value.floor() - self._min + 1
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 / N`` on the integer support, ``0`` off it, ``null`` for null bounds.
 
-        The second ``when`` arm is load bearing: ``on_support`` reads the bounds, so a null bound
-        makes its condition -- not its result -- null, and an unmatched ``when`` arm would silently
-        route a null-bounds row into the ``0.0`` off-support answer. Re-checking ``n``'s nullness
-        turns those rows back into nulls, on both engines.
+        The null branch is explicit because `_is_on_support` reads the bounds, so a null bound makes
+        its condition null rather than false, and a bare ``otherwise(0.0)`` would report a confident
+        "off the support" for a row whose support is unknown.
         """
         return (
-            pl.when(self._on_support(value))
-            .then(self._inv_n)
-            .when(self.n.is_not_null())
+            pl.when(self._is_on_support(value))
+            .then(self._point_mass)
+            .when(self.support_size.is_not_null())
             .then(0.0)
+            .otherwise(pl.lit(None, dtype=pl.Float64()))
+        )
+
+    def _log_pmf(self, value: pl.Expr) -> pl.Expr:
+        """``-log(N)`` on the integer support, ``-inf`` off it, ``null`` for null bounds.
+
+        Overrides the base ``pmf().log()`` to skip the division: the mass is exactly ``1 / N``, so its
+        log reads straight off the count. Same null branch as `_pmf`.
+        """
+        return (
+            pl.when(self._is_on_support(value))
+            .then(-self.support_size.log())
+            .when(self.support_size.is_not_null())
+            .then(float("-inf"))
+            .otherwise(pl.lit(None, dtype=pl.Float64()))
+        )
+
+    def _cdf(self, value: pl.Expr) -> pl.Expr:
+        """``k * (1 / N)`` inside the support, ``0`` below ``min``, ``1`` from ``max`` up.
+
+        The explicit endpoints make ``cdf(max) == 1`` an answer rather than the limit of a clamp,
+        which is the visible difference from scipy's exclusive upper bound: ``N * (1 / N)`` is not
+        ``1.0`` for 483 of the first 4000 support counts. They also keep `_points_at_or_below` inside
+        the support, where its subtraction is exact.
+        """
+        return (
+            pl.when(self.support_size.is_not_null())
+            .then(
+                pl.when(value < self._min)
+                .then(0.0)
+                .when(value >= self._max)
+                .then(1.0)
+                .otherwise(self._points_at_or_below(value) * self._point_mass)
+            )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
@@ -109,123 +171,130 @@ class DiscreteUniform(DiscreteDistribution):
         """``(max - floor(value)) * (1 / N)`` inside the support, ``1`` below ``min``, ``0`` from ``max`` up.
 
         A direct count of the support points above ``value``, mirroring `_cdf`. Overrides the base
-        ``1 - cdf``, whose subtraction absorbs the whole tail once the cdf rounds towards ``1`` --
-        a few parts in ``1e11`` of relative error at ``N ~ 1e6``, where the true sf is ``1 / N``.
-
-        The whole chain sits behind a ``n.is_not_null()`` gate: the ``1.0`` below-support branch reads
-        only ``min``, so without the gate a null ``max`` would answer ``1.0`` instead of propagating.
+        ``1 - cdf``, whose subtraction absorbs the whole tail once the cdf rounds towards ``1``. The
+        chain sits behind a null gate because the ``1.0`` branch reads only ``min``.
         """
         return (
-            pl.when(self.n.is_not_null())
+            pl.when(self.support_size.is_not_null())
             .then(
                 pl.when(value < self._min)
                 .then(1.0)
                 .when(value >= self._max)
                 .then(0.0)
-                .otherwise((self._max.cast(pl.Float64()) - value.floor()) * self._inv_n)
+                .otherwise((self._max - value.floor()) * self._point_mass)
             )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
-    def _log_pmf(self, value: pl.Expr) -> pl.Expr:
-        """``-log(N)`` on the integer support, ``-inf`` off it, ``null`` for null bounds.
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """``log(k / N)``, through ``log1p`` of the survival ratio once the cdf passes one half.
 
-        Overrides the base ``pmf().log()`` only to skip the pointless division: the mass is exactly
-        ``1 / N``, so its log reads straight off the count. The extra ``when`` arm preserves null
-        bounds for the reason in `_pmf`.
+        Overrides the base ``cdf().log()``, whose relative error one support point below the top grows
+        with ``N``: ``8.7e-16`` at ``N = 1e3`` but ``2.8e-08`` at ``N = 1e9``. Same branch
+        `Uniform._log_cdf` takes. The null gate is there for the reason in `_sf`.
         """
+        count = self._points_at_or_below(value)
         return (
-            pl.when(self._on_support(value))
-            .then(-self.n.log())
-            .when(self.n.is_not_null())
-            .then(float("-inf"))
+            pl.when(self.support_size.is_not_null())
+            .then(
+                pl.when(value < self._min)
+                .then(float("-inf"))
+                .when(value >= self._max)
+                .then(0.0)
+                .when(count * 2.0 > self.support_size)
+                .then((-((self.support_size - count) * self._point_mass)).log1p())
+                .otherwise((count * self._point_mass).log())
+            )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
-    def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``(floor(value) - min + 1) * (1 / N)`` clamped to ``[0, 1]``.
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """The mirror of `_log_cdf`: the near-certain side is the lower one, so ``log1p`` sits there.
 
-        The floor counts the support points at or below ``value``; clamping covers everything below
-        ``min`` (a non-positive numerator) and above ``max`` (a numerator past ``N``), so
-        ``cdf(max) == 1`` exactly -- the inclusive upper bound is the visible difference from scipy's
-        exclusive one. The count enters through `_inv_n`; see that property for why this is a
-        multiplication rather than a division.
+        ``0`` below ``min`` and ``-inf`` at or above ``max``, and the same null gate.
         """
-        return ((value.floor() - self._min + 1) * self._inv_n).clip(0.0, 1.0)
+        count = self._points_at_or_below(value)
+        return (
+            pl.when(self.support_size.is_not_null())
+            .then(
+                pl.when(value < self._min)
+                .then(0.0)
+                .when(value >= self._max)
+                .then(float("-inf"))
+                .when(count * 2.0 > self.support_size)
+                .then(((self.support_size - count) * self._point_mass).log())
+                .otherwise((-(count * self._point_mass)).log1p())
+            )
+            .otherwise(pl.lit(None, dtype=pl.Float64()))
+        )
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """``min + ceil(quantile * N) - 1``, corrected and clamped; null outside ``[0, 1]``.
 
-        The closed form matches scipy's ``randint.ppf`` -- not just the ceiling formula but its
-        correction step, which probes ``k - 1`` (clamped into the support) and keeps it whenever its
-        cdf already reaches ``quantile``. That probe is what settles the step-boundary cases: an
-        ulp of noise in ``quantile * N`` around an exact integer would otherwise skip a support
-        point, and matching scipy means resolving them the same way rather than hoping the grids
-        miss them.
+        Matches scipy's ``randint.ppf`` including its correction step, which probes the point below and
+        keeps it whenever that point's cdf already reaches ``quantile``, settling the step boundaries
+        where an ulp of noise in ``quantile * N`` would skip a support point. The probe's ``>=`` has no
+        slack, so it reads an honestly rounded column-by-column quotient; that is why the validator
+        takes ``quantile`` as a `_checked_plugin_output` length input, which makes it run per row.
 
-        The count enters through `n_rowwise` -- validated at the frame's full height, not broadcast
-        from a length-1 value. The correction's ``>=`` has no slack, so it needs the honestly
-        rounded quotient of a column-by-column division: polars rewrites a division by a broadcast
-        scalar as a reciprocal multiply, whose last bit lands on either side of the step depending
-        on the engine.
+        Both inverses lose support points above ``2**53``; see docs/explanation/accuracy.md.
         """
-        if self._scalar_kwargs is None:
-            n_rowwise = register_plugin("discreteuniform_range_rowwise", [*self._param_exprs, ROW_INDEX_EXPR])
-        else:
-            n_rowwise = register_plugin("discreteuniform_range_rowwise", [*self._scalar_lit_args(), ROW_INDEX_EXPR])
-        lo = self._min.cast(pl.Float64())
-        hi = self._max.cast(pl.Float64())
-        candidate = lo + (quantile * n_rowwise).ceil() - 1.0
-        stepped = (candidate - 1.0).clip(lo, hi)
+        support_size_per_row = self._checked_plugin_output("discreteuniform_range", quantile)
+        min_f64, max_f64 = self._min_f64, self._max_f64
+        candidate = min_f64 + (quantile * support_size_per_row).ceil() - 1.0
+        point_below = (candidate - 1.0).clip(min_f64, max_f64)
         return (
             pl.when(quantile.is_between(0, 1))
             .then(
-                pl.when((stepped.floor() - self._min + 1) / n_rowwise >= quantile)
-                .then(stepped)
+                pl.when(self._points_at_or_below(point_below) / support_size_per_row >= quantile)
+                .then(point_below)
                 .otherwise(candidate)
-                .clip(lo, hi)
+                .clip(min_f64, max_f64)
             )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``max - floor(quantile * N)``, clamped to the support; null outside ``[0, 1]``.
+        """``max - floor(quantile * N)``, corrected and clamped; null outside ``[0, 1]``.
 
-        Entered against ``quantile`` itself, not the base ``ppf(1 - quantile)``: the complement
-        rounds before the inverse runs, and on this distribution that flips whole support points --
-        the survival steps sit at multiples of ``1 / N``, exactly where ``1 - q`` has spent its
-        precision. In real arithmetic this is the same function (smallest ``k`` with
-        ``(max - k) / N <= q``), and at ``q = 0`` it reads ``max`` directly, where ``sf(max) = 0``
-        already satisfies the inequality.
+        The smallest support point whose survival mass is at most ``quantile``. Entered against
+        ``quantile`` itself rather than the base ``ppf(1 - quantile)``: the complement rounds before the
+        inverse runs, and the survival steps sit at multiples of ``1 / N``, exactly where ``1 - q`` has
+        spent its precision.
+
+        The correction mirrors `_ppf`'s but probes the neighbour **above**, the only direction it can
+        need: a rounded ``quantile * N`` can only floor one too high.
         """
-        lo = self._min.cast(pl.Float64())
-        hi = self._max.cast(pl.Float64())
+        support_size_per_row = self._checked_plugin_output("discreteuniform_range", quantile)
+        min_f64, max_f64 = self._min_f64, self._max_f64
+        candidate = max_f64 - (quantile * support_size_per_row).floor()
         return (
             pl.when(quantile.is_between(0, 1))
-            .then((hi - (quantile * self.n).floor()).clip(lo, hi))
+            .then(
+                pl.when((max_f64 - candidate) / support_size_per_row <= quantile)
+                .then(candidate)
+                .otherwise(candidate + 1.0)
+                .clip(min_f64, max_f64)
+            )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
 
     def mean(self) -> pl.Expr:
-        """Expected value, ``(min + max) / 2``."""
-        return self._moment((self._min + self._max) / 2)
+        """Expected value, ``(min + max) / 2``. See `_midpoint` for how the sum avoids overflowing."""
+        return self._moment(self._midpoint)
 
     def variance(self) -> pl.Expr:
         """Variance, ``(N**2 - 1) / 12``."""
-        return self._moment((self.n**2 - 1) * _INV_12)
+        return (self.support_size**2 - 1) * _ONE_TWELFTH
 
     def median(self) -> pl.Expr:
-        """Median, ``(min + max) / 2``.
+        """Median, the midpoint ``(min + max) / 2``, which for an even support size is not a support point.
 
-        Overrides the base ``ppf(0.5)``, which would answer a support point: for even ``N`` the
-        midpoint falls between two of them, and it is the midpoint scipy reports too.
+        Overrides the base ``ppf(0.5)``, and **diverges from scipy**, which reports that support point:
+        ``scipy.stats.randint(low=1, high=7).median()`` is ``3.0`` against this crate's ``3.5``.
         """
-        return self._moment((self._min + self._max) / 2)
+        return self._moment(self._midpoint)
 
     def entropy(self) -> pl.Expr:
-        """Shannon entropy in nats, ``log(N)``.
-
-        statrs implements no entropy for this distribution, but every outcome carries mass ``1 / N``,
-        so the support sum collapses to the elementary form and lives here rather than in Rust.
-        """
-        return self._moment(self.n.log())
+        """Shannon entropy in nats, ``log(N)``."""
+        return self.support_size.log()

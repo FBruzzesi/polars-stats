@@ -16,8 +16,8 @@ def test_variance(lo: int, hi: int, expected: float, unit_frame: pl.DataFrame) -
     assert result == pytest.approx(expected)
 
 
-def test_std() -> None:
-    got = pl.DataFrame({"_": [0]}).select(v=DiscreteUniform(min=1, max=6).std())["v"][0]
+def test_std(unit_frame: pl.DataFrame) -> None:
+    got = unit_frame.select(v=DiscreteUniform(min=1, max=6).std()).item(0, "v")
     assert got == pytest.approx((35 / 12) ** 0.5)
 
 

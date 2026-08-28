@@ -58,14 +58,18 @@ def test_samples_mean_close_to_midpoint_for_large_total(
 
 def test_samples_scalar_fast_path_matches_per_row() -> None:
     n, size = 256, 4
-    dframe = pl.DataFrame({"lo": [-3] * n, "hi": [7] * n}).head(n)
-    scalar = dframe.head(n).select(s=DiscreteUniform(min=-3, max=7).samples(size=size, seed=11))["s"]
-    per_row = (
-        dframe.head(n)
-        .with_columns(pl.col("lo").cast(pl.Int64), pl.col("hi").cast(pl.Int64))
-        .select(s=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).samples(size=size, seed=11))["s"]
-    )
+    dframe = pl.DataFrame({"lo": [-3] * n, "hi": [7] * n}, schema={"lo": pl.Int64, "hi": pl.Int64})
+    scalar = dframe.select(s=DiscreteUniform(min=-3, max=7).samples(size=size, seed=11))["s"]
+    per_row = dframe.select(s=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).samples(size=size, seed=11))["s"]
     assert_series_equal(scalar, per_row)
+
+
+def test_samples_of_size_one_matches_sample(frame: Callable[..., pl.DataFrame], seed: int) -> None:
+    # Both paths draw through the same `fn draw`, so the first draw of a row's stream is shared.
+    dframe = frame(size=128)
+    one = dframe.select(s=DiscreteUniform(min=1, max=6).samples(size=1, seed=seed))["s"].arr.get(0)
+    single = dframe.select(k=DiscreteUniform(min=1, max=6).sample(seed=seed))["k"]
+    assert_series_equal(one, single, check_names=False)
 
 
 @pytest.mark.parametrize("bad_size", [0, -1])

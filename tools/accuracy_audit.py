@@ -1375,7 +1375,8 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             param_names=("min", "max"),
             param_dtypes=(pl.Int64(), pl.Int64()),
             # Both bounds inclusive. The regimes cover negative bounds, a one-point mass (`min ==
-            # max`), a two-point support, and a wide span that stresses the inverse searches.
+            # max`), a two-point support, a wide span that stresses the inverse searches, and a
+            # support large enough that the log methods have a tail to lose (`1 / N ~ 1e-9`).
             params=(
                 (0, 5),
                 (-4, 4),
@@ -1385,6 +1386,7 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 (-20, -10),
                 (-1000, 1000),
                 (0, 10**6),
+                (0, 10**9),
             ),
             methods=(
                 MethodSpec("pmf", discrete_uniform_pmf, CLOSED_FORM_RTOL, discrete_uniform_points),
@@ -1412,6 +1414,37 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     constant(lambda p: mp.log(_discrete_uniform_n(p))),
                     CLOSED_FORM_RTOL,
                 ),
+            ),
+        ),
+        DistributionSpec(
+            # The moments only, at bounds where `min + max` overflows `Int64`: the regime that
+            # catches an integer formula wrapping, which no span inside `10**6` can reach.
+            #
+            # The value-keyed methods are absent because a probe arrives as a `float` and a support
+            # this narrow collapses onto one `Float64` (the step is 1024 wide at `2**62`), so no
+            # answer can distinguish its points; `cdf_test.py` and `sf_test.py` pin the exact `int`
+            # spelling instead. `ppf` / `isf` are absent for a different reason: they genuinely lose
+            # points here, on the output side, and that limit is recorded in
+            # `docs/explanation/accuracy.md` rather than audited.
+            name="DiscreteUniformI64Edge",
+            build=lambda p: DiscreteUniform(min=p[0], max=p[1]),
+            param_names=("min", "max"),
+            param_dtypes=(pl.Int64(), pl.Int64()),
+            params=(
+                # Narrow and wide on each side. Every pair overflows `min + max` while keeping the
+                # width `max - min + 1` inside `i64::MAX`, which is what the validator itself checks:
+                # a pair that overflows the width is a legitimate `ComputeError`, not a probe.
+                (2**62, 2**62 + 10),
+                (2**62, 2**63 - 1),
+                (-(2**63) + 1, -(2**63) + 11),
+                (-(2**63) + 1, -(2**62)),
+            ),
+            methods=moments(
+                constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
+                constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
+                constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
+                constant(lambda p: mp.log(_discrete_uniform_n(p))),
+                CLOSED_FORM_RTOL,
             ),
         ),
     )

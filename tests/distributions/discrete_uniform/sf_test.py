@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fractions import Fraction
+
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal
@@ -34,3 +36,26 @@ def test_sf_column_value() -> None:
 def test_sf_propagates_null_in_bounds(bounds_with_null: pl.DataFrame) -> None:
     result = bounds_with_null.select(r=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).sf(2.0))["r"]
     assert_series_equal(result, pl.Series("r", [4 / 6, None, None], dtype=pl.Float64))
+
+
+@pytest.mark.parametrize("offset", [0, 1, 5, 9, 10])
+def test_sf_is_exact_for_an_int_value_in_a_narrow_support_past_the_float_grid(
+    offset: int, unit_frame: pl.DataFrame
+) -> None:
+    """The `cdf` mirror: `max - floor(value)` is subtracted in `Int64` and stays exact."""
+    lo = 2**62
+    hi = lo + 10
+    n = hi - lo + 1
+    result = unit_frame.select(v=DiscreteUniform(min=lo, max=hi).sf(lo + offset)).item(0, "v")
+    assert result == pytest.approx(float(Fraction(hi - lo - offset, n)), rel=1e-15)
+
+
+def test_sf_below_min_is_exactly_one_for_every_support_count_up_to_4000() -> None:
+    """The `cdf(max) == 1` mirror: below the support the survival mass is exactly 1, not `N * (1/N)`."""
+    counts = range(1, 4001)
+    df = pl.DataFrame(
+        {"lo": [0] * len(counts), "hi": [c - 1 for c in counts], "x": [-1.0] * len(counts)},
+        schema_overrides={"lo": pl.Int64, "hi": pl.Int64},
+    )
+    result = df.select(r=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).sf("x"))["r"]
+    assert_series_equal(result, pl.Series("r", [1.0] * len(counts), dtype=pl.Float64))

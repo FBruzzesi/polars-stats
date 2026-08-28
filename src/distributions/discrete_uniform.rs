@@ -1,4 +1,3 @@
-#![allow(clippy::unused_unit)]
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
@@ -79,28 +78,15 @@ impl DiscreteUniformParamsKwargs {
 /// Every closed-form Python method divides by this count, so routing it through Rust is what lets
 /// them report an invalid parameterisation consistently with `discreteuniform_sample`, instead of
 /// silently dividing by zero or a negative.
+///
+/// Callers that need one count *per row* rather than a broadcast scalar append a third input, whose
+/// height [`align_inputs`] broadcasts the bounds up to; the closure never reads it. `_ppf` and `_isf`
+/// need that, because their step-boundary correction divides by the count and compares against the
+/// quantile with no slack: a length-1 count makes polars see a broadcast-scalar division, which the
+/// in-memory engine evaluates as a reciprocal multiply, one ulp from the true division and exactly at
+/// the steps where that flips the comparison to the wrong side of a support point.
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_range(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let min = coerce_bound(&inputs[0])?;
-    let max = coerce_bound(&inputs[1])?;
-
-    validate_params_binary(&min, &max, |lo, hi| {
-        build_dist(lo, hi)?;
-        Ok((hi as i128 - lo as i128 + 1) as f64)
-    })
-}
-
-/// Row-aligned counterpart of [`discreteuniform_range`]: the third input is the row index, whose
-/// height [`align_inputs`] broadcasts the bounds up to, so the output is one count per row.
-///
-/// Exists for `_ppf`, whose step-boundary correction divides by the count and compares against the
-/// quantile with no slack: a length-1 count makes polars see a broadcast-scalar division, which the
-/// in-memory engine evaluates as a reciprocal multiply -- one ulp away from the true division, and
-/// exactly at the steps that flips the comparison to the wrong side of a support point. Dividing
-/// column by column keeps every engine on the honestly-rounded quotient.
-#[polars_expr(output_type=Float64)]
-fn discreteuniform_range_rowwise(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let min = coerce_bound(&inputs[0])?;
     let max = coerce_bound(&inputs[1])?;

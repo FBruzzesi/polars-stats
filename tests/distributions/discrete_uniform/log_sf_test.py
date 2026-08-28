@@ -27,3 +27,12 @@ def test_log_sf_propagates_null_in_bounds(bounds_with_null: pl.DataFrame) -> Non
     result = bounds_with_null.select(r=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).log_sf(2.0))["r"]
     assert result[0] == pytest.approx(math.log(4 / 6))
     assert result[1] is None
+    assert result[2] is None
+
+
+@pytest.mark.parametrize("n", [10_001, 10**5, 10**7, 10**9])
+def test_log_sf_saturation_zone_reads_the_tail(n: int) -> None:
+    """The `log_cdf` mirror: at `min` the survival mass is `1 - 1/N`, whose log needs `log1p`."""
+    lo, hi = 0, n - 1
+    got = pl.DataFrame({"x": [float(lo)]}).select(r=DiscreteUniform(min=lo, max=hi).log_sf("x"))["r"][0]
+    assert got == pytest.approx(math.log1p(-1.0 / n), rel=1e-15)

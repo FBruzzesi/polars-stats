@@ -18,26 +18,18 @@ def seed() -> int:
     return SEED
 
 
-@pytest.fixture(scope="session")
-def rng() -> np.random.Generator:
-    return np.random.default_rng(seed=SEED)
-
-
 @pytest.fixture
-def frame(rng: np.random.Generator) -> Callable[..., pl.DataFrame]:
+def frame() -> Callable[..., pl.DataFrame]:
+    """Factory for a frame with per-row bounds `lo <= hi` for column-valued sampling.
+
+    Seeds a fresh generator on every call, so the data is reproducible regardless of test execution
+    order, selection (`-k`) or sharding, rather than depending on a shared session-scoped stream.
+    """
+
     def _make(size: int = DEFAULT_SIZE) -> pl.DataFrame:
-        lo = rng.integers(-20, 10, size=size)
-        hi = lo + rng.integers(0, 30, size=size)
-        return pl.DataFrame(
-            {
-                "lo": lo,
-                "hi": hi,
-                # Evaluation points spanning below `min`, inside the support (integers and not),
-                # and above `max`.
-                "x": rng.uniform(-25.0, 45.0, size=size),
-                "q": rng.uniform(0.0, 1.0, size=size),
-            },
-        )
+        local_rng = np.random.default_rng(seed=SEED)
+        lo = local_rng.integers(-20, 10, size=size)
+        return pl.DataFrame({"lo": lo, "hi": lo + local_rng.integers(0, 30, size=size)})
 
     return _make
 
