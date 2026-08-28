@@ -88,7 +88,13 @@ A violation raises `ComputeError` and fails the whole evaluation. See
 ## Sampling
 
 `sample(seed)` returns one variate per row; `samples(size, seed)` returns `Array(inner=<element dtype>, shape=size)`.
-A `size <= 0` raises `ValueError` at call time.
+Both arguments are checked at call time. A `size <= 0` raises `ValueError`, and so does a `seed` outside
+`[0, 2**63)`. The seed crosses FFI as a pickled kwarg that Rust decodes as `i64`, one bit short of the `u64` it
+is read into, so polars' own `Expr.sample` takes seeds this library refuses. A `seed` or `size` that is not an
+`int` raises `TypeError`, `bool` and `numpy.int64` included.
+
+`size` has no maximum. A call allocates `rows * size` elements up front, so an oversized `size` fails in the
+allocator rather than in a guard, and a large enough one kills the process instead of raising.
 
 Element dtype is per distribution and is not normalised to `Float64`:
 
