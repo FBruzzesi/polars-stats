@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeGuard
 
 import polars as pl
 from polars.exceptions import PolarsError
@@ -73,6 +73,16 @@ def row_index_expr(params: Iterable[pl.Expr]) -> pl.Expr:
     return pl.int_range(0, pl.max_horizontal(pl.len(), *spans), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
 
 
+def _is_number(value: object) -> TypeGuard[int | float]:
+    """Whether `value` is a plain `int` or `float`. A `bool` is neither, though it subclasses `int`."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_int(value: object) -> TypeGuard[int]:
+    """Whether `value` is a plain `int`, with the `bool` exclusion `_is_number` makes."""
+    return _is_number(value) and isinstance(value, int)
+
+
 def _coerce(
     value: float | IntoExprColumn,
     *,
@@ -112,7 +122,7 @@ def _coerce(
         return pl.col(value)
     if isinstance(value, pl.Series):
         return pl.lit(value)
-    if isinstance(value, scalar_types) and not isinstance(value, bool):
+    if _is_number(value) and isinstance(value, scalar_types):
         return pl.lit(value, dtype=dtype)
     msg = f"{name} should be {scalar_label} or IntoExprColumn (pl.Expr, str, pl.Series), found {type(value)}"
     raise TypeError(msg)
@@ -127,21 +137,15 @@ def coerce_param(value: float | IntoExprColumn, *, name: str) -> pl.Expr:
     return _coerce(value, name=name, scalar_label="a float", scalar_types=float, dtype=pl.Float64())
 
 
-_MAX_SCALAR_COUNT = 2**63 - 1
-"""Largest count a *constant* `n` may take, which is `i64::MAX` rather than the `u64::MAX` Rust reads.
-
-The constant-parameter fast paths pass `n` as a plugin kwarg, and kwargs cross FFI as pickle, whose
-integers are `i64`. A larger constant would decode into some methods and not others (`mean` rides as a
-`pl.lit` input rather than a kwarg), so it is refused at construction instead. A column has no such
-limit: Rust widens it to `UInt64` and the whole range is a valid trial count.
-"""
+_MAX_WIRE_INT = 2**63 - 1
+"""Largest integer that reaches a plugin, `i64::MAX`: kwargs cross FFI as pickle, whose integers are `i64`."""
 
 
 def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     """Coerce an integer count parameter (e.g. binomial trial count `n`) into a `pl.Expr`.
 
     Accepts a Python `int` or an `IntoExprColumn`; a `bool` (an `int` subclass, but not a sensible count),
-    a `float`, or any other type raises `TypeError`. An `int` outside `[0, _MAX_SCALAR_COUNT]` raises
+    a `float`, or any other type raises `TypeError`. An `int` outside `[0, _MAX_WIRE_INT]` raises
     `ValueError`, the one parameter *value* judged at construction rather than at evaluation, because the
     scalar literal is `UInt64` (the dtype the Rust plugins read `n` as) and polars would otherwise refuse
     it with a message about `i64` and `u64`. A column keeps its dtype until Rust widens it to `UInt64`,
@@ -151,8 +155,8 @@ def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
         if trials < 0:
             msg = f"{name} must be a non-negative integer, got {trials}"
             raise ValueError(msg)
-        if trials > _MAX_SCALAR_COUNT:
-            msg = f"{name} must be at most {_MAX_SCALAR_COUNT} as a Python int, got {trials}: pass a column instead"
+        if trials > _MAX_WIRE_INT:
+            msg = f"{name} must be at most {_MAX_WIRE_INT} as a Python int, got {trials}: pass a column instead"
             raise ValueError(msg)
     return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.UInt64())
 
@@ -165,7 +169,7 @@ def scalar_float(value: float | IntoExprColumn) -> float | None:
     than as a length-1 input the plugin must broadcast (see `_coerce`). `bool` is an `int` subclass
     but never a valid parameter, so it is excluded and falls back to the per-row path.
     """
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return float(value) if _is_number(value) else None
 
 
 def scalar_int(value: int | IntoExprColumn) -> int | None:
@@ -173,7 +177,7 @@ def scalar_int(value: int | IntoExprColumn) -> int | None:
 
     The integer-count counterpart to `scalar_float` (e.g. binomial `n`), for the same fast-path routing.
     """
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return value if _is_int(value) else None
 
 
 def scalar_kwargs(**params: float | None) -> dict[str, float | int] | None:
@@ -198,6 +202,32 @@ def as_expr(value: float | IntoExprColumn) -> pl.Expr:
     A `bool` or other non-numeric type raises `TypeError`. See `_coerce` for the coercion rules.
     """
     return _coerce(value, name="value", scalar_label="a number (int or float)", scalar_types=(int, float))
+
+
+def _checked_int(value: object, *, name: str, expected: str = "an int") -> int:
+    """Return `value` if it is a plain `int`, else raise `TypeError` naming what arrived instead."""
+    if _is_int(value):
+        return value
+    msg = f"{name} should be {expected}, found {type(value)}"
+    raise TypeError(msg)
+
+
+def _checked_seed(seed: object) -> int | None:
+    """Return a sampler `seed` the plugin kwargs can carry to Rust, or `None` for OS entropy."""
+    if seed is None:
+        return None
+    if not 0 <= (seed := _checked_int(seed, name="seed", expected="an int or None")) <= _MAX_WIRE_INT:
+        msg = f"seed must be in [0, 2**63), got {seed}"
+        raise ValueError(msg)
+    return seed
+
+
+def _checked_size(size: object) -> int:
+    """Return a positive draw count. There is no maximum: an oversized one dies in the allocator, not here."""
+    if (size := _checked_int(size, name="size")) <= 0:
+        msg = f"size must be a positive integer, got {size}"
+        raise ValueError(msg)
+    return size
 
 
 def register_plugin(
@@ -344,6 +374,7 @@ class _UnivariateDistribution(ABC):
         parameter the name follows the first parameter expression (polars root-name semantics, so
         `.name.*` modifiers keep working).
         """
+        seed = _checked_seed(seed)
         if self._scalar_kwargs is not None:
             return register_plugin(
                 f"{self._plugin_prefix}_sample_scalar",
@@ -369,10 +400,7 @@ class _UnivariateDistribution(ABC):
         Naming follows `sample`: `"samples"` with all-constant parameters, the first parameter
         expression's root name otherwise.
         """
-        if size <= 0:
-            msg = f"size must be a positive integer, got {size}"
-            raise ValueError(msg)
-        out = self._samples(size=size, seed=seed)
+        out = self._samples(size=_checked_size(size), seed=_checked_seed(seed))
         return out.alias("samples") if self._scalar_kwargs is not None else out
 
     def _samples(self, size: int, seed: int | None = None) -> pl.Expr:
