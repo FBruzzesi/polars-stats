@@ -161,6 +161,23 @@ def coerce_n(value: int | IntoExprColumn, *, name: str = "n") -> pl.Expr:
     return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.UInt64())
 
 
+def coerce_int(value: int | IntoExprColumn, *, name: str) -> pl.Expr:
+    """Coerce a signed integer parameter (e.g. discrete uniform bounds) into a `pl.Expr`.
+
+    The signed counterpart of `coerce_n`: accepts a Python `int` or an `IntoExprColumn` (a `bool`
+    raises on type, as everywhere) and coerces the literal to an `Int64` column. Negatives are
+    legitimate bounds, so no *value* is judged here beyond representability: an `int` outside `Int64`
+    raises `ValueError` at construction, matching `coerce_n`, because polars would otherwise refuse
+    the literal with a message naming only `u64`, `i64` and a column called `literal`. A column keeps
+    its dtype until Rust widens it, which requires an integer dtype and every value inside `Int64`.
+    See `_coerce` for the coercion rules.
+    """
+    if (bound := scalar_int(value)) is not None and not -(2**63) <= bound <= _MAX_WIRE_INT:
+        msg = f"{name} must be in [{-(2**63)}, {_MAX_WIRE_INT}] as a Python int, got {bound}: pass a column instead"
+        raise ValueError(msg)
+    return _coerce(value, name=name, scalar_label="an int", scalar_types=int, dtype=pl.Int64())
+
+
 def scalar_float(value: float | IntoExprColumn) -> float | None:
     """Return `value` as a `float` if it is a plain numeric scalar, else `None`.
 
@@ -364,7 +381,7 @@ class _UnivariateDistribution(ABC):
         """Draw one random variate per row.
 
         Returns a column with one variate per input row, in the distribution's element dtype
-        (`Float64`, `UInt64` or `Boolean`). Output length follows the surrounding context (frame length
+        (`Float64`, `Int64`, `UInt64` or `Boolean`). Output length follows the surrounding context (frame length
         under `select` / `with_columns`, partition length under `over` / `group_by`), and each row's draw
         is derived from a per-row sub-seed mixed from `seed` and the row's position, so the result is
         independent of Polars chunking and thread scheduling.
@@ -486,6 +503,23 @@ class _UnivariateDistribution(ABC):
             return register_plugin(plugin_name, self._param_exprs)
         validated_once = register_plugin(plugin_name, self._scalar_lit_args())
         return pl.when(validated_once.is_not_null()).then(validated)
+
+    def _checked_plugin_output(self, plugin_name: str, *length_from: pl.Expr) -> pl.Expr:
+        """A parameter-validating plugin call whose **own output** is the answer, on both routings.
+
+        Same scalar-vs-column branch as `_checked`, and the difference is why both exist: `_checked`
+        returns a Python-recomputed expression on the scalar path, which is right when the quantity is
+        incidental and wrong when the two routings must agree bit for bit, because polars folds a
+        literal expression with a different kernel than the length-n columns of the per-row branch.
+        Here both branches return what the plugin computed.
+
+        `length_from` exprs are appended after the parameters and never reach the closure; they set the
+        call's row count, since `align_inputs` takes it from the one input whose length is not 1.
+        Passing none leaves a constant parameterisation at length 1; passing a column-valued expr makes
+        the validator run per row. Each call is one validator pass, so callers name it once.
+        """
+        args = self._param_exprs if self._scalar_kwargs is None else self._scalar_lit_args()
+        return register_plugin(plugin_name, [*args, *length_from])
 
     def _param_plugin(self, function_name: str) -> pl.Expr:
         """Register a parameter-keyed Rust plugin call `f(*params)` for a moment with no closed form.

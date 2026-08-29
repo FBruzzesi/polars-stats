@@ -9,18 +9,21 @@ the lookup table; the how-to guides show what to do about it.
 
 ## Accepted inputs
 
-Constructor parameters and value-keyed method arguments follow the same coercion rules, with one difference: a float
-parameter rejects an `int`, while a method argument accepts either.
+Constructor parameters and value-keyed method arguments follow the same coercion rules, with one asymmetry: a float
+parameter rejects an `int` and an integer bound rejects a `float`, while a method argument accepts either.
 
-| Input | Float parameter (`mu`, `sigma`, `p`, `rate`, `a`, `b`, `min`, `max`) | Count parameter (`n`) | Method argument (`x`, `q`) |
-|---|---|---|---|
-| `float` | accepted | `TypeError` | accepted |
-| `int` | `TypeError` | accepted (`0` to `2**63 - 1`) | accepted |
-| `bool` | `TypeError` | `TypeError` | `TypeError` |
-| `str` | read as `pl.col(name)` | read as `pl.col(name)` | read as `pl.col(name)` |
-| `pl.Expr` | passed through | passed through | passed through |
-| `pl.Series` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` |
-| anything else | `TypeError` | `TypeError` | `TypeError` |
+The bounds of `Uniform` and `DiscreteUniform` sit on opposite sides of the float rule despite sharing the names `min`
+and `max`.
+
+| Input | Float parameter (`mu`, `sigma`, `p`, `rate`, `a`, `b`, `Uniform`'s `min` / `max`) | Count parameter (`n`) | Integer bound (`DiscreteUniform`'s `min` / `max`) | Method argument (`x`, `q`) |
+|---|---|---|---|---|
+| `float` | accepted | `TypeError` | `TypeError` | accepted |
+| `int` | `TypeError` | accepted (`0` to `2**63 - 1`) | accepted (any `Int64`) | accepted |
+| `bool` | `TypeError` | `TypeError` | `TypeError` | `TypeError` |
+| `str` | read as `pl.col(name)` | read as `pl.col(name)` | read as `pl.col(name)` | read as `pl.col(name)` |
+| `pl.Expr` | passed through | passed through | passed through | passed through |
+| `pl.Series` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` | wrapped as `pl.lit(series)` |
+| anything else | `TypeError` | `TypeError` | `TypeError` | `TypeError` |
 
 A `str` is always a column reference, never a literal value. A Python scalar becomes `pl.lit(value)`, a length-1
 scalar column that the Rust plugin broadcasts to the call's row count
@@ -58,10 +61,11 @@ A length-1 *expression* is accepted wherever a column is and broadcasts rather t
     distribution expression itself inside `over()` or `agg()` that is affected.
 
 Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
-expected. The count parameter `n` is the exception: its column must already hold integers, of any width up to
-`UInt64`, because casting a float one would silently truncate a fractional count. The rule is judged on the
-dtype, so a float `n` column raises even when every value in it is null; a `Null`-dtype column propagates nulls
-like any other parameter. A non-numeric column raises at
+expected. The integer parameters are the exception: the count `n` and `DiscreteUniform`'s bounds must already hold
+integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
+bounds to `Int64`, so a `UInt64` bound *value* above `i64::MAX` raises rather than wrapping. The rule is judged on the
+dtype, so a float column raises even when every value in it is null; a `Null`-dtype column
+propagates nulls like any other parameter. A non-numeric column raises at
 evaluation: Polars fails the query with `InvalidOperationError` rather than returning nulls.
 
 ## Parameter validity
@@ -80,6 +84,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
 | `Binomial(n, p)` | `n >= 0`, `0 <= p <= 1` | `n` integral |
+| `DiscreteUniform(min, max)` | `min <= max`, both inclusive | `max - min + 1` fits `Int64` |
 | `Geometric(p)` | `0 < p <= 1` | `p = 0` rejected, unlike `Bernoulli` |
 
 A violation raises `ComputeError` and fails the whole evaluation. See
@@ -102,6 +107,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 |---|---|
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric` | `UInt64` |
+| `DiscreteUniform` | `Int64` |
 | `Beta`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
 
 | Aspect | Behaviour |

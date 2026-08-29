@@ -150,6 +150,10 @@ impl DrawValue for u64 {
     type Data = UInt64Type;
 }
 
+impl DrawValue for i64 {
+    type Data = Int64Type;
+}
+
 impl DrawValue for bool {
     type Data = BooleanType;
 }
@@ -498,6 +502,11 @@ pub(crate) fn samples_f64_output(fields: &[Field], kwargs: SamplesKwargs) -> Pol
 /// Output dtype of an integer-valued multi-draw plugin: `Array(UInt64, size)`.
 pub(crate) fn samples_u64_output(fields: &[Field], kwargs: SamplesKwargs) -> PolarsResult<Field> {
     samples_output(fields, kwargs.size, DataType::UInt64)
+}
+
+/// Output dtype of a signed-integer-valued multi-draw plugin: `Array(Int64, size)`.
+pub(crate) fn samples_i64_output(fields: &[Field], kwargs: SamplesKwargs) -> PolarsResult<Field> {
+    samples_output(fields, kwargs.size, DataType::Int64)
 }
 
 /// Output dtype of a boolean-valued multi-draw plugin: `Array(Boolean, size)`.

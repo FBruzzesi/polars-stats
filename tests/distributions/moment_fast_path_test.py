@@ -32,7 +32,16 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    DiscreteUniform,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 from tests._polars_compat import assert_series_equal
 
 if TYPE_CHECKING:
@@ -71,6 +80,8 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "geometric p=-0.1": (Geometric(-0.1), Geometric(_col(-0.1)), True),
     "geometric p=1.5": (Geometric(1.5), Geometric(_col(1.5)), True),
     "geometric p=nan": (Geometric(_NAN), Geometric(_col(_NAN)), True),
+    # Inverted bounds: the one invalid parameterisation the discrete uniform has.
+    "discreteuniform min>max": (DiscreteUniform(6, 1), DiscreteUniform(_col(6), _col(1)), True),
     "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
@@ -150,6 +161,12 @@ _DEGENERATE: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, f
     "binomial p=0 entropy": (Binomial(5, 0.0), Binomial(_col(5, pl.Int64()), _col(0.0)), 0.0),
     "binomial p=1 entropy": (Binomial(5, 1.0), Binomial(_col(5, pl.Int64()), _col(1.0)), 0.0),
     "binomial n=0 entropy": (Binomial(0, 0.5), Binomial(_col(0, pl.Int64()), _col(0.5)), 0.0),
+    # `min == max` is the legitimate one-point mass: entropy collapses to 0.
+    "discreteuniform min=max entropy": (
+        DiscreteUniform(4, 4),
+        DiscreteUniform(_col(4, pl.Int64()), _col(4, pl.Int64())),
+        0.0,
+    ),
 }
 
 

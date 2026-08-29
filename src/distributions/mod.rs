@@ -1,6 +1,7 @@
 pub mod bernoulli;
 pub mod beta;
 pub mod binomial;
+pub mod discrete_uniform;
 pub mod exponential;
 pub mod geometric;
 pub mod lognormal;

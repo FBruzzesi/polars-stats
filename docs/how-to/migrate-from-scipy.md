@@ -40,6 +40,7 @@ Some of these translations are not identities, so check this table rather than g
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
 | `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |
+| `randint(low=min, high=max + 1)` | `DiscreteUniform(min=min, max=max)` | **`high` is exclusive, `max` is inclusive**: pass `max = high - 1` |
 
 Two further differences apply everywhere:
 
@@ -135,6 +136,8 @@ Polars defaults to `ddof=1`.
 | Return type | NumPy array | `pl.Expr` |
 | Randomness | `random_state` / global NumPy state | per-call `seed` only, no global state |
 | Accuracy | reference implementation | matched to `1e-12` absolute in the parity suite, relaxed to `1e-9` / `1e-6` for erf-based and search-based `ppf` methods |
+| `DiscreteUniform.median()` | `randint.median()` is `ppf(0.5)`, a support point | the midpoint `(min + max) / 2`, which for an even support size is not a support point |
+| Discrete `ppf(0)` / `isf(1)` | the below-support sentinel `low - 1` | clamped to the support, so `ppf(0)` is `min` and `isf(1)` is `min` |
 
 ## What has no equivalent
 

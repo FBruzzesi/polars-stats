@@ -33,10 +33,10 @@ recorded in the report with its reason rather than dropped.
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
-distributions (`Uniform`, `Exponential`, `Bernoulli`, `Geometric`), `log_cdf` and `log_sf` stay
-finite far past that and are the right methods for tail scoring. Likewise `isf(q)` rather than
-`ppf(1 - q)` on those six: forming the complement quantises the tail mass to `1.1e-16` absolute
-before any inverse runs.
+distributions (`Uniform`, `Exponential`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and
+`log_sf` stay finite far past that and are the right methods for tail scoring. Likewise `isf(q)`
+rather than `ppf(1 - q)` on those seven: forming the complement quantises the tail mass to `1.1e-16`
+absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
 are the linear value's logarithm, so they return `-inf` at exactly the point where `cdf` / `sf`
@@ -67,6 +67,42 @@ magnitudes are in the inherited limits below.
   [`geom._ppf`](https://github.com/scipy/scipy/blob/main/scipy/stats/_discrete_distns.py) made the
   opposite trade (it tests against its own `_cdf`, so it is self-consistent and less accurate). Parity
   is gated at integer equality rather than at a float tolerance.
+
+    `DiscreteUniform.ppf` / `isf` are closed forms rather than searches, and `ppf` carries scipy's
+    own rounding, bit for bit: in a one-ulp quantile window above each cdf step edge, `q * N` rounds
+    down across the integer boundary and the answer sits one support point below the exact rational
+    one, so there `cdf(ppf(q)) < q`. Outside that window both inverses agree with exact rational
+    arithmetic, checked on `N = 6, 8, 15, 101` and `1000`. **On** an exactly representable edge the
+    two contracts diverge, and this library inverts its own `sf` rather than the exact rational:
+    `isf` probes both neighbours of its candidate and keeps the smallest point whose survival
+    quotient still satisfies the quantile, so `isf(sf(x)) == x` holds for 5/6, 15/15 and 101/101
+    support points on `(1,6)`, `(-5,9)` and `(0,100)`, against 2/6, 7/15 and 58/101 under the
+    rational rule. The one remaining miss is `sf`'s, not the inverse's: its reciprocal multiply
+    lands an ulp below the exact `k / N`, so the point it came from genuinely no longer satisfies
+    the survival contract at that quantile, and the portable bound stays one support point.
+* **A `float` evaluation point cannot address a support narrower than one float step.**
+  At `2**62` one float step is 1024 wide, so all 11 points of `{min, ..., min + 10}` denote the same
+  `float64`. `cdf`, `sf` and their logs then answer for the whole support at once, because `value >= max`
+  is true for each of them; `pmf` / `log_pmf` test membership rather than a count, so they are
+  unaffected. Passing the point as a Python `int` keeps the arithmetic exact, since the count is
+  subtracted in `Int64` inside the support: `cdf(min + 5)` on `DiscreteUniform(2**62, 2**62 + 10)`
+  is `6/11` from an `int` and `1.0` from the equal `float`. It applies to any support whose width is
+  below `2**-52` of its magnitude.
+* **`DiscreteUniform.ppf` / `isf` return fewer distinct points than such a support has.** The same
+  regime on the *output* side, and there is no `int` spelling to escape to: the candidate is formed as
+  `min + ceil(q * N) - 1` in `Float64`, where `min + 1 - 1` is not `min` above `2**53`.
+  `DiscreteUniform(2**60, 2**60 + 4).ppf(q)` answers `min` for every `q`, and
+  `DiscreteUniform(2**53 + 2, 2**53 + 12)` resolves 3 of its 11 points. Both inverses are exact for
+  bounds inside `±2**53`, which is where a support that a `float64` quantile can address at all lives.
+* **A moment can be correctly rounded and still land outside the support.** `mean` and `median` form
+  the midpoint as `min + (max - min) // 2` in `Int64` and round once, so they are exact for bounds
+  inside `±2**53` and within one ulp everywhere else. Summing the two bounds in `Float64` instead
+  would round each before they cancel, which costs up to `1.2e-13` relative for bounds straddling
+  zero. For a support narrower than one float step near the `Int64` extremes the midpoint can still
+  sit up to half a step outside `[min, max]` when compared in exact integers: it does so for about
+  99% of random supports of width `< 20` drawn from `[2**62, 2**63)`, because the bounds themselves
+  are not representable there. It never happens for a support wider than one float step, nor anywhere
+  inside `±2**53`.
 * **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).cdf("x")`
   and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round

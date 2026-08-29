@@ -22,7 +22,17 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    DiscreteUniform,
+    Exponential,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -32,6 +42,7 @@ _FRAME = pl.DataFrame({"p": [0.5, 0.5], "mu": [0.0, 0.0], "n": [5, 5]})
 _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
     "bernoulli": Bernoulli(p=0.5),
     "binomial": Binomial(n=5, p=0.5),
+    "discreteuniform": DiscreteUniform(min=-2, max=5),
     "geometric": Geometric(p=0.5),
     "normal": Normal(mu=0.0, sigma=1.0),
     "lognormal": LogNormal(mu=0.0, sigma=1.0),
@@ -44,6 +55,7 @@ _SCALAR_PARAMS: dict[str, _UnivariateDistribution] = {
 _COLUMN_PARAMS: dict[str, tuple[_UnivariateDistribution, str]] = {
     "bernoulli": (Bernoulli(p=pl.col("p")), "p"),
     "binomial": (Binomial(n=pl.col("n"), p=0.5), "n"),
+    "discreteuniform": (DiscreteUniform(min=pl.col("n"), max=pl.col("n")), "n"),
     "geometric": (Geometric(p=pl.col("p")), "p"),
     "normal": (Normal(mu=pl.col("mu"), sigma=1.0), "mu"),
     "lognormal": (LogNormal(mu=pl.col("mu"), sigma=1.0), "mu"),
@@ -115,6 +127,7 @@ _VALIDATOR_EXPRS: dict[str, tuple[pl.Expr, str]] = {
     "lognormal_sigma": (LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma"))._checked_params, "mu"),
     "beta_params": (Beta(a=pl.col("a"), b=pl.col("b"))._checked_params, "a"),
     "binomial_params": (Binomial(n=pl.col("n"), p=pl.col("p"))._checked_params, "n"),
+    "discreteuniform_range": (DiscreteUniform(min=pl.col("n"), max=pl.col("n"))._checked_params, "n"),
 }
 
 
