@@ -72,7 +72,7 @@ Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, 
 pip install polars-stats
 ```
 
-Runtime needs `polars>=1.15` and Python `>=3.10`.
+Runtime needs `polars>=1.15,<1.44` and Python `>=3.10`.
 
 ## Documentation
 
