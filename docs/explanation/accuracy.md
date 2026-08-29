@@ -74,11 +74,12 @@ magnitudes are in the inherited limits below.
     one, so there `cdf(ppf(q)) < q`. Outside that window both inverses agree with exact rational
     arithmetic, checked on `N = 6, 8, 15, 101` and `1000`. **On** an exactly representable edge the
     two contracts diverge, and this library inverts its own `sf` rather than the exact rational:
-    `isf(sf(x)) == x` holds for 5/6, 15/15 and 98/101 support points on `(1,6)`, `(-5,9)` and
-    `(0,100)`, against 2/6, 7/15 and 58/101 under the rational rule. The misses land where the
-    survival quotient and `isf`'s upward-only correction round to opposite sides of a step; a probe
-    below would recover three of the four, at the price of moving off the shared closed form, and
-    the portable bound stays one support point either way.
+    `isf` probes both neighbours of its candidate and keeps the smallest point whose survival
+    quotient still satisfies the quantile, so `isf(sf(x)) == x` holds for 5/6, 15/15 and 101/101
+    support points on `(1,6)`, `(-5,9)` and `(0,100)`, against 2/6, 7/15 and 58/101 under the
+    rational rule. The one remaining miss is `sf`'s, not the inverse's: its reciprocal multiply
+    lands an ulp below the exact `k / N`, so the point it came from genuinely no longer satisfies
+    the survival contract at that quantile, and the portable bound stays one support point.
 * **A `float` evaluation point cannot address a support narrower than one float step.**
   At `2**62` one float step is 1024 wide, so all 11 points of `{min, ..., min + 10}` denote the same
   `float64`. `cdf`, `sf` and their logs then answer for the whole support at once, because `value >= max`

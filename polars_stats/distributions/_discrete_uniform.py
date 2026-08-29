@@ -35,14 +35,22 @@ class DiscreteUniform(DiscreteDistribution):
     rather than answering its below-support sentinel ``min - 1``.
 
     Arguments:
-        min: Inclusive lower bound, an integer. Either a Python ``int`` or an ``IntoExprColumn``
-            (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one bound per row.
-        max: Inclusive upper bound, with ``max >= min`` (``min == max`` is a one-point mass). Same
-            accepted types as ``min``.
+        min: Inclusive lower bound, an integer anywhere in ``Int64``: ``[-2**63, 2**63 - 1]``.
+            Either a Python ``int`` (rejected at construction outside that range) or an
+            ``IntoExprColumn`` (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one
+            bound per row; a column may be any integer dtype, judged by its values fitting
+            ``Int64``.
+        max: Inclusive upper bound, with ``max >= min`` (``min == max`` is a one-point mass) and
+            the width ``max - min + 1`` fitting ``Int64``. Same accepted types and range as
+            ``min``.
 
     An invalid parameterisation (``max < min``, or a width ``max - min + 1`` overflowing ``Int64``)
     is not checked at construction; as everywhere, it raises ``InvalidOperation`` (a
     ``ComputeError``) when a method is evaluated. Null bounds propagate to null.
+
+    The closed forms run in Rust (``src/distributions/discrete_uniform.rs``), one plugin pass per
+    method, where an integer evaluation point keeps exact integer arithmetic; the numeric notes
+    (endpoint contract, ``log1p`` cut-over, inverse correction) live on the Rust bodies.
     """
 
     _min: pl.Expr
@@ -62,9 +70,10 @@ class DiscreteUniform(DiscreteDistribution):
     def support_size(self) -> pl.Expr:
         """Support count ``N = max - min + 1``, as ``Float64``.
 
-        Validated in Rust so every closed form raises on an invalid parameterisation (``max < min``,
-        an overflowing width) consistently with the sampler; null bounds propagate. Above ``2**53``
-        the count itself is rounded. Each mention is one validator pass over the bounds.
+        Validated in Rust so every moment raises on an invalid parameterisation (``max < min``, an
+        overflowing width) consistently with the value-keyed methods and the sampler; null bounds
+        propagate. Above ``2**53`` the count itself is rounded. Each mention is one validator pass
+        over the bounds.
         """
         return self._checked_plugin_output("discreteuniform_range")
 
@@ -74,28 +83,8 @@ class DiscreteUniform(DiscreteDistribution):
         return self.support_size
 
     @property
-    def _point_mass(self) -> pl.Expr:
-        """``1 / support_size``, the mass on each support point.
-
-        Read off the validator once so every consumer multiplies the same reciprocal: polars divides
-        a column by a broadcast scalar through a different code path than column by column, and the
-        two disagree in the last bit. Costs one or two ulp against an exact quotient.
-        """
-        return 1 / self.support_size
-
-    @property
-    def _min_f64(self) -> pl.Expr:
-        """``min`` as ``Float64``, the operand the inverses clip against."""
-        return self._min.cast(pl.Float64())
-
-    @property
-    def _max_f64(self) -> pl.Expr:
-        """``max`` as ``Float64``, the operand the inverses clip against."""
-        return self._max.cast(pl.Float64())
-
-    @property
     def _min_i64(self) -> pl.Expr:
-        """``min`` widened to ``Int64``, the dtype the closed forms' integer arithmetic assumes.
+        """``min`` widened to ``Int64``, the dtype `_midpoint`'s integer arithmetic assumes.
 
         A bound column keeps its own dtype until Rust widens it, so arithmetic on the raw bound runs
         in that dtype and wraps once the support outgrows it (``Int8`` bounds ``(-100, 100)``).
@@ -121,182 +110,42 @@ class DiscreteUniform(DiscreteDistribution):
         width = self._max_i64 - self._min_i64
         return (self._min_i64 + width // 2).cast(pl.Float64()) + (width % 2) * 0.5
 
-    def _is_on_support(self, value: pl.Expr) -> pl.Expr:
-        """Whether ``value`` is an integer inside ``[min, max]``, where the mass sits."""
-        return (value >= self._min) & (value <= self._max) & (value.floor() == value)
-
-    def _points_at_or_below(self, value: pl.Expr) -> pl.Expr:
-        """``k``, the number of support points at or below ``value``.
-
-        The bound is widened via `_min_i64` so an integer ``value`` subtracts in ``Int64``, exact
-        over the ``[1, N - 1]`` range every caller reads; a float ``value`` promotes to ``Float64``.
-        Rows outside the support do evaluate it and may wrap; their branch discards the result.
-        """
-        return value.floor() - self._min_i64 + 1
-
     def _pmf(self, value: pl.Expr) -> pl.Expr:
-        """``1 / N`` on the integer support, ``0`` off it, ``null`` for null bounds.
-
-        The null branch is explicit because `_is_on_support` reads the bounds, so a null bound makes
-        its condition null rather than false, and a bare ``otherwise(0.0)`` would report a confident
-        "off the support" for a row whose support is unknown.
-        """
-        return (
-            pl.when(self._is_on_support(value))
-            .then(self._point_mass)
-            .when(self.support_size.is_not_null())
-            .then(0.0)
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``1 / N`` on the integer support, ``0`` off it."""
+        return self._value_plugin("discreteuniform_pmf", value)
 
     def _log_pmf(self, value: pl.Expr) -> pl.Expr:
-        """``-log(N)`` on the integer support, ``-inf`` off it, ``null`` for null bounds.
-
-        Overrides the base ``pmf().log()`` to skip the division: the mass is exactly ``1 / N``, so its
-        log reads straight off the count. Same null branch as `_pmf`.
-        """
-        return (
-            pl.when(self._is_on_support(value))
-            .then(-self.support_size.log())
-            .when(self.support_size.is_not_null())
-            .then(float("-inf"))
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``-log(N)`` on the integer support, ``-inf`` off it: the log reads straight off the count."""
+        return self._value_plugin("discreteuniform_ln_pmf", value)
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``k * (1 / N)`` inside the support, ``0`` below ``min``, ``1`` from ``max`` up.
-
-        The explicit endpoints make ``cdf(max) == 1`` an answer rather than the limit of a clamp,
-        which is the visible difference from scipy's exclusive upper bound: ``N * (1 / N)`` is not
-        ``1.0`` for 483 of the first 4000 support counts. They also keep `_points_at_or_below` inside
-        the support, where its subtraction is exact.
-        """
-        return (
-            pl.when(self.support_size.is_not_null())
-            .then(
-                pl.when(value < self._min)
-                .then(0.0)
-                .when(value >= self._max)
-                .then(1.0)
-                .otherwise(self._points_at_or_below(value) * self._point_mass)
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``k / N`` inside the support, with explicit endpoints so ``cdf(max) == 1`` exactly."""
+        return self._value_plugin("discreteuniform_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
-        """``(max - floor(value)) * (1 / N)`` inside the support, ``1`` below ``min``, ``0`` from ``max`` up.
-
-        A direct count of the support points above ``value``, mirroring `_cdf`. Overrides the base
-        ``1 - cdf``, whose subtraction absorbs the whole tail once the cdf rounds towards ``1``. The
-        chain sits behind a null gate because the ``1.0`` branch reads only ``min``.
-        """
-        return (
-            pl.when(self.support_size.is_not_null())
-            .then(
-                pl.when(value < self._min)
-                .then(1.0)
-                .when(value >= self._max)
-                .then(0.0)
-                .otherwise((self._max_i64 - value.floor()) * self._point_mass)
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """A direct count of the points above ``value``, not ``1 - cdf``, which absorbs the tail."""
+        return self._value_plugin("discreteuniform_sf", value)
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """``log(k / N)``, through ``log1p`` of the survival ratio once the cdf passes one half.
-
-        Overrides the base ``cdf().log()``, whose relative error one support point below the top grows
-        with ``N``: ``8.7e-16`` at ``N = 1e3`` but ``2.8e-08`` at ``N = 1e9``. Same branch
-        `Uniform._log_cdf` takes. The null gate is there for the reason in `_sf`.
-        """
-        count = self._points_at_or_below(value)
-        return (
-            pl.when(self.support_size.is_not_null())
-            .then(
-                pl.when(value < self._min)
-                .then(float("-inf"))
-                .when(value >= self._max)
-                .then(0.0)
-                .when(count * 2.0 > self.support_size)
-                .then((-((self.support_size - count) * self._point_mass)).log1p())
-                .otherwise((count * self._point_mass).log())
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``log(k / N)``, through ``log1p`` of the survival ratio once the cdf passes one half."""
+        return self._value_plugin("discreteuniform_ln_cdf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """The mirror of `_log_cdf`: the near-certain side is the lower one, so ``log1p`` sits there.
-
-        ``0`` below ``min`` and ``-inf`` at or above ``max``, and the same null gate.
-        """
-        count = self._points_at_or_below(value)
-        return (
-            pl.when(self.support_size.is_not_null())
-            .then(
-                pl.when(value < self._min)
-                .then(0.0)
-                .when(value >= self._max)
-                .then(float("-inf"))
-                .when(count * 2.0 > self.support_size)
-                .then(((self.support_size - count) * self._point_mass).log())
-                .otherwise((-(count * self._point_mass)).log1p())
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """The mirror of `_log_cdf`: the near-certain side is the lower one, so ``log1p`` sits there."""
+        return self._value_plugin("discreteuniform_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """``min + ceil(quantile * N) - 1``, corrected and clamped; null outside ``[0, 1]``.
-
-        Matches scipy's ``randint.ppf`` including its correction step, which probes the point below and
-        keeps it whenever that point's cdf already reaches ``quantile``, settling the step boundaries
-        where an ulp of noise in ``quantile * N`` would skip a support point. The probe's ``>=`` has no
-        slack, so it reads an honestly rounded column-by-column quotient; that is why the validator
-        takes ``quantile`` as a `_checked_plugin_output` length input, which makes it run per row.
-
-        Both inverses lose support points above ``2**53``; see docs/explanation/accuracy.md.
-        """
-        support_size_per_row = self._checked_plugin_output("discreteuniform_range", quantile)
-        min_f64, max_f64 = self._min_f64, self._max_f64
-        candidate = min_f64 + (quantile * support_size_per_row).ceil() - 1.0
-        point_below = (candidate - 1.0).clip(min_f64, max_f64)
-        return (
-            pl.when(quantile.is_between(0, 1))
-            .then(
-                pl.when(self._points_at_or_below(point_below) / support_size_per_row >= quantile)
-                .then(point_below)
-                .otherwise(candidate)
-                .clip(min_f64, max_f64)
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``min + ceil(quantile * N) - 1``, corrected at the step boundaries as scipy's ``randint.ppf`` is."""
+        return self._value_plugin("discreteuniform_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``max - floor(quantile * N)``, corrected and clamped; null outside ``[0, 1]``.
+        """The smallest support point whose survival mass is at most ``quantile``.
 
-        The smallest support point whose survival mass is at most ``quantile``. Entered against
-        ``quantile`` itself rather than the base ``ppf(1 - quantile)``: the complement rounds before the
-        inverse runs, and the survival steps sit at multiples of ``1 / N``, exactly where ``1 - q`` has
-        spent its precision.
-
-        The correction mirrors `_ppf`'s but probes the neighbour **above**: a product that rounds
-        high floors one too high, and the probe pulls it back. A product can also round low, at a
-        quantile sitting exactly on an honest step quotient ``(max - x) / N``; that side stays
-        uncorrected and answers one point above the smallest admissible one, within the one-point
-        bound in docs/explanation/accuracy.md.
+        Entered against ``quantile`` itself rather than the base ``ppf(1 - quantile)``: the
+        complement rounds before the inverse runs, and the survival steps sit at multiples of
+        ``1 / N``, exactly where ``1 - q`` has spent its precision.
         """
-        support_size_per_row = self._checked_plugin_output("discreteuniform_range", quantile)
-        min_f64, max_f64 = self._min_f64, self._max_f64
-        candidate = max_f64 - (quantile * support_size_per_row).floor()
-        return (
-            pl.when(quantile.is_between(0, 1))
-            .then(
-                pl.when((max_f64 - candidate) / support_size_per_row <= quantile)
-                .then(candidate)
-                .otherwise(candidate + 1.0)
-                .clip(min_f64, max_f64)
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        return self._value_plugin("discreteuniform_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``(min + max) / 2``. See `_midpoint` for how the sum avoids overflowing."""

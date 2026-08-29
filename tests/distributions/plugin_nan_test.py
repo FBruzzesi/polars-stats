@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Beta, Binomial, LogNormal, Normal
+from polars_stats import Beta, Binomial, DiscreteUniform, LogNormal, Normal
 from polars_stats.distributions._base import DiscreteDistribution
 
 if TYPE_CHECKING:
@@ -48,6 +48,8 @@ _CASES = [
     ("beta-columns", Beta(a=_col(2.0), b=_col(3.0))),
     ("binomial-scalar", Binomial(n=5, p=0.4)),
     ("binomial-columns", Binomial(n=_col(5, pl.Int64()), p=_col(0.4))),
+    ("discreteuniform-scalar", DiscreteUniform(min=-2, max=9)),
+    ("discreteuniform-columns", DiscreteUniform(min=_col(-2, pl.Int64()), max=_col(9, pl.Int64()))),
 ]
 
 
