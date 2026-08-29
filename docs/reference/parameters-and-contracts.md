@@ -9,8 +9,8 @@ the lookup table; the how-to guides show what to do about it.
 
 ## Accepted inputs
 
-Constructor parameters and value-keyed method arguments follow the same coercion rules, with two differences: a float
-parameter rejects an `int`, an integer bound rejects a `float`, and a method argument accepts either.
+Constructor parameters and value-keyed method arguments follow the same coercion rules, with one asymmetry: a float
+parameter rejects an `int` and an integer bound rejects a `float`, while a method argument accepts either.
 
 The bounds of `Uniform` and `DiscreteUniform` sit on opposite sides of the float rule despite sharing the names `min`
 and `max`.

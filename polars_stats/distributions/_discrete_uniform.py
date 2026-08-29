@@ -94,6 +94,22 @@ class DiscreteUniform(DiscreteDistribution):
         return self._max.cast(pl.Float64())
 
     @property
+    def _min_i64(self) -> pl.Expr:
+        """``min`` widened to ``Int64``, the dtype the closed forms' integer arithmetic assumes.
+
+        A bound column keeps its own dtype until Rust widens it, so arithmetic on the raw bound runs
+        in that dtype and wraps once the support outgrows it (``Int8`` bounds ``(-100, 100)``).
+        Non-strict, so an out-of-range ``UInt64`` value nulls here and stays the validator's error
+        to report.
+        """
+        return self._min.cast(pl.Int64(), strict=False)
+
+    @property
+    def _max_i64(self) -> pl.Expr:
+        """``max`` widened to ``Int64``; see `_min_i64`."""
+        return self._max.cast(pl.Int64(), strict=False)
+
+    @property
     def _midpoint(self) -> pl.Expr:
         """``(min + max) / 2``, formed as ``min + (max - min) // 2`` to stay in ``Int64``.
 
@@ -102,8 +118,8 @@ class DiscreteUniform(DiscreteDistribution):
         zero). The width is exact in ``Int64`` and ``min + width // 2`` lies in ``[min, max]``, so the
         cast is the only rounding.
         """
-        width = self._max - self._min
-        return (self._min + width // 2).cast(pl.Float64()) + (width % 2) * 0.5
+        width = self._max_i64 - self._min_i64
+        return (self._min_i64 + width // 2).cast(pl.Float64()) + (width % 2) * 0.5
 
     def _is_on_support(self, value: pl.Expr) -> pl.Expr:
         """Whether ``value`` is an integer inside ``[min, max]``, where the mass sits."""
@@ -112,11 +128,11 @@ class DiscreteUniform(DiscreteDistribution):
     def _points_at_or_below(self, value: pl.Expr) -> pl.Expr:
         """``k``, the number of support points at or below ``value``.
 
-        Only ever read where ``k`` lies in ``[1, N - 1]``, which is what keeps the subtraction in
-        ``Int64`` where it is exact. Rows outside the support do evaluate it and may wrap; their
-        branch discards the result.
+        The bound is widened via `_min_i64` so an integer ``value`` subtracts in ``Int64``, exact
+        over the ``[1, N - 1]`` range every caller reads; a float ``value`` promotes to ``Float64``.
+        Rows outside the support do evaluate it and may wrap; their branch discards the result.
         """
-        return value.floor() - self._min + 1
+        return value.floor() - self._min_i64 + 1
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
         """``1 / N`` on the integer support, ``0`` off it, ``null`` for null bounds.
@@ -181,7 +197,7 @@ class DiscreteUniform(DiscreteDistribution):
                 .then(1.0)
                 .when(value >= self._max)
                 .then(0.0)
-                .otherwise((self._max - value.floor()) * self._point_mass)
+                .otherwise((self._max_i64 - value.floor()) * self._point_mass)
             )
             .otherwise(pl.lit(None, dtype=pl.Float64()))
         )
@@ -262,8 +278,11 @@ class DiscreteUniform(DiscreteDistribution):
         inverse runs, and the survival steps sit at multiples of ``1 / N``, exactly where ``1 - q`` has
         spent its precision.
 
-        The correction mirrors `_ppf`'s but probes the neighbour **above**, the only direction it can
-        need: a rounded ``quantile * N`` can only floor one too high.
+        The correction mirrors `_ppf`'s but probes the neighbour **above**: a product that rounds
+        high floors one too high, and the probe pulls it back. A product can also round low, at a
+        quantile sitting exactly on an honest step quotient ``(max - x) / N``; that side stays
+        uncorrected and answers one point above the smallest admissible one, within the one-point
+        bound in docs/explanation/accuracy.md.
         """
         support_size_per_row = self._checked_plugin_output("discreteuniform_range", quantile)
         min_f64, max_f64 = self._min_f64, self._max_f64
@@ -291,7 +310,7 @@ class DiscreteUniform(DiscreteDistribution):
         """Median, the midpoint ``(min + max) / 2``, which for an even support size is not a support point.
 
         Overrides the base ``ppf(0.5)``, and **diverges from scipy**, which reports that support point:
-        ``scipy.stats.randint(low=1, high=7).median()`` is ``3.0`` against this crate's ``3.5``.
+        ``scipy.stats.randint(low=1, high=7).median()`` is ``3.0`` against this library's ``3.5``.
         """
         return self._moment(self._midpoint)
 

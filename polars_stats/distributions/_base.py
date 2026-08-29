@@ -381,7 +381,7 @@ class _UnivariateDistribution(ABC):
         """Draw one random variate per row.
 
         Returns a column with one variate per input row, in the distribution's element dtype
-        (`Float64`, `UInt64` or `Boolean`). Output length follows the surrounding context (frame length
+        (`Float64`, `Int64`, `UInt64` or `Boolean`). Output length follows the surrounding context (frame length
         under `select` / `with_columns`, partition length under `over` / `group_by`), and each row's draw
         is derived from a per-row sub-seed mixed from `seed` and the row's position, so the result is
         independent of Polars chunking and thread scheduling.

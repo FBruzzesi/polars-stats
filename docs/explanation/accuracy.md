@@ -68,14 +68,17 @@ magnitudes are in the inherited limits below.
   opposite trade (it tests against its own `_cdf`, so it is self-consistent and less accurate). Parity
   is gated at integer equality rather than at a float tolerance.
 
-    `DiscreteUniform.ppf` / `isf` are closed forms rather than searches, so they are exact off the
-    step edges: a quantile displaced by half an ulp from any `k / N` inverts to the same support point
-    exact rational arithmetic gives, on `N = 6, 8, 15, 101` and `1000`. **On** an exactly representable
-    edge the two contracts diverge, and this library inverts its own `sf` rather than the exact
-    rational: `isf(sf(x)) == x` holds for 5/6, 15/15 and 98/101 support points on `(1,6)`, `(-5,9)`
-    and `(0,100)`, against 2/6, 7/15 and 58/101 under the rational rule. The four misses are the ones
-    where `_sf`'s reciprocal multiply lands an ulp below the exact `k / N`, so no choice of inverse
-    recovers them.
+    `DiscreteUniform.ppf` / `isf` are closed forms rather than searches, and `ppf` carries scipy's
+    own rounding, bit for bit: in a one-ulp quantile window above each cdf step edge, `q * N` rounds
+    down across the integer boundary and the answer sits one support point below the exact rational
+    one, so there `cdf(ppf(q)) < q`. Outside that window both inverses agree with exact rational
+    arithmetic, checked on `N = 6, 8, 15, 101` and `1000`. **On** an exactly representable edge the
+    two contracts diverge, and this library inverts its own `sf` rather than the exact rational:
+    `isf(sf(x)) == x` holds for 5/6, 15/15 and 98/101 support points on `(1,6)`, `(-5,9)` and
+    `(0,100)`, against 2/6, 7/15 and 58/101 under the rational rule. The misses land where the
+    survival quotient and `isf`'s upward-only correction round to opposite sides of a step; a probe
+    below would recover three of the four, at the price of moving off the shared closed form, and
+    the portable bound stays one support point either way.
 * **A `float` evaluation point cannot address a support narrower than one float step.**
   At `2**62` one float step is 1024 wide, so all 11 points of `{min, ..., min + 10}` denote the same
   `float64`. `cdf`, `sf` and their logs then answer for the whole support at once, because `value >= max`
