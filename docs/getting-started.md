@@ -13,8 +13,8 @@ real, take the [tutorial](tutorial.md) instead.
 pip install polars-stats
 ```
 
-Requires Python `>=3.10` and `polars>=1.15`. Wheels cover Linux, macOS, and Windows; there is nothing to compile. To
-build from source instead, see [Contributing](contributing.md#build-from-source).
+Requires Python `>=3.10` and `polars>=1.15,<1.44`. Wheels cover Linux, macOS, and Windows; there is nothing to
+compile. To build from source instead, see [Contributing](contributing.md#build-from-source).
 
 ## Evaluate a distribution
 

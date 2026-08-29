@@ -62,6 +62,14 @@ mean of a different distribution on every row.
 | Dimension | Values |
 |---|---|
 | Python | 3.10 to 3.14 (per `requires-python`), single abi3 wheel |
-| Polars | `>=1.15` (the `pyo3-polars` ABI floor) |
+| Polars | `>=1.15` (the `pyo3-polars` ABI floor) to `<1.44` (see below) |
 | OS | wheels for Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64 |
 | Runtime dependencies | `polars` only |
+
+The upper bound is not a compatibility floor but a correctness one. Polars 1.44.0
+([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) added two `when/then/otherwise`
+optimisations that hide the rows an arm does not select from the plugin inside it, so `Bernoulli`,
+`Exponential`, `Geometric` and `Uniform` return a value for an invalid parameterisation instead of
+raising `ComputeError`. Every valid computation is unaffected. Tracked as
+[pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005); the cap lifts once that is
+resolved or once those four closed forms move into Rust.

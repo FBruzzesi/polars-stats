@@ -34,7 +34,13 @@ classifiers = [
 
 dynamic = ["version"]
 dependencies = [
-    "polars>=1.15.0",
+    # Capped below 1.44.0: pola-rs/polars#28498 added two `when/then/otherwise` optimisations that stop a
+    # validating plugin inside an arm from seeing the rows it does not select, so the four distributions
+    # that assemble their closed forms in Python accept an invalid parameterisation instead of raising.
+    # Reported as pola-rs/polars#29005.
+    # TODO(FBruzzesi): Lift the cap when upstream resolves it, or when those four closed forms move into Rust.
+    # `tests/distributions/validation_contract_test.py` is what turns red either way.
+    "polars>=1.15.0,<1.44.0",
 ]
 
 [project.urls]
