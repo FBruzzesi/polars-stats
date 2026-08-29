@@ -26,14 +26,10 @@ def test_mean_propagates_null_in_bounds(bounds_with_null: pl.DataFrame) -> None:
 
 @pytest.mark.parametrize(("lo", "hi"), [(2**62, 2**62 + 10), (2**62, 2**63 - 1)])
 def test_mean_does_not_wrap_near_the_int64_ceiling(lo: int, hi: int, unit_frame: pl.DataFrame) -> None:
-    """`min + max` overflows `Int64` well inside the range the validator accepts.
-
-    Oracled by exact rational arithmetic rounded once, not the same sum spelled differently. A wrapped
-    sum misses `[min, max]` by `9.2e18`, though containment is not a general invariant: for a support
-    narrower than one float step the correctly rounded midpoint can sit half a step outside it.
-    """
+    """`min + max` overflows `Int64` well inside the validated range; the oracle is the exact midpoint rounded once."""
     result = unit_frame.select(v=DiscreteUniform(min=lo, max=hi).mean()).item(0, "v")
     assert result == float(Fraction(lo + hi, 2))
+    # Containment holds for these pairs; it is not a general invariant for supports narrower than a float step.
     assert lo <= result <= hi
 
 
@@ -46,12 +42,9 @@ def test_mean_does_not_wrap_near_the_int64_ceiling(lo: int, hi: int, unit_frame:
     ],
 )
 def test_mean_is_exact_for_bounds_straddling_zero(lo: int, hi: int, unit_frame: pl.DataFrame) -> None:
-    """Summing the bounds in `Float64` rounds both before they cancel; the `Int64` midpoint does not.
-
-    The exact midpoint is representable for each of these pairs, so anything but equality is the
-    cancellation defect rather than an unavoidable rounding.
-    """
+    """Summing the bounds in `Float64` rounds both before they cancel; the `Int64` midpoint does not."""
     exact = Fraction(lo + hi, 2)
+    # Each midpoint is representable, so any inequality below is the cancellation defect, not rounding.
     assert Fraction(float(exact)) == exact
     result = unit_frame.select(v=DiscreteUniform(min=lo, max=hi).mean()).item(0, "v")
     assert result == float(exact)

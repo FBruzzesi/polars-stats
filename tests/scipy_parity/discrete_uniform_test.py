@@ -47,11 +47,7 @@ _CASES: list[Case[DiscreteUniform]] = [
 @pytest.mark.parametrize("bounds", _BOUNDS, ids=[f"bounds={b}" for b in _BOUNDS])
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
 def test_method_matches_scipy(case: Case[DiscreteUniform], bounds: tuple[int, int]) -> None:
-    """Every closed-form method matches `scipy.stats.randint(low=min, high=max + 1)` across grids.
-
-    `median` is absent deliberately: this crate reports the midpoint where scipy answers `ppf(0.5)`,
-    asserted in `tests/distributions/discrete_uniform/median_test.py` instead.
-    """
+    """Every closed form matches `randint(low=min, high=max + 1)`; `median` diverges by design, see `median_test.py`."""
     lo, hi = bounds
     assert_case_matches_scipy(
         case,
@@ -64,11 +60,7 @@ def test_method_matches_scipy(case: Case[DiscreteUniform], bounds: tuple[int, in
 
 @pytest.mark.parametrize(("lo", "hi"), [(1, 12), (1, 6), (-5, 9), (0, 100)])
 def test_ppf_exact_integer_parity_across_a_full_support(lo: int, hi: int) -> None:
-    """The closed-form ppf matches scipy to exact integer equality at every cdf step and both ulp neighbours.
-
-    Integer equality rather than a float tolerance: a shared closed form should agree exactly, and a
-    one-sided rounding difference shows up as an off-by-one. Endpoints stay out, per `_QUANTILES`.
-    """
+    """Exact integer parity with scipy at every cdf step and both ulp neighbours; a shared closed form has no slack."""
     n = hi - lo + 1
     edges = [k / n for k in range(1, n)]
     quantiles = sorted(set(edges + [e - 2**-53 for e in edges] + [e + 2**-53 for e in edges]))
@@ -78,11 +70,7 @@ def test_ppf_exact_integer_parity_across_a_full_support(lo: int, hi: int) -> Non
 
 
 def test_cdf_max_is_one_where_an_exclusive_reading_is_not() -> None:
-    """`cdf(max)` is exactly 1, which treating the bound as exclusive cannot say.
-
-    The behavioural marker of the inclusive convention: passing `max` as `randint`'s exclusive `high`
-    reads one support point fewer, answering `(max - min) / (max - min + 1)` at `max` instead of 1.
-    """
+    """`cdf(max)` is exactly 1; an exclusive reading of the bound answers `(max - min) / (max - min + 1)` there."""
     lo, hi = 1, 6
     ours = pl.DataFrame({"x": [float(hi)]}).select(r=DiscreteUniform(min=lo, max=hi).cdf("x"))["r"][0]
     assert ours == 1.0

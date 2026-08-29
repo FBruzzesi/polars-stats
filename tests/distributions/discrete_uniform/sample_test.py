@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
@@ -73,6 +74,33 @@ def test_sample_mean_close_to_midpoint_for_large_n(frame: Callable[..., pl.DataF
     observed = result["k"].mean()
     assert isinstance(observed, float)
     assert abs(observed - 3.5) < 0.01 * 5
+
+
+def test_sample_in_group_by_draws_per_group(seed: int) -> None:
+    local_rng = np.random.default_rng(seed=seed)
+    n_per_group, n_groups = 200, 40
+    lo = local_rng.integers(-20, 10, size=n_groups * n_per_group)
+    dframe = pl.DataFrame(
+        {
+            "group": np.repeat(np.arange(n_groups), n_per_group),
+            "lo": lo,
+            "hi": lo + local_rng.integers(0, 30, size=n_groups * n_per_group),
+        },
+    )
+    agg = (
+        dframe.group_by("group", maintain_order=True)
+        .agg(
+            sum_const=DiscreteUniform(min=1, max=6).sample(seed=seed).sum(),
+            sum_varying=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).sample(seed=seed).sum(),
+            size=pl.len(),
+        )
+        .sort("group")
+    )
+    assert agg.get_column("size").eq(n_per_group).all()
+    # Constant bounds + constant seed + identical per-group indices => identical sums across groups.
+    assert len(set(agg.get_column("sum_const").to_list())) == 1
+    # Per-row bounds vary across groups, so per-group sums must vary too.
+    assert len(set(agg.get_column("sum_varying").to_list())) > 1
 
 
 def test_sample_null_bound_row_is_null(seed: int) -> None:

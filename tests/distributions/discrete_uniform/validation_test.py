@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -81,6 +82,27 @@ def test_any_integer_bound_dtype_is_accepted(dtype: pl.DataType) -> None:
     df = pl.DataFrame({"lo": [1, 2], "hi": [6, 7]}, schema={"lo": dtype, "hi": dtype})
     result = df.select(v=DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")).mean())["v"]
     assert result.to_list() == [3.5, 4.5]
+
+
+@pytest.mark.parametrize("dtype", [pl.Int8, pl.Int16])
+def test_support_wider_than_the_bound_dtype_does_not_wrap(dtype: pl.DataType) -> None:
+    """Bound arithmetic widens to Int64, so a support wider than the bounds' own dtype stays exact."""
+    df = pl.DataFrame({"lo": [-100], "hi": [100], "x": [99]}, schema={"lo": dtype, "hi": dtype, "x": dtype})
+    d = DiscreteUniform(min=pl.col("lo"), max=pl.col("hi"))
+    result = df.select(
+        mean=d.mean(),
+        median=d.median(),
+        cdf=d.cdf(pl.col("x")),
+        sf=d.sf(pl.col("x")),
+        log_cdf=d.log_cdf(pl.col("x")),
+        log_sf=d.log_sf(pl.col("x")),
+    )
+    assert result["mean"][0] == 0.0
+    assert result["median"][0] == 0.0
+    assert result["cdf"][0] == pytest.approx(200 / 201)
+    assert result["sf"][0] == pytest.approx(1 / 201)
+    assert result["log_cdf"][0] == pytest.approx(math.log(200 / 201))
+    assert result["log_sf"][0] == pytest.approx(math.log(1 / 201))
 
 
 def test_unsigned_bound_above_int64_max_raises() -> None:

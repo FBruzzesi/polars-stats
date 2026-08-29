@@ -1095,6 +1095,16 @@ def build_registry() -> tuple[DistributionSpec, ...]:
     from `tests/property/_specs.py` is silently untested.
     """
     f64 = (pl.Float64(), pl.Float64())
+    # Shared between the DiscreteUniform spec and its Int64-edge twin below, which audits the same
+    # closed forms at bounds where `min + max` overflows.
+    discrete_uniform_midpoint = constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2)
+    discrete_uniform_moments = moments(
+        discrete_uniform_midpoint,
+        constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
+        discrete_uniform_midpoint,
+        constant(lambda p: mp.log(_discrete_uniform_n(p))),
+        CLOSED_FORM_RTOL,
+    )
     return (
         DistributionSpec(
             name="Normal",
@@ -1407,13 +1417,7 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 ),
                 MethodSpec("ppf", discrete_uniform_ppf, DISCRETE_PPF_RTOL, quantile_points),
                 MethodSpec("isf", discrete_uniform_isf, DISCRETE_PPF_RTOL, survival_points),
-                *moments(
-                    constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
-                    constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
-                    constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
-                    constant(lambda p: mp.log(_discrete_uniform_n(p))),
-                    CLOSED_FORM_RTOL,
-                ),
+                *discrete_uniform_moments,
             ),
         ),
         DistributionSpec(
@@ -1439,13 +1443,7 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 (-(2**63) + 1, -(2**63) + 11),
                 (-(2**63) + 1, -(2**62)),
             ),
-            methods=moments(
-                constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
-                constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
-                constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2),
-                constant(lambda p: mp.log(_discrete_uniform_n(p))),
-                CLOSED_FORM_RTOL,
-            ),
+            methods=discrete_uniform_moments,
         ),
     )
 

@@ -20,11 +20,7 @@ def seed() -> int:
 
 @pytest.fixture
 def frame() -> Callable[..., pl.DataFrame]:
-    """Factory for a frame with per-row bounds `lo <= hi` for column-valued sampling.
-
-    Seeds a fresh generator on every call, so the data is reproducible regardless of test execution
-    order, selection (`-k`) or sharding, rather than depending on a shared session-scoped stream.
-    """
+    """Frame factory with per-row bounds `lo <= hi`; a fresh generator per call keeps it order-independent."""
 
     def _make(size: int = DEFAULT_SIZE) -> pl.DataFrame:
         local_rng = np.random.default_rng(seed=SEED)

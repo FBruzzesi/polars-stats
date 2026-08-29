@@ -78,16 +78,11 @@ def test_isf_matches_the_exact_closed_form_off_the_representable_edges(lo: int, 
 
 @pytest.mark.parametrize(("lo", "hi"), [(1, 6), (0, 7), (-5, 9), (0, 100), (-20, -10), (3, 3), (0, 999)])
 def test_isf_round_trips_every_support_point_to_within_one_step(lo: int, hi: int) -> None:
-    """`isf(sf(x))` is `x`, or the one point above it where `_sf`'s reciprocal multiply rounds low.
-
-    The one-point bound is what is portable: `_sf` multiplies by a rounded `1 / N` while `_isf` probes
-    with an honest division, so at an exactly representable step edge the two disagree by one point.
-    Asserting only `sf(isf(q)) <= q` would be vacuous, since `sf(max) == 0` satisfies it for every `q`.
-    """
+    """`isf(sf(x))` is `x` or the point above it, where `_sf`'s rounded `1 / N` and the probe's division disagree."""
     d = DiscreteUniform(min=lo, max=hi)
     points = pl.DataFrame({"x": [float(p) for p in range(lo, hi + 1)]})
     round_trip = points.select(x=pl.col("x"), rt=d.isf(d.sf("x")))
     assert round_trip.select(((pl.col("rt") == pl.col("x")) | (pl.col("rt") == pl.col("x") + 1)).all()).item()
-    # And the survival contract itself, which the bound above does not imply.
+    # The survival contract too; alone it is vacuous, since `sf(max) == 0` satisfies it for every `q`.
     quantiles = points.select(q=d.sf("x"))
     assert quantiles.select((d.sf(d.isf("q")) <= pl.col("q")).all()).item()
