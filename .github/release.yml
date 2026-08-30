@@ -1,0 +1,51 @@
+---
+
+# https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+# Read from the default branch. Builds the PR appendix; the prose that leads a release is written by
+# hand and prepended with `gh release create <tag> --generate-notes --notes "$(...)"`.
+changelog:
+  exclude:
+    labels:
+      - release  # the `bump-version` PR, whose only content is the version string
+      - ai-spam
+      - duplicate
+      - invalid
+      - wontfix
+  # First match wins. `python` and `rust` mark the area a PR touched, not the kind of change, so a
+  # PR carrying only those falls to "Other changes" and needs a type label.
+  categories:
+    - title: '⚠️ Breaking changes'
+      labels:
+        - breaking
+    - title: '🚀 Features'
+      labels:
+        - enhancement
+    - title: '🐛 Fixes'
+      labels:
+        - fix
+        - bug
+    - title: '⚡ Performance'
+      labels:
+        - performance
+        - optimization
+    - title: '📚 Documentation'
+      labels:
+        - documentation
+        - docs
+    - title: '📦 Dependencies'
+      labels:
+        - dependencies
+    - title: '🧪 CI and tests'
+      labels:
+        - ci
+        - tests
+        - github_actions
+    - title: '🔧 Maintenance and internals'
+      labels:
+        - internal
+        - maintenance
+        - chore
+        - refactor
+    - title: Other changes
+      labels:
+        - "*"
