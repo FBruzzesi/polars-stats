@@ -1,6 +1,6 @@
 [package]
 name = "polars-stats"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Probability distributions as Polars expressions"
 license = "MIT"
