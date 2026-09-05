@@ -62,14 +62,28 @@ mean of a different distribution on every row.
 | Dimension | Values |
 |---|---|
 | Python | 3.10 to 3.14 (per `requires-python`), single abi3 wheel |
-| Polars | `>=1.15` (the `pyo3-polars` ABI floor) to `<1.44` (see below) |
+| Polars | `>=1.15` (the `pyo3-polars` ABI floor) |
 | OS | wheels for Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64 |
 | Runtime dependencies | `polars` only |
 
-The upper bound is not a compatibility floor but a correctness one. Polars 1.44.0
-([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) added two `when/then/otherwise`
-optimisations that hide the rows an arm does not select from the plugin inside it, so `Bernoulli`,
-`Exponential`, `Geometric` and `Uniform` return a value for an invalid parameterisation instead of
-raising `ComputeError`. Every valid computation is unaffected. Tracked as
-[pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005); the cap lifts once that is
-resolved or once those four closed forms move into Rust.
+!!! warning "Known limitation on polars >= 1.44"
+
+    On polars 1.44.0 and newer, `Bernoulli`, `Exponential`, `Geometric` and `Uniform` may **return a
+    value instead of raising `ComputeError`** when a *column-valued* parameter is invalid on a row the
+    selected branch does not cover.
+
+    Polars 1.44.0 ([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) masks the arms
+    of a `when/then/otherwise` to null on the rows an arm does not select, so a validator reached only
+    from inside an arm never sees the offending row. Those four distributions assemble their
+    value-keyed closed forms (`pdf`/`pmf`, `log_pdf`/`log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`,
+    `ppf`, `isf`) as branching Polars expressions, so they are affected; `Exponential.log_cdf` is the
+    one exception that still raises.
+
+    **Not affected:** every other distribution (they compute in Rust and validate unconditionally),
+    the moments (`mean`, `variance`, `std`, `median`, `entropy`) of all four, every scalar
+    parameterisation, and every *valid* computation, whose results are unchanged.
+
+    **Workarounds:** pin `polars<1.44` yourself, or validate column parameters before passing them.
+
+    Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005). The limitation
+    goes away as each of the four moves its closed forms into Rust, which is in progress.

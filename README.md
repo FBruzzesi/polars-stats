@@ -104,7 +104,7 @@ tail of `ppf` misbehaves. Every known limit is listed with a regime and a magnit
 pip install polars-stats
 ```
 
-Runtime needs `polars>=1.15,<1.44` and Python `>=3.10`.
+Runtime needs `polars>=1.15` and Python `>=3.10`.
 
 ## Documentation
 
