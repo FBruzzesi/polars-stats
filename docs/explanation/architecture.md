@@ -68,14 +68,15 @@ the expression engine. Methods that go through `statrs` (sampling, transcendenta
 native `ln_pdf`/`ln_pmf`, native `sf`) get a Rust plugin function, and so do the elementary value-keyed closed forms:
 they branch on the evaluation value, which puts the validator inside a `when` arm where polars can mask it away
 (see [Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)).
-`Geometric` and `Uniform` are the two that have not moved yet.
+`Geometric` is the one that has not moved yet.
 
 **Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so any method computed in Python routes its
-parameters through one small validating plugin that raises on a bad row and returns a reused quantity. For a
-closed-form distribution that covers the whole surface: `Uniform.range` returns `max - min` and raises on
-`max <= min`. Everywhere else it covers the closed-form moments only, since the value-keyed methods already validate
+parameters through one small validating plugin that raises on a bad row and returns a reused quantity. For
+`Geometric`, the last distribution assembling its value-keyed methods in Polars, that covers the whole surface.
+Everywhere else it covers the closed-form moments only, since the value-keyed methods already validate
 inside their own plugin: `normal_sigma` validates `sigma > 0`, so `Normal.mean()` raises exactly as `Normal.pdf()`
-does, and `bernoulli_proba` and `exponential_rate` do the same for `Bernoulli`'s and `Exponential`'s moments. Either
+does, and `uniform_range` returns `max - min` and raises on `max <= min` for `Uniform`'s five moments, as
+`bernoulli_proba` and `exponential_rate` do for `Bernoulli`'s and `Exponential`'s. Either
 way a pure-math `mean` makes one FFI round-trip and reports an invalid parameterisation consistently, trading a little
 throughput for a uniform error surface.
 

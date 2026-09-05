@@ -5,6 +5,7 @@ use statrs::distribution::Exp;
 
 use crate::distributions::{
     align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    Domain,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
@@ -207,25 +208,6 @@ fn derive_ln_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
     Sides {
         below_support: 0.0,
         on_support: rate.map(|rate| move |x: f64| -rate * x),
-    }
-}
-
-/// `ppf` / `isf`: the arm inside the closed quantile domain, null outside it.
-///
-/// One slot rather than [`Sides`]' two, because no part of either inverse survives a null rate, at
-/// any quantile in range or out.
-struct Domain<Arm> {
-    inside: Option<Arm>,
-}
-
-impl<Arm: Fn(f64) -> f64> Domain<Arm> {
-    /// `None` (null) outside `[0, 1]`, matching the `quantile.is_between(0, 1)` this replaces.
-    /// `-0.0` is inside, since `-0.0 == 0.0`.
-    fn at(&self, quantile: f64) -> Option<f64> {
-        if !(0.0..=1.0).contains(&quantile) {
-            return None;
-        }
-        self.inside.as_ref().map(|arm| arm(quantile))
     }
 }
 

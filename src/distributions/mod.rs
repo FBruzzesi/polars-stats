@@ -165,7 +165,7 @@ where
             };
             // Build before the value is read at all, so an invalid parameterisation raises whatever
             // the row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `validation_contract_test.py`.
+            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
             let dist = build(p1, p2)?;
             let Some(value) = value_opt else {
                 return Ok(None);
@@ -228,7 +228,7 @@ where
         |value_opt, param_opt| -> PolarsResult<Option<f64>> {
             // Validate before the value is read at all, so an invalid parameter raises whatever the
             // row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `validation_contract_test.py`.
+            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
             if let Some(param) = param_opt {
                 validate(param)?;
             }
@@ -246,15 +246,93 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
+/// The closed quantile domain `[0, 1]`, for the inverses of a distribution that computes its own
+/// closed form rather than building a `statrs` one.
+///
+/// One slot rather than the two or three a support needs, because no part of either inverse
+/// survives a null parameter, at any quantile in range or out: `Exponential`'s and `Uniform`'s
+/// `null_param(s)_test.py` each pin it.
+pub(crate) struct Domain<Arm> {
+    pub(crate) inside: Option<Arm>,
+}
+
+impl<Arm: Fn(f64) -> f64> Domain<Arm> {
+    /// `None` (null) outside `[0, 1]`; `-0.0` is inside, since `-0.0 == 0.0`.
+    ///
+    /// A `NaN` quantile never reaches here: every driver short-circuits it, which is what lets this
+    /// be a plain range check.
+    pub(crate) fn at(&self, quantile: f64) -> Option<f64> {
+        if !(0.0..=1.0).contains(&quantile) {
+            return None;
+        }
+        self.inside.as_ref().map(|arm| arm(quantile))
+    }
+}
+
+/// Two-parameter sibling of [`value_keyed_derived_per_row`], over `try_ternary_elementwise`.
+///
+/// "Pair" counts the *distribution parameters* (`Uniform`'s two bounds); the driver itself takes
+/// three `Series`. Kept beside the one-parameter version rather than generified over arity, because
+/// `derive` needs both `Option`s in scope to answer from one bound while the other is null.
+///
+/// Null contract: as in [`value_keyed_derived_per_row`], with the parameter half now two-sided. A
+/// null **value** nulls the row without validating. A null parameter reaches `derive` as `None`, so
+/// the branches a single known parameter already settles still answer. Nothing is validated there,
+/// since a half-specified parameterisation is not one to reject.
+///
+/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `validate` has run, so an
+/// invalid parameterisation still raises on a `NaN` row.
+pub(crate) fn value_keyed_derived_pair_per_row<Dist, Branches, Validate, Derive, Select>(
+    inputs: &[Series],
+    validate: Validate,
+    derive: Derive,
+    select: Select,
+) -> PolarsResult<Series>
+where
+    Validate: Fn(f64, f64) -> PolarsResult<Dist>,
+    Derive: Fn(Option<f64>, Option<f64>) -> Branches,
+    Select: Fn(&Branches, f64) -> Option<f64>,
+{
+    let inputs = align_inputs(inputs)?;
+    let value = inputs[0].cast(&DataType::Float64)?;
+    let param_a = inputs[1].cast(&DataType::Float64)?;
+    let param_b = inputs[2].cast(&DataType::Float64)?;
+    let name = inputs[0].name().clone();
+
+    let ca: Float64Chunked = try_ternary_elementwise(
+        value.f64()?,
+        param_a.f64()?,
+        param_b.f64()?,
+        |value_opt, a_opt, b_opt| -> PolarsResult<Option<f64>> {
+            // Validate before the value is read at all, so an invalid parameterisation raises
+            // whatever the row's value is. Only a null or `NaN` *value* propagates. Pinned by
+            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
+            if let (Some(a), Some(b)) = (a_opt, b_opt) {
+                validate(a, b)?;
+            }
+            let Some(value) = value_opt else {
+                return Ok(None);
+            };
+            Ok(if value.is_nan() {
+                Some(f64::NAN)
+            } else {
+                select(&derive(a_opt, b_opt), value)
+            })
+        },
+    )?;
+
+    Ok(ca.with_name(name).into_series())
+}
+
 /// Shared driver for the two-parameter validation plugins: `validate` builds the distribution per
 /// row and returns the `Float64` to emit, either a parameter itself (`sigma`) or a quantity derived
 /// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
 /// Any null input nulls the row without calling `validate`, matching the samplers.
 ///
 /// These plugins are what let the closed-form moments, and the value-keyed methods still assembled
-/// in Polars (`Geometric`, `Uniform`), report an invalid parameterisation through the same Rust
-/// `build_dist`. The constant-parameter fast path calls the same plugin on length-1
-/// `pl.lit` inputs, so it is built once instead of per row.
+/// in Polars (`Geometric`), report an invalid parameterisation through the same Rust `build_dist`.
+/// The constant-parameter fast path calls the same plugin on length-1 `pl.lit` inputs, so it is
+/// built once instead of per row.
 ///
 /// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
 /// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and

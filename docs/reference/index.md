@@ -68,20 +68,20 @@ mean of a different distribution on every row.
 
 !!! warning "Known limitation on polars >= 1.44"
 
-    On polars 1.44.0 and newer, `Geometric` and `Uniform` may **return a value instead of raising
+    On polars 1.44.0 and newer, `Geometric` may **return a value instead of raising
     `ComputeError`** when a *column-valued* parameter is invalid on a row the selected branch does
     not cover.
 
     Polars 1.44.0 ([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) masks the arms
     of a `when/then/otherwise` to null on the rows an arm does not select, so a validator reached only
-    from inside an arm never sees the offending row. These two distributions assemble their
-    value-keyed closed forms (`pdf`/`pmf`, `log_pdf`/`log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`,
-    `ppf`, `isf`) as branching Polars expressions, so they are affected.
+    from inside an arm never sees the offending row. `Geometric` assembles its value-keyed closed
+    forms (`pmf`, `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf`, `isf`) as branching Polars
+    expressions, so it is affected.
 
     **Not affected:** every other distribution (they compute in Rust and validate unconditionally),
-    the moments (`mean`, `variance`, `std`, `median`, `entropy`) of both, and every *valid*
-    computation, whose results are unchanged. `Bernoulli` and `Exponential` were affected up to and
-    including v0.0.2 and no longer are: their closed forms now compute in Rust.
+    `Geometric`'s own moments (`mean`, `variance`, `std`, `median`, `entropy`), and every *valid*
+    computation, whose results are unchanged. `Bernoulli`, `Exponential` and `Uniform` were affected
+    up to and including v0.0.2 and no longer are: their closed forms now compute in Rust.
 
     One narrower case survives for *every* distribution and *both* parameter spellings, scalar
     included: a **null or `NaN` evaluation point** is masked out of the plugin's input by the wrapper
@@ -93,4 +93,4 @@ mean of a different distribution on every row.
     **Workarounds:** pin `polars<1.44` yourself, or validate column parameters before passing them.
 
     Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005). The limitation
-    goes away as each of the three moves its closed forms into Rust, which is in progress.
+    goes away once `Geometric` moves its closed forms into Rust, which is in progress.
