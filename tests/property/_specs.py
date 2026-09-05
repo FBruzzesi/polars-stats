@@ -295,10 +295,10 @@ DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 
 # These specs compute in Polars, not in a Rust body, so with constant parameters their operands are
 # length-1 literals that polars may fold differently from the column kernel. Every IEEE operation is
-# exactly rounded, so the measured 1-ULP gap (`Exponential.ppf`, Uniform's `variance` / `std`) is a
-# different operation *order*, not a different formula. Extend from a failing assertion, never by
-# widening the tolerance.
-ULP_TOLERANT_VALUE_SPECS = frozenset({"uniform", "exponential"})
+# exactly rounded, so the measured 1-ULP gap (Uniform's `variance` / `std`) is a different operation
+# *order*, not a different formula. Extend from a failing assertion, never by widening the tolerance.
+# A spec whose closed forms move into Rust leaves this set: one body then feeds both paths.
+ULP_TOLERANT_VALUE_SPECS = frozenset({"uniform"})
 """Specs whose value-keyed methods compare to `ULP_REL_TOL` instead of bit-exactly."""
 
 ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform", "geometric"})

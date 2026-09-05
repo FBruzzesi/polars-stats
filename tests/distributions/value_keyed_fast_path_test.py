@@ -1,7 +1,7 @@
 """Validation contract of the constant-parameter value-keyed fast path.
 
-Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform and Bernoulli: the distributions with
-per-method Rust plugins.
+Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform, Bernoulli and Exponential: the
+distributions with per-method Rust plugins.
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
 plugin that validates and builds the `statrs` distribution once (via the shared `build_dist`), instead of rebuilding it
@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, LogNormal, Normal
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, LogNormal, Normal
 from polars_stats.distributions._base import ContinuousDistribution
 from tests._polars_compat import assert_series_equal
 
@@ -83,6 +83,12 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     # An infinite shape is *rejected* by statrs, unlike the Normal / LogNormal scale; both paths must
     # agree on that too.
     "beta a=inf (rejected)": (lambda: Beta(_INF, 1.0), lambda: Beta(_col(_INF), _col(1.0)), True),
+    "exponential rate=nan": (lambda: Exponential(_NAN), lambda: Exponential(_col(_NAN)), True),
+    "exponential rate=0": (lambda: Exponential(0.0), lambda: Exponential(_col(0.0)), True),
+    "exponential rate=-1": (lambda: Exponential(-1.0), lambda: Exponential(_col(-1.0)), True),
+    # An infinite rate is accepted by statrs as the degenerate point mass at 0, like the Normal
+    # scale and unlike the Beta shape; both paths must accept it identically.
+    "exponential rate=inf (accepted)": (lambda: Exponential(_INF), lambda: Exponential(_col(_INF)), False),
     "discreteuniform min>max": (
         lambda: DiscreteUniform(6, 1),
         lambda: DiscreteUniform(_col(6, pl.Int64()), _col(1, pl.Int64())),

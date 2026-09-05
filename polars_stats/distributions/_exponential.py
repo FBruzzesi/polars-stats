@@ -3,25 +3,17 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
-    expm1,
     scalar_float,
     scalar_kwargs,
 )
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from polars_stats._typing import IntoExprColumn
-
-_CDF_SINH_MAX = 1.0
-"""Crossover of `Exponential._cdf`, in units of `rate * x`.
-
-Above `rate * x = 1` the plain `1 - exp(-t)` is already exact, and the `sinh` identity that replaces
-it below would overflow past `t ~ 1420`. The two branches agree to `1e-16` here.
-"""
 
 
 class Exponential(ContinuousDistribution):
@@ -37,8 +29,16 @@ class Exponential(ContinuousDistribution):
 
     An invalid ``rate`` (``rate <= 0`` or ``NaN``) is not checked at construction; matching every
     other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is
-    evaluated. A null ``rate`` propagates to null. The support is ``x >= 0``: ``pdf`` and ``cdf`` are
-    ``0`` for ``x < 0``, and ``sf`` is ``1`` there.
+    evaluated. The support is ``x >= 0``: ``pdf`` and ``cdf`` are ``0`` for ``x < 0``, and ``sf`` is
+    ``1`` there.
+
+    A null ``rate`` propagates to null wherever the result depends on it. Below the support it does
+    not: ``pdf`` and ``cdf`` stay ``0``, ``sf`` stays ``1``, ``log_pdf`` and ``log_cdf`` stay
+    ``-inf``, ``log_sf`` stays ``0``. Both inverses null at every quantile.
+
+    The value-keyed methods compute in Rust, so an invalid ``rate`` is reported whichever branch the
+    evaluation point selects. The moments stay in Polars, reading ``rate`` through the same Rust
+    validator.
     """
 
     _rate: pl.Expr
@@ -56,90 +56,51 @@ class Exponential(ContinuousDistribution):
     def _checked_rate(self) -> pl.Expr:
         """``rate`` (λ) validated in Rust to be strictly positive (raises otherwise), as a length-n column.
 
-        Validated in Rust so every closed-form method (moments and pdf/cdf/ppf) reports an invalid
-        ``rate`` consistently with ``sample`` rather than silently computing with a non-positive rate.
-        Null propagates.
+        Validated in Rust so the closed-form moments report an invalid ``rate`` consistently with
+        ``sample`` rather than silently computing with a non-positive rate. Null propagates.
 
         `_checked` validates once for a scalar ``rate`` (length-1 input) and per-row for a column,
         returning the raw ``rate`` behind the validity gate either way (length-n on both paths). The
         analogue of ``Bernoulli._checked_p``: the validated quantity is the parameter itself.
+
+        Read only by the moments; the value-keyed methods validate inside their own plugin.
         """
         return self._checked("exponential_rate", self._rate)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """``rate * exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``, keeping the subnormal range exact.
-
-        Reassociated as ``(rate * exp(-rate * x / 2)) * exp(-rate * x / 2)``: the same product with
-        the rounding moved to the end. Written literally, ``exp(-rate * x)`` rounds into the
-        gradual-underflow range while the scale is still to be applied, and the multiply then
-        magnifies what the subnormal threw away. Halving the exponent keeps the intermediate normal,
-        so only the final multiply underflows, at the cost of one multiply and no branch.
-        """
-        r = self._checked_rate
-        half = (-r * value / 2).exp()
-        return pl.when(value >= 0).then((r * half) * half).otherwise(0.0)
+        """``rate * exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
+        return self._value_plugin("exponential_pdf", value)
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
         """``log(rate) - rate * x`` on ``x >= 0``, ``-inf`` for ``x < 0``."""
-        r = self._checked_rate
-        return pl.when(value >= 0).then(r.log() - r * value).otherwise(float("-inf"))
+        return self._value_plugin("exponential_ln_pdf", value)
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``, keeping the left tail exact.
-
-        ``1 - exp(-t)`` cancels to ``0`` below ``t ~ 1.1e-16``, so the small branch reads it as
-        ``-expm1(-t)``. ``sinh`` overflows above ``t ~ 1420``, hence the split at `_CDF_SINH_MAX`,
-        where the plain form is already exact; the two agree to ``1e-16`` at the crossover.
-        """
-        t = self._checked_rate * value
-        return pl.when(value < 0).then(0.0).when(t < _CDF_SINH_MAX).then(-expm1(-t)).otherwise(1 - (-t).exp())
+        """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
+        return self._value_plugin("exponential_cdf", value)
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """``log(cdf)`` in the left tail, ``log1p(-sf)`` in the right; ``-inf`` for ``x <= 0``.
-
-        As ``cdf -> 1`` the cdf rounds to ~1 and its log to a tiny, inaccurate value, so that side
-        goes through ``log1p`` of the small ``sf``. As ``cdf -> 0`` the log is well conditioned and
-        ``_cdf`` is exact there, so that side is simply its log.
-        """
-        return (
-            pl.when(self._checked_rate * value < 1).then(self._cdf(value).log()).otherwise((-self._sf(value)).log1p())
-        )
+        """``log(cdf)`` in the left tail, ``log1p(-sf)`` in the right; ``-inf`` for ``x <= 0``."""
+        return self._value_plugin("exponential_ln_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
-        """``exp(-rate * x)`` on ``x >= 0``, ``1`` for ``x < 0`` (closed form, accurate in the upper tail)."""
-        r = self._checked_rate
-        return pl.when(value >= 0).then((-r * value).exp()).otherwise(1.0)
+        """``exp(-rate * x)`` on ``x >= 0``, ``1`` for ``x < 0``."""
+        return self._value_plugin("exponential_sf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
         """``-rate * x`` on ``x >= 0``, ``0`` for ``x < 0``."""
-        r = self._checked_rate
-        return pl.when(value >= 0).then(-r * value).otherwise(0.0)
+        return self._value_plugin("exponential_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log1p(-q) / rate``; null for ``q`` outside ``[0, 1]``.
-
-        Through ``log1p`` rather than ``log(1 - q)``: the latter rounds ``1 - q`` to exactly ``1``
-        below ``q ~ 1.1e-16`` and collapses to ``-0.0``. The negation is written ``0.0 - q`` so an
-        unsigned quantile column promotes to ``Float64`` (polars rejects ``neg`` on an unsigned
-        dtype).
-        """
-        return (
-            pl.when(quantile.is_between(0, 1))
-            .then(-(0.0 - quantile).log1p() / self._checked_rate)
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``-log1p(-q) / rate``; null for ``q`` outside ``[0, 1]``."""
+        return self._value_plugin("exponential_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log(q) / rate``, the exact inverse survival function.
+        """``-log(q) / rate``; null for ``q`` outside ``[0, 1]``.
 
         Overrides the base ``ppf(1 - quantile)``, which forms the complement and then undoes it.
-        The closed form never builds it, and is exact for every ``q`` in ``(0, 1]``.
         """
-        return (
-            pl.when(quantile.is_between(0, 1))
-            .then(-quantile.log() / self._checked_rate)
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        return self._value_plugin("exponential_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``1 / rate``."""

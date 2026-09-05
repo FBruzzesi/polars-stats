@@ -3,7 +3,9 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
-use crate::distributions::{align_inputs, validate_params_unary};
+use crate::distributions::{
+    align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
+};
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
     samples_f64_output, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
@@ -33,15 +35,25 @@ impl ExponentialParamsKwargs {
     fn build(&self) -> PolarsResult<Exp> {
         build_dist(self.rate)
     }
+
+    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which owns
+    /// the validate-and-derive-once contract the fast path rests on.
+    fn value_keyed<Branches>(
+        &self,
+        value: &Series,
+        derive: impl Fn(Option<f64>) -> Branches,
+        select: impl Fn(&Branches, f64) -> Option<f64>,
+    ) -> PolarsResult<Series> {
+        value_keyed_derived_scalar(value, self.rate, build_dist, derive, select)
+    }
 }
 
 /// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `InvalidOperation`
 /// if `rate` is `NaN` or `rate <= 0`. `null` propagates.
 ///
-/// Exponential is an elementary closed-form distribution, so its pdf / cdf / ppf and moments are
-/// pure Polars expressions; routing the rate through this validator is what lets them report an
-/// invalid parameterisation consistently with `exponential_sample`, instead of silently computing
-/// with a non-positive rate.
+/// The moments derive from this so they report an invalid rate consistently with
+/// `exponential_sample`, instead of silently computing with a non-positive rate. The value-keyed
+/// methods validate inside their own plugin instead.
 #[polars_expr(output_type=Float64)]
 fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
@@ -50,6 +62,321 @@ fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
         build_dist(rate)?;
         Ok(rate)
     })
+}
+
+/// Crossover of [`derive_cdf`], in units of `t = rate * x`.
+///
+/// Above `t = 1` the plain `1 - exp(-t)` is already exact, and the [`expm1`] identity that replaces
+/// it below would overflow past `t ~ 1420`. The two branches agree to `1e-16` here.
+const CDF_SINH_MAX: f64 = 1.0;
+
+/// `exp(t) - 1` through the identity `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel.
+///
+/// **Deliberately not `f64::exp_m1`,** which differs from this identity by one ulp on roughly a
+/// fifth of the left tail. Every expected value in `tests/distributions/exponential/` is this
+/// identity's rounding, and `_base.expm1` spells it the same way for the distributions still
+/// assembled in Polars.
+///
+/// `sinh(t / 2)` overflows above `|t| ~ 1420`; the only caller crosses over at [`CDF_SINH_MAX`],
+/// long before that.
+#[inline]
+fn expm1(t: f64) -> f64 {
+    let half = t / 2.0;
+    2.0 * half.exp() * half.sinh()
+}
+
+// Exponential hoists less than Bernoulli: every on-support answer is a function of the rate *and*
+// the evaluation point, so a `derive_*` captures only the rate-only terms and the rest stays in the
+// arm. They are free functions rather than associated ones because each returns a distinct opaque
+// arm type.
+
+/// The two sides of the support, for the six value-keyed methods.
+///
+/// `below_support` is a plain `f64` derived with **no rate in scope**: below `x = 0` every answer is
+/// the rate-free support constant, so a null rate must not null it. Writing it as an `f64` rather
+/// than an `Option<f64>` leaves nothing to thread a rate through by accident. All six constants are
+/// pinned by `tests/distributions/exponential/null_params_test.py`.
+///
+/// `on_support` is `None` exactly when the rate is null, which nulls the answers that read it.
+struct Sides<Arm> {
+    below_support: f64,
+    on_support: Option<Arm>,
+}
+
+impl<Arm: Fn(f64) -> f64> Sides<Arm> {
+    /// `x < 0` takes the support constant, everything else the arm.
+    ///
+    /// Written `x < 0` rather than a negated `x >= 0`, so `-0.0` lands on the support. A `NaN` point
+    /// never reaches here: both drivers short-circuit it.
+    fn at(&self, value: f64) -> Option<f64> {
+        if value < 0.0 {
+            Some(self.below_support)
+        } else {
+            self.on_support.as_ref().map(|arm| arm(value))
+        }
+    }
+}
+
+/// `rate * exp(-rate * x)` on `x >= 0`, `0` below, keeping the subnormal range exact.
+///
+/// Reassociated as `(rate * exp(-rate * x / 2)) * exp(-rate * x / 2)`: the same product with the
+/// rounding moved to the end. Written literally, `exp(-rate * x)` rounds into the gradual-underflow
+/// range while the scale is still to be applied, and the final multiply then magnifies what the
+/// subnormal threw away. Halving the exponent keeps the intermediate normal, at the cost of one
+/// multiply and no branch.
+fn derive_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: 0.0,
+        on_support: rate.map(|rate| {
+            move |x: f64| {
+                let half_exp = (-rate * x / 2.0).exp();
+                (rate * half_exp) * half_exp
+            }
+        }),
+    }
+}
+
+/// `ln(rate) - rate * x` on `x >= 0`, `-inf` below. `ln(rate)` is the only term the rate alone fixes,
+/// so it is the only one [`value_keyed_derived_scalar`] can lift out of the loop.
+fn derive_ln_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: f64::NEG_INFINITY,
+        on_support: rate.map(|rate| {
+            let ln_rate = rate.ln();
+            move |x: f64| ln_rate - rate * x
+        }),
+    }
+}
+
+/// `1 - exp(-rate * x)` on `x >= 0`, `0` below, keeping the left tail exact.
+///
+/// `1 - exp(-t)` cancels to `0` below `t ~ 1.1e-16`, so the small branch reads it as `-expm1(-t)`;
+/// see [`CDF_SINH_MAX`] for why the crossover is where it is.
+fn derive_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: 0.0,
+        on_support: rate.map(|rate| {
+            move |x: f64| {
+                let t = rate * x;
+                if t < CDF_SINH_MAX {
+                    -expm1(-t)
+                } else {
+                    1.0 - (-t).exp()
+                }
+            }
+        }),
+    }
+}
+
+/// `ln(cdf)` in the left tail, `ln_1p(-sf)` in the right; `-inf` below the support.
+///
+/// As `cdf -> 1` the cdf rounds to ~1 and its log to a tiny, inaccurate value, so that side goes
+/// through `ln_1p` of the small `sf`. As `cdf -> 0` the log is well conditioned and [`derive_cdf`] is exact
+/// there, so that side is simply its log.
+///
+/// The predicate is `rate * x < 1`, a statement about where `ln(cdf)` is well conditioned, not a
+/// comparison against the computed cdf. It coincides with [`CDF_SINH_MAX`] rather than deriving from
+/// it, which is what lets the left arm inline [`derive_cdf`]'s `expm1` branch: on the support and
+/// below `t = 1` that is the only branch it would take.
+fn derive_ln_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: f64::NEG_INFINITY,
+        on_support: rate.map(|rate| {
+            move |x: f64| {
+                let t = rate * x;
+                if t < 1.0 {
+                    (-expm1(-t)).ln()
+                } else {
+                    (-(-t).exp()).ln_1p()
+                }
+            }
+        }),
+    }
+}
+
+/// `exp(-rate * x)` on `x >= 0`, `1` below.
+///
+/// The closed form, never `1 - cdf`: the complement quantises the upper tail to the `1.1e-16`
+/// spacing of `1.0` and reaches `0.0` below that.
+fn derive_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: 1.0,
+        on_support: rate.map(|rate| move |x: f64| (-rate * x).exp()),
+    }
+}
+
+/// `-rate * x` on `x >= 0`, `0` below: the plain log of [`derive_sf`].
+fn derive_ln_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+    Sides {
+        below_support: 0.0,
+        on_support: rate.map(|rate| move |x: f64| -rate * x),
+    }
+}
+
+/// `ppf` / `isf`: the arm inside the closed quantile domain, null outside it.
+///
+/// One slot, not two: no part of either inverse survives a null rate, at any quantile in range or
+/// out, so there is no rate-free constant to keep separate from the arm.
+struct Domain<Arm> {
+    inside: Option<Arm>,
+}
+
+impl<Arm: Fn(f64) -> f64> Domain<Arm> {
+    /// `None` (null) outside `[0, 1]`, matching the `quantile.is_between(0, 1)` this replaces.
+    /// `-0.0` is inside, since `-0.0 == 0.0`.
+    fn at(&self, quantile: f64) -> Option<f64> {
+        if !(0.0..=1.0).contains(&quantile) {
+            return None;
+        }
+        self.inside.as_ref().map(|arm| arm(quantile))
+    }
+}
+
+/// `-ln_1p(-q) / rate`, the exact inverse cdf; null outside `[0, 1]`.
+///
+/// Through `ln_1p` rather than `ln(1 - q)`: the latter rounds `1 - q` to exactly `1` below
+/// `q ~ 1.1e-16` and collapses to `-0.0`.
+///
+/// **The rate is divided by, never reciprocated.** `x * (1 / rate)` rounds twice where `x / rate`
+/// rounds once, and at a subnormal rate the reciprocal reaches `inf` and `NaN` where the division
+/// stays finite. So neither inverse hoists anything into its `derive`.
+///
+/// The negation keeps `ppf(-0.0) = -0.0`.
+fn derive_ppf(rate: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
+    Domain {
+        inside: rate.map(|rate| move |quantile: f64| (-((-quantile).ln_1p())) / rate),
+    }
+}
+
+/// `-ln(q) / rate`, the exact inverse survival function; null outside `[0, 1]`.
+///
+/// Never `ppf(1 - q)`: that forms the complement and then undoes it, losing the answer whenever
+/// either step saturates.
+fn derive_isf(rate: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
+    Domain {
+        inside: rate.map(|rate| move |quantile: f64| (-quantile.ln()) / rate),
+    }
+}
+
+/// Element-wise pdf; see [`derive_pdf`] for the subnormal reassociation.
+/// See [`value_keyed_derived_per_row`] for the null/error contract.
+#[polars_expr(output_type=Float64)]
+fn exponential_pdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_pdf, Sides::at)
+}
+
+/// Element-wise log-pdf; see [`derive_ln_pdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_ln_pdf, Sides::at)
+}
+
+/// Element-wise cdf `P(X <= value)`; see [`derive_cdf`] and [`CDF_SINH_MAX`].
+#[polars_expr(output_type=Float64)]
+fn exponential_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_cdf, Sides::at)
+}
+
+/// Element-wise log-cdf; see [`derive_ln_cdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_ln_cdf, Sides::at)
+}
+
+/// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
+#[polars_expr(output_type=Float64)]
+fn exponential_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_sf, Sides::at)
+}
+
+/// Element-wise log-sf; see [`derive_ln_sf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_ln_sf, Sides::at)
+}
+
+/// Element-wise ppf (inverse cdf); see [`derive_ppf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ppf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_ppf, Domain::at)
+}
+
+/// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
+#[polars_expr(output_type=Float64)]
+fn exponential_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed_derived_per_row(inputs, build_dist, derive_isf, Domain::at)
+}
+
+/// Constant-rate fast path for [`exponential_pdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_pdf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_pdf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_ln_pdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_pdf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_ln_pdf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_cdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_cdf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_cdf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_ln_cdf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_cdf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_ln_cdf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_sf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_sf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_sf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_ln_sf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ln_sf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_ln_sf, Sides::at)
+}
+
+/// Constant-rate fast path for [`exponential_ppf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_ppf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_ppf, Domain::at)
+}
+
+/// Constant-rate fast path for [`exponential_isf`].
+#[polars_expr(output_type=Float64)]
+fn exponential_isf_scalar(
+    inputs: &[Series],
+    kwargs: ExponentialParamsKwargs,
+) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], derive_isf, Domain::at)
 }
 
 /// One Exponential draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
