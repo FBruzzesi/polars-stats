@@ -334,8 +334,8 @@ fn coerce_points(value: &Series) -> PolarsResult<Points> {
 
 /// Apply a closed-form `f(support, point)` element-wise over `(value, min, max)`; shared by the
 /// six value-keyed plugins with an integer-exact path. Null and `NaN` contracts follow
-/// [`value_keyed_per_row`]: any null input nulls the row without building, an invalid
-/// parameterisation raises via [`build_support`] even on a `NaN` row.
+/// [`value_keyed_per_row`]: a null bound nulls the row without building, and an invalid
+/// parameterisation raises via [`build_support`] whatever the row's point is.
 fn du_value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Support, Point) -> Option<f64>,
@@ -359,8 +359,8 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// One row of [`du_value_keyed`]: build before the `NaN` short-circuit, so an invalid
-/// parameterisation still raises on a `NaN` row, exactly as [`value_keyed_per_row`] orders it.
+/// One row of [`du_value_keyed`]: build before the point is read, so an invalid parameterisation
+/// raises whatever the row's point is, exactly as [`value_keyed_per_row`] orders it.
 #[inline]
 fn per_row<F>(
     point: Option<Point>,
@@ -371,16 +371,17 @@ fn per_row<F>(
 where
     F: Fn(&Support, Point) -> Option<f64>,
 {
-    match (point, min, max) {
-        (Some(point), Some(min), Some(max)) => {
-            let support = build_support(min, max)?;
-            Ok(match point {
-                Point::Float(v) if v.is_nan() => Some(f64::NAN),
-                _ => f(&support, point),
-            })
-        },
-        _ => Ok(None),
-    }
+    let (Some(min), Some(max)) = (min, max) else {
+        return Ok(None);
+    };
+    let support = build_support(min, max)?;
+    let Some(point) = point else {
+        return Ok(None);
+    };
+    Ok(match point {
+        Point::Float(v) if v.is_nan() => Some(f64::NAN),
+        _ => f(&support, point),
+    })
 }
 
 /// Element-wise pmf: `1 / N` on the integer support, `0` off it, `NaN` for a `NaN` value.
