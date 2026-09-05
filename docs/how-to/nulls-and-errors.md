@@ -23,7 +23,10 @@ print(df.with_columns(density=ps.Normal().pdf("x")))
 ```
 
 A null *parameter* behaves the same way: that row's result is null, and no error is raised. This matters when
-parameters are estimated, because an under-sized group yields a null `sigma`.
+parameters are estimated, because an under-sized group yields a null `sigma`. The one refinement is that a null
+parameter nulls the answer only where the answer depends on it, so an off-support constant survives: on a row
+whose `lo` is null, `Uniform(min="lo", max="hi").pdf(5.0)` is still `0.0` wherever `hi` is below `5.0`; see
+[Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors).
 
 ## Find the rows that would raise
 

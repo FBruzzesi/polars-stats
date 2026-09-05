@@ -462,7 +462,7 @@ class _UnivariateDistribution(ABC):
 
         A value-keyed method belongs here even where its closed form is elementary: a branching Polars
         expression cannot be trusted to reach its validator on every row (see docs/explanation/design.md).
-        `Geometric` and `Uniform` have not moved yet and still assemble theirs in Polars.
+        `Geometric` has not moved yet and still assembles its own in Polars.
         """
         return (
             register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)

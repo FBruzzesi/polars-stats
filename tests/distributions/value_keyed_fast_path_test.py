@@ -1,6 +1,6 @@
 """Validation contract of the constant-parameter value-keyed fast path.
 
-Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform, Bernoulli and Exponential: the
+Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform, Bernoulli, Exponential and Uniform: the
 distributions with per-method Rust plugins.
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, LogNormal, Normal
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, LogNormal, Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution
 from tests._polars_compat import assert_series_equal
 
@@ -100,6 +100,14 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
         lambda: DiscreteUniform(_col(3, pl.Int64()), _col(3, pl.Int64())),
         False,
     ),
+    "uniform max<min": (lambda: Uniform(5.0, 2.0), lambda: Uniform(_col(5.0), _col(2.0)), True),
+    # `min == max` is an empty support for a *continuous* uniform, unlike the discrete one above, so
+    # here the two distributions disagree and both uniform paths must reject it.
+    "uniform max=min": (lambda: Uniform(3.0, 3.0), lambda: Uniform(_col(3.0), _col(3.0)), True),
+    "uniform max=nan": (lambda: Uniform(0.0, _NAN), lambda: Uniform(_col(0.0), _col(_NAN)), True),
+    # Individually finite bounds whose width overflows `f64`: rejected by uniform's own guard rather
+    # than by statrs, and the fast path must apply it as the per-row path does.
+    "uniform width overflows": (lambda: Uniform(-1e308, 1e308), lambda: Uniform(_col(-1e308), _col(1e308)), True),
 }
 
 

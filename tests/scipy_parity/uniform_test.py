@@ -69,9 +69,9 @@ def test_log_methods_keep_the_near_certain_side(lo: float, hi: float, offset: fl
 
     Both inherited a plain `log` of a ratio that rounds to exactly `1` as the argument approaches
     the far support edge, so the result collapsed to `0.0` where the truth is a small negative
-    (`-8.9e-17` one ulp below `max` on `[-3, 7]`). The fix is the `log1p` branch `normal.rs`'s
-    `ln_half_erfc` already takes; the oracle is `log1p(-offset)`, exact because the ratio is the
-    fraction of the span and `offset` is it exactly.
+    (`-8.9e-17` one ulp below `max` on `[-3, 7]`). `uniform.rs`'s `derive_ln_cdf` and `derive_ln_sf`
+    take the `log1p` branch `normal.rs`'s `ln_half_erfc` already takes; the oracle is
+    `log1p(-offset)`, exact because the ratio is the fraction of the span and `offset` is it exactly.
     """
     width = hi - lo
     frame = pl.DataFrame({"upper": [hi - width * offset], "lower": [lo + width * offset]})
@@ -87,7 +87,7 @@ def test_log_methods_keep_the_near_certain_side(lo: float, hi: float, offset: fl
 # The `isf` regression. `isf` was the base-class `ppf(1 - quantile)`, which forms
 # `min + (1 - quantile) * range`; below `quantile ~ 1.1e-16` the complement rounds to exactly `1.0`
 # and the whole tail collapses onto `min + range`. Invisible wherever `max` is far from zero, total
-# wherever it is not. `_isf` now subtracts from `max`.
+# wherever it is not. `uniform.rs`'s `derive_inverse` subtracts from `max` instead.
 #
 # Oracled by the exact closed form `max - quantile * range` in `Fraction` arithmetic, not by scipy:
 # `scipy.stats.uniform.isf` composes the same way and reproduces the defect.
@@ -112,9 +112,10 @@ def test_isf_keeps_relative_precision_where_the_answer_approaches_zero(lo: float
 
 # The `ppf` half of the same reassociation, which shipped without a test while its `isf` twin above
 # got one. `min + quantile * range` is a difference of nearly equal numbers once the result lands
-# near `max`, so `Uniform(-1e10, 1).ppf(1 - 1.1e-10)` was relatively wrong by `3.0e-06`; `_ppf` now
-# interpolates from `max` above the median. Every quantile below is above `0.5`, the only side the
-# rewrite changed, and the spans are wide enough that `min` and the answer differ by many decades.
+# near `max`, so `Uniform(-1e10, 1).ppf(1 - 1.1e-10)` was relatively wrong by `3.0e-06`; the shared
+# `derive_inverse` interpolates from `max` above the median. Every quantile below is above `0.5`, the
+# only side the rewrite changed, and the spans are wide enough that `min` and the answer differ by
+# many decades.
 #
 # Same `Fraction` oracle as the `isf` test and for the same reason: `scipy.stats.uniform.ppf` is
 # `loc + q * scale`, the spelling under test, so it agrees with the defect.

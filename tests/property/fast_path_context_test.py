@@ -35,7 +35,6 @@ from tests.property._specs import (
     ULP_ABS_TOL,
     ULP_REL_TOL,
     ULP_TOLERANT_MOMENT_SPECS,
-    ULP_TOLERANT_VALUE_SPECS,
 )
 
 if TYPE_CHECKING:
@@ -76,7 +75,7 @@ def _assert_matches_across_contexts(
     `fast_height` is the fast path's own height under a plain `select`: 1 when every input is constant
     (a moment), the frame height when a column-valued `value` sets the length. Asserting it is what
     keeps this test pinning a *shape* and not only values. `exact` is the default because both paths
-    compute the identical value; the caller relaxes it only for the `ULP_TOLERANT_*` specs.
+    compute the identical value; the caller relaxes it only for `ULP_TOLERANT_MOMENT_SPECS`.
     """
     # `select`: the fast path holds its own height, and broadcasts against the per-row column beside it.
     assert frame.select(r=fast).height == fast_height
@@ -139,9 +138,9 @@ def test_moment_fast_path_matches_per_row_across_contexts(spec: DistSpec, moment
 def test_value_keyed_fast_path_matches_per_row_across_contexts(spec: DistSpec, data: st.DataObject) -> None:
     """Density / log-density / cdf / sf / ppf scalar fast paths equal the per-row path under every context.
 
-    This is where the `Geometric` / `Uniform` closed forms get their cross-context coverage: their
-    value-keyed methods are pure Polars, routing validation through the same `_checked` gate as the
-    moments, so a broadcast bug in that gate is the only way they diverge.
+    This is where the `Geometric` closed forms get their cross-context coverage: its value-keyed
+    methods are pure Polars, routing validation through the same `_checked` gate as the moments, so a
+    broadcast bug in that gate is the only way they diverge.
     """
     params = data.draw(spec.params)
     scalar = spec.make(params)
@@ -165,6 +164,4 @@ def test_value_keyed_fast_path_matches_per_row_across_contexts(spec: DistSpec, d
     )
     for fast, slow in cases:
         # The `value` argument is a column, so it sets the length on both paths.
-        _assert_matches_across_contexts(
-            frame, fast, slow, fast_height=_N_ROWS, exact=spec.name not in ULP_TOLERANT_VALUE_SPECS
-        )
+        _assert_matches_across_contexts(frame, fast, slow, fast_height=_N_ROWS)

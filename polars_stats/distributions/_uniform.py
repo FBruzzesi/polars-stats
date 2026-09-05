@@ -3,8 +3,6 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from polars_stats.distributions._base import (
     ContinuousDistribution,
     coerce_param,
@@ -13,10 +11,9 @@ from polars_stats.distributions._base import (
 )
 
 if TYPE_CHECKING:
-    from polars_stats._typing import IntoExprColumn
+    import polars as pl
 
-_MEDIAN_QUANTILE = 0.5
-"""Where `Uniform._inverse` switches which bound it interpolates from; see that method."""
+    from polars_stats._typing import IntoExprColumn
 
 
 class Uniform(ContinuousDistribution):
@@ -34,8 +31,12 @@ class Uniform(ContinuousDistribution):
 
     An invalid parameterisation (``max <= min``, a non-finite bound, or a width ``max - min``
     overflowing ``float64``) is not checked at construction; matching every other distribution, it
-    raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Null bounds
-    propagate to null.
+    raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
+
+    A null bound propagates to null wherever the result depends on it. Where the *other*, known
+    bound already places the evaluation point outside the support, the bound-free constant survives
+    instead (``pdf`` ``0``, ``log_pdf`` ``-inf``, and the saturated end of ``cdf`` / ``log_cdf`` /
+    ``sf`` / ``log_sf``). Both inverses null at every quantile under either null bound.
     """
 
     _min: pl.Expr
@@ -57,130 +58,48 @@ class Uniform(ContinuousDistribution):
 
         Validated in Rust so an invalid parameterisation (``max <= min``, a non-finite bound, or a
         width overflowing ``float64``) raises rather than silently yielding a non-positive or
-        infinite width. Every closed-form method (moments and pdf/cdf/ppf) derives from this, so they
-        all validate consistently; null bounds propagate. See ``_checked`` for the scalar-vs-column
-        routing.
+        infinite width. The moments derive from this; the value-keyed methods validate inside their own
+        plugin, through the same Rust check. Null bounds propagate. See ``_checked`` for the
+        scalar-vs-column routing.
         """
         return self._checked("uniform_range", self._max - self._min)
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """``1 / (max - min)`` on ``[min, max]``, ``0`` outside, null where a bound is null.
-
-        The null branch is explicit because ``is_between`` yields null on a null bound, and a bare
-        ``when(in_range).then(...).otherwise(0.0)`` would take the ``otherwise``, reporting a confident
-        "outside the support" for a row whose support is unknown. ``_cdf`` and ``_sf`` need no such
-        branch, because their ``otherwise`` is the arithmetic and nulls on its own.
-        """
-        in_range = value.is_between(self._min, self._max, closed="both")
-        return (
-            pl.when(in_range.is_null())
-            .then(pl.lit(None, dtype=pl.Float64))
-            .when(in_range)
-            .then(1 / self.range)
-            .otherwise(0.0)
-        )
+        """``1 / (max - min)`` on the closed support ``[min, max]``, ``0`` outside."""
+        return self._value_plugin("uniform_pdf", value)
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
-        """``-log(max - min)`` on the support, ``-inf`` outside, null where a bound is null.
-
-        Same null branch as ``_pdf``, for the same reason.
-        """
-        in_range = value.is_between(self._min, self._max, closed="both")
-        return (
-            pl.when(in_range.is_null())
-            .then(pl.lit(None, dtype=pl.Float64))
-            .when(in_range)
-            .then(-self.range.log())
-            .otherwise(float("-inf"))
-        )
+        """``-log(max - min)`` on the closed support, ``-inf`` outside."""
+        return self._value_plugin("uniform_ln_pdf", value)
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``(value - min) / (max - min)`` clamped to ``[0, 1]``."""
-        return (
-            pl.when(value < self._min)
-            .then(0.0)
-            .when(value >= self._max)
-            .then(1.0)
-            .otherwise((value - self._min) / self.range)
-        )
+        """``(value - min) / (max - min)``, clamped to ``0`` below ``min`` and ``1`` from ``max`` up."""
+        return self._value_plugin("uniform_cdf", value)
 
     def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """Log of the cdf ratio, through ``log1p`` of the survival ratio once past the midpoint.
+        """``log(cdf)`` below the midpoint, ``log1p(-sf)`` above it; ``-inf`` at/below ``min``, ``0`` from ``max`` up.
 
-        ``-inf`` at/below ``min``, ``0`` at/above ``max``. Overrides the base ``cdf().log()``, which
-        loses the whole near-certain half: approaching ``max`` the ratio rounds to exactly ``1`` and
-        its log to ``0``, where the truth is a small negative. Same branch ``normal.rs``'s
-        ``ln_half_erfc`` takes.
+        Overrides the base ``cdf().log()``, which loses the whole near-certain half: approaching
+        ``max`` the ratio rounds to exactly ``1`` and its log to ``0``, where the truth is a small
+        negative.
         """
-        upper = (-((self._max - value) / self.range)).log1p()
-        lower = ((value - self._min) / self.range).log()
-        return (
-            pl.when(value < self._min)
-            .then(float("-inf"))
-            .when(value >= self._max)
-            .then(0.0)
-            .when(value > self._min + self.range / 2)
-            .then(upper)
-            .otherwise(lower)
-        )
+        return self._value_plugin("uniform_ln_cdf", value)
 
     def _sf(self, value: pl.Expr) -> pl.Expr:
-        """``(max - value) / (max - min)`` clamped to ``[0, 1]`` (closed form, accurate in the upper tail)."""
-        return (
-            pl.when(value < self._min)
-            .then(1.0)
-            .when(value >= self._max)
-            .then(0.0)
-            .otherwise((self._max - value) / self.range)
-        )
+        """``(max - value) / (max - min)``, clamped to ``1`` below ``min`` and ``0`` from ``max`` up."""
+        return self._value_plugin("uniform_sf", value)
 
     def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """``0`` at/below ``min``, ``-inf`` at/above ``max``, and the mirror of ``_log_cdf`` between.
-
-        The near-certain half is the *lower* one here, so the ``log1p`` branch is on ``value`` below
-        the midpoint; the plain log of the ratio is exact on the other side.
-        """
-        upper = ((self._max - value) / self.range).log()
-        lower = (-((value - self._min) / self.range)).log1p()
-        return (
-            pl.when(value < self._min)
-            .then(0.0)
-            .when(value >= self._max)
-            .then(float("-inf"))
-            .when(value > self._min + self.range / 2)
-            .then(upper)
-            .otherwise(lower)
-        )
-
-    def _inverse(self, quantile: pl.Expr, *, ascending: bool) -> pl.Expr:
-        """Interpolate from whichever bound the answer is nearest; null outside ``[0, 1]``.
-
-        Both inverses are one multiply-add, and both lose the answer when they interpolate from the
-        *far* bound: ``min + quantile * range`` is a difference of nearly equal numbers once the
-        result lands near ``max``. Anchoring to the near bound makes the addition well conditioned,
-        and the ``1 - quantile`` it needs is only formed above the median, where Sterbenz makes it
-        exact.
-
-        ``ascending`` is ``True`` for ``ppf`` (small quantiles sit at ``min``) and ``False`` for
-        ``isf`` (small quantiles sit at ``max``).
-        """
-        lo, hi = (self._min, self._max) if ascending else (self._max, self._min)
-        step = self.range if ascending else -self.range
-        return (
-            pl.when(quantile.is_between(0, 1))
-            .then(
-                pl.when(quantile <= _MEDIAN_QUANTILE).then(lo + quantile * step).otherwise(hi - (1 - quantile) * step)
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64()))
-        )
+        """``0`` at/below ``min``, ``-inf`` from ``max`` up, and the mirror of ``_log_cdf`` between."""
+        return self._value_plugin("uniform_ln_sf", value)
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         """``min + quantile * (max - min)``; null for ``quantile`` outside ``[0, 1]``.
 
         Evaluated as ``max - (1 - quantile) * range`` above the median, so a result near ``max`` on a
-        wide span keeps its relative precision. See ``_inverse``.
+        wide span keeps its relative precision.
         """
-        return self._inverse(quantile, ascending=True)
+        return self._value_plugin("uniform_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
         """``max - quantile * (max - min)``; null for ``quantile`` outside ``[0, 1]``.
@@ -188,9 +107,9 @@ class Uniform(ContinuousDistribution):
         The mirror of ``_ppf``, not the base-class ``ppf(1 - quantile)``: below
         ``quantile ~ 1.1e-16`` that complement rounds to exactly ``1.0`` and the whole tail
         collapses onto ``min + range``, which is total wherever ``max`` is near zero
-        (``Uniform(-1, 0).isf(1e-17)`` returned ``0.0`` against a true ``-1e-17``). See ``_inverse``.
+        (``Uniform(-1, 0).isf(1e-17)`` returned ``0.0`` against a true ``-1e-17``).
         """
-        return self._inverse(quantile, ascending=False)
+        return self._value_plugin("uniform_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``(min + max) / 2``."""

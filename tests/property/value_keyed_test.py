@@ -7,10 +7,9 @@ In Rust both plugins call the same named per-method body, so for any parameteris
 must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]`` contract. A
 divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
 
-Bit-equality holds wherever a single Rust body feeds both paths. ``uniform`` and ``geometric`` have
-no Rust value-keyed plugin: both evaluate the same Polars expression, and the scalar path does it on
-length-1 operands, so polars may fold it differently. Where that moves the last bit
-(``ULP_TOLERANT_VALUE_SPECS``) the comparison is 1 ULP; the rest stay exact.
+The comparison is bit-exact for every spec. ``geometric`` still evaluates a Polars expression on both
+paths, on length-1 operands under a constant parameterisation, which polars is free to fold
+differently; measured, it does not.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from hypothesis import strategies as st
 
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import assert_series_equal, linear_space
-from tests.property._specs import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL, ULP_TOLERANT_VALUE_SPECS
+from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -75,8 +74,7 @@ def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.D
         (quantiles, scalar.ppf(q), per_row.ppf(q)),
         (quantiles, scalar.isf(q), per_row.isf(q)),
     ]
-    exact = spec.name not in ULP_TOLERANT_VALUE_SPECS
     for frame, fast_expr, per_row_expr in cases:
         fast = frame.select(r=fast_expr)["r"]
         slow = frame.select(r=per_row_expr)["r"]
-        assert_series_equal(fast, slow, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL)
+        assert_series_equal(fast, slow, check_exact=True)

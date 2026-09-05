@@ -6,7 +6,6 @@ import polars as pl
 import pytest
 
 from polars_stats import Uniform
-from tests._polars_compat import ARM_MASKING_HIDES_VALIDATION
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,16 +33,8 @@ _METHODS: dict[str, Callable[[Uniform], pl.Expr]] = {
 }
 
 
-_ARM_MASKED_METHODS = frozenset({"pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf"})
-"""The methods `ARM_MASKING_HIDES_VALIDATION` breaks here, measured on polars 1.44.1."""
-
-
-@pytest.mark.parametrize(("name", "expr_fn"), _METHODS.items(), ids=list(_METHODS))
-def test_method_raises_on_max_le_min_column(
-    name: str, expr_fn: Callable[[Uniform], pl.Expr], request: pytest.FixtureRequest
-) -> None:
-    if ARM_MASKING_HIDES_VALIDATION and name in _ARM_MASKED_METHODS:
-        request.applymarker(pytest.mark.xfail(reason="pola-rs/polars#29005"))
+@pytest.mark.parametrize("expr_fn", _METHODS.values(), ids=list(_METHODS))
+def test_method_raises_on_max_le_min_column(expr_fn: Callable[[Uniform], pl.Expr]) -> None:
     df = pl.DataFrame({"lo": [0.0, 5.0], "hi": [1.0, 2.0], "x": [0.5, 0.5], "q": [0.5, 0.5]})
     u = Uniform(min=pl.col("lo"), max=pl.col("hi"))  # row 1: hi (2.0) <= lo (5.0)
     with pytest.raises(pl.exceptions.ComputeError, match="max must be strictly greater than min"):

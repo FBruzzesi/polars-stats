@@ -87,12 +87,11 @@ it gets its own test below, alongside the `NaN` point that leaks through the sam
 
 _LEAKING_METHODS: dict[str, frozenset[str]] = {
     "Geometric": frozenset({"pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
-    "Uniform": frozenset({"pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
 }
 """The (distribution, method) pairs that `ARM_MASKING_HIDES_VALIDATION` is expected to break.
 
 Measured, not assumed: these are exactly the pairs that fail on polars 1.44.1 and pass on 1.43.2.
-Every value-keyed method of the two remaining distributions leaks. Porting a distribution's closed
+Every value-keyed method of the one remaining distribution leaks. Porting a distribution's closed
 forms to Rust deletes its entry here; the last one to go deletes the dict.
 """
 

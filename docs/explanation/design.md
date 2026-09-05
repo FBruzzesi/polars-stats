@@ -41,7 +41,7 @@ unconditionally or named in a `when(...)` condition, and moves to Rust when it i
 what branching on the evaluation value always looks like.
 
 The table below is the rule, which every new distribution follows. It is not yet a description of the tree:
-`Geometric` and `Uniform` still assemble their value-keyed methods in Polars and are being ported one at a time; the
+`Geometric` still assembles its value-keyed methods in Polars and is the last one left to port; the
 [reference index](../reference/index.md) carries the resulting known limitation. Method by method:
 
 | Method | In Rust? | Notes |
@@ -104,7 +104,7 @@ path is selected only when the parameters are known scalars, so nothing column-v
 ### Constant parameters validate once, not per row
 
 The moments (`mean`, `variance`, `std`, `entropy`) and the value-keyed closed forms still assembled in Polars
-(`Uniform`, `Geometric`) do not build a distribution; they compute a Polars expression. But they still route their
+(`Geometric`) do not build a distribution; they compute a Polars expression. But they still route their
 *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `beta_params`) so an invalid parameterisation raises the same
 `ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid

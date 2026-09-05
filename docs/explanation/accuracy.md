@@ -103,11 +103,11 @@ magnitudes are in the inherited limits below.
   99% of random supports of width `< 20` drawn from `[2**62, 2**63)`, because the bounds themselves
   are not representable there. It never happens for a support wider than one float step, nor anywhere
   inside `±2**53`.
-* **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).cdf("x")`
-  and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
+* **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).variance()`
+  and `Uniform(pl.col("lo"), pl.col("hi")).variance()` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
   identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
-  moments and value-keyed methods, and `Geometric.std` / `.entropy`.
+  moments, and `Geometric.std` / `.entropy`.
   The difference is at or below `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs`
   runs the same Rust body either way and stays bit-identical.
 

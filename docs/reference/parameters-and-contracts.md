@@ -129,13 +129,21 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | Wrong parameter *type* (a `list`, an `int` for a float parameter, a `bool`) | Python `__init__` | `TypeError`, no query runs |
 | Invalid parameter *value*, scalar or one column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls (one exception on polars >= 1.44, see [Known limitation](index.md#compatibility)) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
-| `null` parameter on a row | per row | `null` on that row, no error |
+| `null` parameter on a row | per row | `null` on that row, no error, except where a branch that carries no parameter already settles the answer (see below) |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
 | Non-numeric column as an argument or parameter | evaluation | Polars raises `InvalidOperationError` |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |
 | Deep-tail underflow (`sf` of a 60-sigma event) | per row | `0.0`; `log_sf` keeps resolution where it has a stable form, see [Numerical accuracy](../explanation/accuracy.md) |
+
+**A `null` parameter nulls the answer only where the answer depends on it.** Off the support the answer is often a
+constant that no parameter enters, and that constant survives: on a row whose `p` is null, `Bernoulli(p="p").pmf(2)`
+is `0.0`, not `null`, and so is `Exponential(rate="rate").cdf(-1)`. `Uniform` has two bounds, so the rule is per
+bound: an answer survives a null bound exactly when the *other*, known bound places the evaluation point outside the
+support. On a row whose `min` is null and whose `max` is `1.0`, `pdf(5.0)` is `0.0` and `cdf(5.0)` is `1.0`, while
+every method nulls at `0.5`. Both of `Uniform`'s
+inverses null at every quantile under either null bound, in range and out.
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in
