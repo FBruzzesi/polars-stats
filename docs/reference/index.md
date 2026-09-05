@@ -68,22 +68,30 @@ mean of a different distribution on every row.
 
 !!! warning "Known limitation on polars >= 1.44"
 
-    On polars 1.44.0 and newer, `Bernoulli`, `Exponential`, `Geometric` and `Uniform` may **return a
-    value instead of raising `ComputeError`** when a *column-valued* parameter is invalid on a row the
-    selected branch does not cover.
+    On polars 1.44.0 and newer, `Exponential`, `Geometric` and `Uniform` may **return a value instead
+    of raising `ComputeError`** when a *column-valued* parameter is invalid on a row the selected
+    branch does not cover.
 
     Polars 1.44.0 ([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) masks the arms
     of a `when/then/otherwise` to null on the rows an arm does not select, so a validator reached only
-    from inside an arm never sees the offending row. Those four distributions assemble their
+    from inside an arm never sees the offending row. These three distributions assemble their
     value-keyed closed forms (`pdf`/`pmf`, `log_pdf`/`log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`,
-    `ppf`, `isf`) as branching Polars expressions, so they are affected; `Exponential.log_cdf` is the
-    one exception that still raises.
+    `ppf`, `isf`) as branching Polars expressions, so they are affected. `Exponential.log_cdf` is the
+    one method among them that still raises.
 
     **Not affected:** every other distribution (they compute in Rust and validate unconditionally),
-    the moments (`mean`, `variance`, `std`, `median`, `entropy`) of all four, every scalar
-    parameterisation, and every *valid* computation, whose results are unchanged.
+    the moments (`mean`, `variance`, `std`, `median`, `entropy`) of all three, and every *valid*
+    computation, whose results are unchanged. `Bernoulli` was affected up to and including v0.0.2 and
+    no longer is: its closed forms now compute in Rust.
+
+    One narrower case survives for *every* distribution and *both* parameter spellings, scalar
+    included: a **null or `NaN` evaluation point** is masked out of the plugin's input by the wrapper
+    that gives you `null -> null` and `NaN -> NaN`, so an invalid parameter goes unreported on those
+    rows. With a column parameter that is per row; with a scalar one it takes the whole batch, so
+    `Bernoulli(p=1.5).pmf(col)` returns `[nan, nan]` over an all-`NaN` column but still raises as soon
+    as one evaluation point is finite.
 
     **Workarounds:** pin `polars<1.44` yourself, or validate column parameters before passing them.
 
     Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005). The limitation
-    goes away as each of the four moves its closed forms into Rust, which is in progress.
+    goes away as each of the three moves its closed forms into Rust, which is in progress.

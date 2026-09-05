@@ -139,9 +139,9 @@ def test_moment_fast_path_matches_per_row_across_contexts(spec: DistSpec, moment
 def test_value_keyed_fast_path_matches_per_row_across_contexts(spec: DistSpec, data: st.DataObject) -> None:
     """Density / log-density / cdf / sf / ppf scalar fast paths equal the per-row path under every context.
 
-    This is where the Uniform / Bernoulli closed forms (which route their *validation* through the
-    same `_checked` gate as the moments) get their cross-context coverage: their value-keyed methods
-    are pure Polars, so a broadcast bug in the scalar gate is the only way they could diverge.
+    This is where the `Exponential` / `Geometric` / `Uniform` closed forms get their cross-context
+    coverage: their value-keyed methods are pure Polars, routing validation through the same
+    `_checked` gate as the moments, so a broadcast bug in that gate is the only way they diverge.
     """
     params = data.draw(spec.params)
     scalar = spec.make(params)

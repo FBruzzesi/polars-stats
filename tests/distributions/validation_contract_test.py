@@ -1,4 +1,11 @@
-"""Every value-keyed method reports an invalid parameterisation, whichever branch the value selects."""
+"""Every value-keyed method reports an invalid parameterisation, whichever branch the value selects.
+
+Two axes, one contract. The first test sweeps the *evaluation value* across every branch of every
+method, and is what the Rust ports exist to make green. The second holds the value at `NaN` and
+targets `propagate_null_and_nan` instead, a `when/then/otherwise` wrapped around every public
+value-keyed method: a second place the validator can sit inside an arm, one level above the
+distribution.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +38,10 @@ if TYPE_CHECKING:
 class _Case:
     """One distribution parameterised from columns, where row 0 is valid and row 1 is not.
 
-    `fragment` is matched against the raised message, so it names the offending parameter.
+    `fragment` is matched against the raised message, so it names the offending parameter. It carries
+    enough of the validator's own wording to fail on the wrong parameter: a bare `"p"` matches the
+    `the plugin failed with message:` preamble polars wraps every plugin error in, which would make
+    the check unfailable for the four distributions whose parameter is one letter.
     """
 
     name: str
@@ -41,15 +51,22 @@ class _Case:
 
 
 _CASES: tuple[_Case, ...] = (
-    _Case("Bernoulli", Bernoulli(p=pl.col("p")), {"p": [0.3, 1.5]}, "p"),
-    _Case("Beta", Beta(a=pl.col("a"), b=pl.col("b")), {"a": [2.0, -1.0], "b": [3.0, 3.0]}, "a"),
-    _Case("Binomial", Binomial(n=pl.col("n"), p=pl.col("p")), {"n": [10, 10], "p": [0.3, 1.5]}, "p"),
-    _Case("DiscreteUniform", DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")), {"lo": [0, 5], "hi": [10, 2]}, "max"),
-    _Case("Exponential", Exponential(rate=pl.col("r")), {"r": [1.0, -1.0]}, "rate"),
-    _Case("Geometric", Geometric(p=pl.col("p")), {"p": [0.3, 1.5]}, "p"),
-    _Case("LogNormal", LogNormal(mu=pl.col("m"), sigma=pl.col("s")), {"m": [0.0, 0.0], "s": [1.0, -1.0]}, "sigma"),
-    _Case("Normal", Normal(mu=pl.col("m"), sigma=pl.col("s")), {"m": [0.0, 0.0], "s": [1.0, -1.0]}, "sigma"),
-    _Case("Uniform", Uniform(min=pl.col("lo"), max=pl.col("hi")), {"lo": [0.0, 5.0], "hi": [1.0, 2.0]}, "max"),
+    _Case("Bernoulli", Bernoulli(p=pl.col("p")), {"p": [0.3, 1.5]}, "p must be in"),
+    _Case("Beta", Beta(a=pl.col("a"), b=pl.col("b")), {"a": [2.0, -1.0], "b": [3.0, 3.0]}, "a and b must be"),
+    _Case("Binomial", Binomial(n=pl.col("n"), p=pl.col("p")), {"n": [10, 10], "p": [0.3, 1.5]}, "p must be in"),
+    _Case(
+        "DiscreteUniform",
+        DiscreteUniform(min=pl.col("lo"), max=pl.col("hi")),
+        {"lo": [0, 5], "hi": [10, 2]},
+        "max must be",
+    ),
+    _Case("Exponential", Exponential(rate=pl.col("r")), {"r": [1.0, -1.0]}, "rate must be"),
+    _Case("Geometric", Geometric(p=pl.col("p")), {"p": [0.3, 1.5]}, "p must be in"),
+    _Case(
+        "LogNormal", LogNormal(mu=pl.col("m"), sigma=pl.col("s")), {"m": [0.0, 0.0], "s": [1.0, -1.0]}, "sigma must be"
+    ),
+    _Case("Normal", Normal(mu=pl.col("m"), sigma=pl.col("s")), {"m": [0.0, 0.0], "s": [1.0, -1.0]}, "sigma must be"),
+    _Case("Uniform", Uniform(min=pl.col("lo"), max=pl.col("hi")), {"lo": [0.0, 5.0], "hi": [1.0, 2.0]}, "max must be"),
 )
 
 _VALUE_METHODS = ("pdf", "log_pdf", "pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf")
@@ -66,12 +83,12 @@ _QUANTILES = (-0.5, 0.001, 0.5, 0.999, 1.5)
 A `None` quantile is deliberately *not* probed. Polars masks null rows out of an elementwise plugin's
 input on every supported version, so the parameters on a null row never reach the validator and no
 distribution raises, `DiscreteUniform` and the other Rust-backed ones included. That is a property of
-plugin dispatch, not of the branch the value selects, so it says nothing about this contract.
+plugin dispatch, not of the branch the value selects, and removing `propagate_null_and_nan` would not
+change it, which is what separates it from the `NaN` point the second test does probe.
 """
 
 
 _LEAKING_METHODS: dict[str, frozenset[str]] = {
-    "Bernoulli": frozenset({"pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
     "Exponential": frozenset({"pdf", "log_pdf", "cdf", "sf", "log_sf", "ppf", "isf"}),
     "Geometric": frozenset({"pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
     "Uniform": frozenset({"pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
@@ -79,9 +96,9 @@ _LEAKING_METHODS: dict[str, frozenset[str]] = {
 """The (distribution, method) pairs that `ARM_MASKING_HIDES_VALIDATION` is expected to break.
 
 Measured, not assumed: these are exactly the pairs that fail on polars 1.44.1 and pass on 1.43.2.
-`Exponential.log_cdf` is absent because it alone among the four distributions' 32 value-keyed methods
-still raises, so gating it would `XPASS` under `xfail_strict`. Porting a distribution's closed forms
-to Rust deletes its entry here; the last one to go deletes the dict and the constant with it.
+`Exponential.log_cdf` is absent because it alone among the three remaining distributions' 24
+value-keyed methods still raises, so gating it would `XPASS` under `xfail_strict`. Porting a
+distribution's closed forms to Rust deletes its entry here; the last one to go deletes the dict.
 """
 
 _METHOD_VALUES: tuple[tuple[str, tuple[float, ...]], ...] = (
@@ -129,3 +146,39 @@ def test_invalid_parameter_raises_whichever_branch_the_value_selects(
     assert not accepted, f"{case.name}.{method} accepted the invalid parameterisation at {accepted}"
     misnamed = [value for value, report in reports if report is not None and case.fragment not in report]
     assert not misnamed, f"{case.name}.{method} raised without naming `{case.fragment}` at {misnamed}"
+
+
+_NAN_METHODS = (*_VALUE_METHODS, *_QUANTILE_METHODS)
+"""Every value-keyed method, since the wrapper below sits on all of them identically."""
+
+
+@pytest.mark.parametrize("case", _CASES, ids=_ids)
+def test_invalid_parameter_raises_at_a_nan_evaluation_point(case: _Case, request: pytest.FixtureRequest) -> None:
+    """One assertion per distribution, over every value-keyed method, at a `NaN` evaluation point.
+
+    The methods are looped inside rather than parametrised over, unlike the test above: leakage there
+    varies by method, so its gate needs method precision, while here all 72 (distribution, method)
+    pairs leak on polars 1.44.1 and all 72 raise on 1.43.2. One item per distribution matches that
+    shape and keeps the gate to one marker instead of seventy-two.
+
+    The leak is in `propagate_null_and_nan` (`_base.py`), not in any distribution: it spells the
+    null/`NaN` overlay as `when(...).then(...).otherwise(result)`, so from polars 1.44 the plugin in
+    `result` is masked out on exactly the `NaN` rows and never validates. Bypassing the wrapper makes
+    the same call raise, which is why `Bernoulli` and `DiscreteUniform` leak here despite computing
+    entirely in Rust. Porting a distribution does not fix this one; deleting the wrapper does.
+    """
+    # Passed as the marker's own condition rather than an `if`, since it is true for every item here:
+    # a Python-level branch would leave its false side unexecuted on polars >= 1.44.
+    reason = "pola-rs/polars#29005, at the wrapper rather than the hook"
+    request.applymarker(pytest.mark.xfail(ARM_MASKING_HIDES_VALIDATION, reason=reason))
+
+    probed = [(method, fn) for method in _NAN_METHODS if (fn := getattr(case.dist, method, None)) is not None]
+    # Eight of the ten always resolve; the other two are the wrong-family `pdf` / `pmf` pair. Asserted
+    # so a renamed method shrinks the sweep loudly instead of silently.
+    assert len(probed) == len(_NAN_METHODS) - 2
+    reports = [(method, _report(case, fn, float("nan"))) for method, fn in probed]
+    # Silence and a misnamed message are merged into one predicate, where the test above keeps them
+    # apart. Every probe here leaks on the gated version, so a second assertion would be a line no
+    # supported polars ever reaches.
+    unreported = [method for method, report in reports if report is None or case.fragment not in report]
+    assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a NaN point in {unreported}"

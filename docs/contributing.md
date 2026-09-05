@@ -156,10 +156,27 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       then maps the body through the shared `value_keyed_scalar` driver. Putting the driver on the kwargs struct is
       what makes the hoist structural: a shell cannot build the distribution itself, so it cannot rebuild per row.
     * When a method is an **elementary** closed form (no special function: a Normal's
-      `0.5*log(2*pi*e*sigma^2)`, the Uniform / Exponential / Cauchy `pdf` / `cdf` / `ppf`, `mean = n*p`, ...):
-      **leave it in Python as a Polars expression, do not bind it in Rust.** A Rust binding for arithmetic Polars does
-      natively is dead FFI surface. `Uniform` and `Bernoulli` are the canonical closed-form distributions: only
-      `sample` and the validator touch Rust, everything else is a Polars hook in `_<name>.py`.
+      `0.5*log(2*pi*e*sigma^2)`, a Bernoulli's `1 - p` at 0, `mean = n*p`, ...), the test is **whether every row
+      reaches the validator**, not whether Polars can express the arithmetic:
+
+        * The validated parameter is read **unconditionally** (`Bernoulli.mean` is `_checked_p`), or it is named in a
+          `when(...)` **condition** (`Bernoulli.entropy`'s `when((p == 0) | (p == 1))`): **leave it in Python as a
+          Polars expression.** A Rust binding for arithmetic Polars does natively is dead FFI surface. In practice
+          this is the moments: `mean`, `variance`, `std`, `median`, `entropy`.
+        * The validated parameter is read **only inside a `when` / `then` / `otherwise` arm**, which is what every
+          method that branches on the *evaluation value* looks like: **compute it in Rust.** From polars 1.44 an arm
+          is masked to null on the rows it does not select, so the validator never sees an invalid parameter on those
+          rows and the method silently returns a value instead of raising
+          ([pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005)), and no Polars expression can
+          spell a guard that survives the optimiser. In practice this is the value-keyed set: `pdf` / `pmf`,
+          `log_pdf` / `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf`, `isf`. `DiscreteUniform` and `Bernoulli`
+          are the worked examples: every value-keyed method is a one-line `_value_plugin` hook over a Rust body, and
+          only the moments stay in `_<name>.py`.
+        * Split such a body into a `derive` that turns the parameters into their branch answers and a `select` that
+          picks one by the evaluation value (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`). The Polars expression it
+          replaces computed `1 - p` once on a length-1 literal and broadcast it; a body that recomputes per row
+          regressed the constant-parameter path by up to 195% at 10M rows. `derive` runs once per call on that path
+          and once per row only when a parameter is a column.
     * Factor the validating constructor into a `build_dist(...) -> PolarsResult<Dist>` helper so an invalid parameter
       maps through a `ComputeError` consistently.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
@@ -185,7 +202,7 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       its `Series`. For a statrs-backed
       distribution whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate
       every closed-form moment through `self._moment(<formula>)`; for a closed-form distribution whose validator
-      is already part of every formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
+      is already part of every moment formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
     `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.

@@ -11,8 +11,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 # Every public method must report an out-of-range `p` as a ComputeError, not silently compute a
-# negative probability. The deterministic methods all derive from the Rust-validated `_checked_p`;
-# the samplers validate in their own plugin.
+# negative probability. The moments read the Rust-validated `_checked_p`; the value-keyed methods and
+# the samplers validate inside their own plugin.
 _METHODS: dict[str, Callable[[Bernoulli], pl.Expr]] = {
     "pmf": lambda b: b.pmf(pl.col("x")),
     "log_pmf": lambda b: b.log_pmf(pl.col("x")),

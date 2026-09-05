@@ -25,26 +25,38 @@ Three options were considered:
 2. one function per method with an internal `DistKind` enum dispatch and a row-level `match`;
 3. Rust only where a Polars expression cannot express the method, Python otherwise.
 
-The result is **1 & 3**. Closed-form methods sit happily in Python as `pl.Expr`; only methods that go through `statrs`
-get a Rust plugin function.
+The result is **1 & 3**. Rust gets the RNG, the special functions (`erf`, log-gamma, the regularized incomplete beta
+or gamma), and anything with no elementary closed form. A Rust binding for arithmetic Polars does natively is dead FFI
+surface: more to compile, one more plugin name to keep literal, one more path to hold in parity with its own fast-path
+twin, and no accuracy or speed gain for it.
 
-Rust gets the RNG, the special functions (`erf`, log-gamma, the regularized incomplete beta or gamma), and anything
-with no elementary closed form. A Rust binding for arithmetic Polars does natively is dead FFI surface: more to
-compile, one more plugin name to keep literal, one more path to hold in parity with its own fast-path twin, and no
-accuracy or speed gain for it. Method by method:
+Being expressible in Polars is necessary for staying in Python, but not sufficient. The second test is **whether every
+row reaches the validator**: a `pl.Expr` cannot raise per row, so a method that must reject an invalid parameterisation
+depends on the validating plugin actually running on the offending row. From polars 1.44 a `when` / `then` /
+`otherwise` **arm** is masked to null on the rows it does not select, so a validator reachable only from inside an arm
+never sees them and the method silently returns a value
+([pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005)). The **condition** is not masked, and an
+unbranched expression has nothing to mask. So a closed form stays in Python when its validated parameter is read
+unconditionally or named in a `when(...)` condition, and moves to Rust when it is read only inside an arm, which is
+what branching on the evaluation value always looks like.
+
+The table below is the rule, which every new distribution follows. It is not yet a description of the tree:
+`Exponential`, `Geometric` and `Uniform` still assemble their value-keyed methods in Polars and are being ported one
+at a time; the [reference index](../reference/index.md) carries the resulting known limitation. Method by method:
 
 | Method | In Rust? | Notes |
 |---|---|---|
 | `sample` / `samples` | **always** | Not derivable in Python. Usually `statrs`' own `Distribution::sample`. |
 | parameter validation | **always** | One validation-only round-trip per distribution, since a bare `pl.Expr` cannot raise per row. |
-| `pdf` / `pmf`, `cdf` | if special-function | Native `Continuous::pdf` / `Discrete::pmf`, `*CDF::cdf`. Elementary forms stay in Polars. |
-| `ppf` | if special-function | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. |
-| `log_pdf` / `log_pmf` | override the default | The base default is `_pdf(x).log()`, which underflows. Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one. |
-| `sf` | override the default | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
-| `log_cdf` / `log_sf` | override the default | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
+| `pdf` / `pmf`, `cdf` | **always** | Native `Continuous::pdf` / `Discrete::pmf`, `*CDF::cdf` where `statrs` has them; a hand-written Rust body where the closed form is elementary. Branching on the value puts the validator inside an arm, so these cannot stay in Polars. |
+| `ppf` | **always** | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. Elementary inverses are hand-written Rust bodies, for the same arm-masking reason. |
+| `log_pdf` / `log_pmf` | **always**, override the default | The base default is `_pdf(x).log()`, which underflows. Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body. |
+| `sf` | **always**, override the default | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
+| `log_cdf` / `log_sf` | **always**, override the default | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
 | `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, or log-gamma plus digamma. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
-| `std`, `isf` | Polars, and override | Both base defaults (`variance().sqrt()`, `ppf(1 - q)`) saturate long before the answer does. |
+| `std` | Polars, and override | The base default `variance().sqrt()` saturates long before the answer does. |
+| `isf` | **always**, override the default | The base default `ppf(1 - q)` saturates long before the answer does, and it is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
 
 ### Expose the conventional parameterisation, document the scipy mapping
 
@@ -91,13 +103,12 @@ path is selected only when the parameters are known scalars, so nothing column-v
 
 ### Constant parameters validate once, not per row
 
-The moments (`mean`, `variance`, `std`, `entropy`) and the closed-form methods of `Uniform` / `Bernoulli`
-/ `Exponential` do not build a distribution; they compute a Polars expression. But they still route their *validation*
-through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`, `binomial_params`, `lognormal_sigma`,
-`exponential_rate`, `beta_params`) so an invalid
-parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a
-nonsense moment (see "Invalid parameters raise"). With column parameters that plugin runs over the parameter columns,
-validating each row.
+The moments (`mean`, `variance`, `std`, `entropy`) and the value-keyed closed forms still assembled in Polars
+(`Uniform`, `Exponential`, `Geometric`) do not build a distribution; they compute a Polars expression. But they still
+route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
+`binomial_params`, `lognormal_sigma`, `exponential_rate`, `beta_params`) so an invalid parameterisation raises the same
+`ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid
+parameters raise"). With column parameters that plugin runs over the parameter columns, validating each row.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
