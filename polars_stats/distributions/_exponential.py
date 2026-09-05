@@ -32,13 +32,12 @@ class Exponential(ContinuousDistribution):
     evaluated. The support is ``x >= 0``: ``pdf`` and ``cdf`` are ``0`` for ``x < 0``, and ``sf`` is
     ``1`` there.
 
-    A null ``rate`` propagates to null wherever the result depends on it. Below the support it does
-    not: ``pdf`` and ``cdf`` stay ``0``, ``sf`` stays ``1``, ``log_pdf`` and ``log_cdf`` stay
-    ``-inf``, ``log_sf`` stays ``0``. Both inverses null at every quantile.
+    A null ``rate`` propagates to null wherever the result depends on it; the below-support constants
+    (``pdf`` and ``cdf`` ``0``, ``sf`` ``1``, ``log_pdf`` and ``log_cdf`` ``-inf``, ``log_sf`` ``0``)
+    do not. Both inverses null at every quantile, in range and out.
 
     The value-keyed methods compute in Rust, so an invalid ``rate`` is reported whichever branch the
-    evaluation point selects. The moments stay in Polars, reading ``rate`` through the same Rust
-    validator.
+    value selects. The moments stay in Polars, reading ``rate`` through the same Rust validator.
     """
 
     _rate: pl.Expr
@@ -56,14 +55,9 @@ class Exponential(ContinuousDistribution):
     def _checked_rate(self) -> pl.Expr:
         """``rate`` (λ) validated in Rust to be strictly positive (raises otherwise), as a length-n column.
 
-        Validated in Rust so the closed-form moments report an invalid ``rate`` consistently with
-        ``sample`` rather than silently computing with a non-positive rate. Null propagates.
-
-        `_checked` validates once for a scalar ``rate`` (length-1 input) and per-row for a column,
-        returning the raw ``rate`` behind the validity gate either way (length-n on both paths). The
-        analogue of ``Bernoulli._checked_p``: the validated quantity is the parameter itself.
-
-        Read only by the moments; the value-keyed methods validate inside their own plugin.
+        Null propagates. Read only by the moments, so they report an invalid ``rate`` consistently
+        with ``sample`` rather than silently computing with a non-positive one; the value-keyed
+        methods validate inside their own plugin instead.
         """
         return self._checked("exponential_rate", self._rate)
 

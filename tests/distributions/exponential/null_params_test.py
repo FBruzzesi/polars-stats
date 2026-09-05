@@ -57,11 +57,7 @@ def test_value_keyed_below_support_ignores_null_rate() -> None:
 @pytest.mark.parametrize("method", ["ppf", "isf"])
 @pytest.mark.parametrize("quantile", [0.0, 0.5, 1.0, 2.0])
 def test_inverse_nulls_under_a_null_rate(method: str, quantile: float) -> None:
-    """Null inside `[0, 1]` because the answer needs the rate, and null outside it by the domain contract.
-
-    Endpoints as well as interior: unlike the six value-keyed methods, neither inverse has a
-    rate-free branch anywhere in its domain, so no `q` survives a null rate.
-    """
+    """Endpoints as well as interior: neither inverse has a rate-free branch anywhere in its domain."""
     df = pl.DataFrame({"rate": [None]}, schema={"rate": pl.Float64})
     assert df.select(r=getattr(Exponential(rate=pl.col("rate")), method)(quantile))["r"].item() is None
 
@@ -69,9 +65,8 @@ def test_inverse_nulls_under_a_null_rate(method: str, quantile: float) -> None:
 def test_nan_value_stays_nan_under_a_null_rate() -> None:
     """A `NaN` evaluation point short-circuits before the branches, so a null rate does not null it.
 
-    Reached through the private hook, since the public wrapper answers `NaN` on its own. Only the
-    hook can see the short-circuit, and only there does it matter: polars orders `NaN` above every
-    number, so a `value >= 0` predicate would put `NaN` on the support and let a null rate null it.
+    Reached through the private hook, since the public wrapper answers `NaN` on its own. Without the
+    short-circuit `NaN` would land on the support (it is not `< 0`) and the null rate would null it.
     """
     df = pl.DataFrame({"rate": [None]}, schema={"rate": pl.Float64})
     result = df.select(r=Exponential(rate=pl.col("rate"))._pdf(pl.lit(math.nan)))["r"].item()

@@ -102,8 +102,8 @@ where
 ///
 /// Validates and derives once per call, then maps `select` over the evaluation-point column. The
 /// Python side routes here only once the parameter is a Python scalar, so `derive` always sees
-/// `Some`, and this is the path where the rate-only terms a `derive` hoists (`ln(rate)`) are
-/// computed once instead of per row.
+/// `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`, `Exponential`'s
+/// `ln(rate)`) are computed once instead of per row.
 pub(crate) fn value_keyed_derived_scalar<Dist, Branches, Validate, Derive, Select>(
     value: &Series,
     param: f64,

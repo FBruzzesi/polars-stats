@@ -73,11 +73,11 @@ _TINY_ARGUMENTS = [1e-300, 1e-100, 1e-20, 1e-16, 1e-12]
 def test_cdf_keeps_the_left_tail_where_one_minus_exp_cancels(rate: float, t: float) -> None:
     """`cdf(t / rate)` is `t` to full relative precision, for `t` far below the `1 - exp` floor.
 
-    Polars exposes no `expm1`, so `1 - exp(-t)` cancelled: below `t ~ 1.1e-16` the exponential
-    rounds to exactly `1` and the cdf collapsed to `0`, while between there and `t ~ 1e-4` it
-    carried a relative error of `~1.1e-16 / t` (11% at `1e-16`). `_cdf` now uses the identity
-    `1 - exp(-t) = 2 exp(-t / 2) sinh(t / 2)`, which Polars can spell and which has no subtraction.
-    scipy is a valid oracle only above its own cancellation floor, so the limit `cdf -> t` is used.
+    The literal `1 - exp(-t)` cancelled: below `t ~ 1.1e-16` the exponential rounds to exactly `1`
+    and the cdf collapsed to `0`, while between there and `t ~ 1e-4` it carried a relative error of
+    `~1.1e-16 / t` (11% at `1e-16`). `exponential.rs`'s `derive_cdf` uses the identity
+    `1 - exp(-t) = 2 exp(-t / 2) sinh(t / 2)` instead, which has no subtraction. scipy is a valid
+    oracle only above its own cancellation floor, so the limit `cdf -> t` is used.
     """
     got = pl.DataFrame({"x": [t / rate]}).select(r=Exponential(rate=rate).cdf(pl.col("x")))["r"].item()
     assert got == pytest.approx(t, rel=1e-15)
@@ -117,7 +117,8 @@ def test_isf_is_exact_rather_than_ppf_of_the_complement(rate: float, q: float) -
 
 
 # The `pdf` regression from `make audit`. `rate * exp(-rate * x)` rounds `exp` into the subnormal
-# range and *then* scales that error up; `exp(log(rate) - rate * x)` rounds once, at the end.
+# range and *then* scales that error up; `(rate * exp(-rate * x / 2)) * exp(-rate * x / 2)` keeps the
+# intermediate normal, so only the final multiply underflows.
 #
 # Oracled by hard-coded correctly-rounded values, verified against a 50-digit `mpmath` oracle at 0.13
 # and 0.25 subnormal ulps respectively (against 42.9 and 4.3e7 before). scipy is not usable here: it

@@ -36,8 +36,8 @@ impl ExponentialParamsKwargs {
         build_dist(self.rate)
     }
 
-    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which owns
-    /// the validate-and-derive-once contract the fast path rests on.
+    /// Binds the constant rate and `build_dist` into [`value_keyed_derived_scalar`], which
+    /// validates and derives once per call rather than per row.
     fn value_keyed<Branches>(
         &self,
         value: &Series,
@@ -72,10 +72,9 @@ const CDF_SINH_MAX: f64 = 1.0;
 
 /// `exp(t) - 1` through the identity `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel.
 ///
-/// **Deliberately not `f64::exp_m1`,** which differs from this identity by one ulp on roughly a
-/// fifth of the left tail. Every expected value in `tests/distributions/exponential/` is this
-/// identity's rounding, and `_base.expm1` spells it the same way for the distributions still
-/// assembled in Polars.
+/// Not `f64::exp_m1`, which differs from this identity by one ulp on roughly a fifth of the left
+/// tail. Every expected value in `tests/distributions/exponential/` is this identity's rounding, and
+/// `_base.expm1` spells it the same way for the distributions still assembled in Polars.
 ///
 /// `sinh(t / 2)` overflows above `|t| ~ 1420`; the only caller crosses over at [`CDF_SINH_MAX`],
 /// long before that.
@@ -86,28 +85,26 @@ fn expm1(t: f64) -> f64 {
 }
 
 // Exponential hoists less than Bernoulli: every on-support answer is a function of the rate *and*
-// the evaluation point, so a `derive_*` captures only the rate-only terms and the rest stays in the
-// arm. They are free functions rather than associated ones because each returns a distinct opaque
-// arm type.
+// the evaluation point, so a `derive_*` captures the rate-only terms and the rest stays in the arm.
+// Free functions rather than associated ones, because each returns a distinct opaque arm type.
 
 /// The two sides of the support, for the six value-keyed methods.
 ///
-/// `below_support` is a plain `f64` derived with **no rate in scope**: below `x = 0` every answer is
-/// the rate-free support constant, so a null rate must not null it. Writing it as an `f64` rather
-/// than an `Option<f64>` leaves nothing to thread a rate through by accident. All six constants are
-/// pinned by `tests/distributions/exponential/null_params_test.py`.
-///
-/// `on_support` is `None` exactly when the rate is null, which nulls the answers that read it.
+/// Below `x = 0` every answer is the rate-free support constant, so a null rate must not null it.
+/// `below_support` is an `f64` rather than an `Option<f64>`, leaving nothing to thread a rate
+/// through by accident; all six constants are pinned by
+/// `tests/distributions/exponential/null_params_test.py`. `on_support` is `None` exactly when the
+/// rate is null.
 struct Sides<Arm> {
     below_support: f64,
     on_support: Option<Arm>,
 }
 
 impl<Arm: Fn(f64) -> f64> Sides<Arm> {
-    /// `x < 0` takes the support constant, everything else the arm.
+    /// `x < 0` takes the support constant, everything else the arm, so `-0.0` is on the support.
     ///
-    /// Written `x < 0` rather than a negated `x >= 0`, so `-0.0` lands on the support. A `NaN` point
-    /// never reaches here: both drivers short-circuit it.
+    /// A `NaN` point never reaches here: both drivers short-circuit it. That is what lets this be a
+    /// bare `<`; the `!(x >= 0)` a negated predicate would spell puts `NaN` below the support.
     fn at(&self, value: f64) -> Option<f64> {
         if value < 0.0 {
             Some(self.below_support)
@@ -171,13 +168,13 @@ fn derive_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 /// `ln(cdf)` in the left tail, `ln_1p(-sf)` in the right; `-inf` below the support.
 ///
 /// As `cdf -> 1` the cdf rounds to ~1 and its log to a tiny, inaccurate value, so that side goes
-/// through `ln_1p` of the small `sf`. As `cdf -> 0` the log is well conditioned and [`derive_cdf`] is exact
-/// there, so that side is simply its log.
+/// through `ln_1p` of the small `sf`. As `cdf -> 0` the log is well conditioned and [`derive_cdf`] is
+/// exact there, so that side is its log.
 ///
-/// The predicate is `rate * x < 1`, a statement about where `ln(cdf)` is well conditioned, not a
-/// comparison against the computed cdf. It coincides with [`CDF_SINH_MAX`] rather than deriving from
-/// it, which is what lets the left arm inline [`derive_cdf`]'s `expm1` branch: on the support and
-/// below `t = 1` that is the only branch it would take.
+/// The predicate `rate * x < 1` says where `ln(cdf)` is well conditioned; it is not a comparison
+/// against the computed cdf. It coincides with [`CDF_SINH_MAX`] rather than deriving from it, which
+/// is what lets the left arm inline [`derive_cdf`]'s `expm1` branch: on the support and below
+/// `t = 1` that is the only branch it would take.
 fn derive_ln_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
     Sides {
         below_support: f64::NEG_INFINITY,
@@ -215,8 +212,8 @@ fn derive_ln_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 
 /// `ppf` / `isf`: the arm inside the closed quantile domain, null outside it.
 ///
-/// One slot, not two: no part of either inverse survives a null rate, at any quantile in range or
-/// out, so there is no rate-free constant to keep separate from the arm.
+/// One slot rather than [`Sides`]' two, because no part of either inverse survives a null rate, at
+/// any quantile in range or out.
 struct Domain<Arm> {
     inside: Option<Arm>,
 }
@@ -237,11 +234,9 @@ impl<Arm: Fn(f64) -> f64> Domain<Arm> {
 /// Through `ln_1p` rather than `ln(1 - q)`: the latter rounds `1 - q` to exactly `1` below
 /// `q ~ 1.1e-16` and collapses to `-0.0`.
 ///
-/// **The rate is divided by, never reciprocated.** `x * (1 / rate)` rounds twice where `x / rate`
-/// rounds once, and at a subnormal rate the reciprocal reaches `inf` and `NaN` where the division
-/// stays finite. So neither inverse hoists anything into its `derive`.
-///
-/// The negation keeps `ppf(-0.0) = -0.0`.
+/// The rate is divided by, never reciprocated: `x * (1 / rate)` rounds twice where `x / rate` rounds
+/// once, and at a subnormal rate the reciprocal reaches `inf` and `NaN` where the division stays
+/// finite. So neither inverse hoists anything into its `derive`.
 fn derive_ppf(rate: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
     Domain {
         inside: rate.map(|rate| move |quantile: f64| (-((-quantile).ln_1p())) / rate),

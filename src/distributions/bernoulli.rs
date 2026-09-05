@@ -29,8 +29,8 @@ impl BernoulliParamsKwargs {
         build_dist(self.p)
     }
 
-    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which owns
-    /// the validate-and-derive-once contract the fast path rests on.
+    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which
+    /// validates and derives once per call rather than per row.
     fn value_keyed<Branches>(
         &self,
         value: &Series,
