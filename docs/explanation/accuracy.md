@@ -107,7 +107,7 @@ magnitudes are in the inherited limits below.
   and `Uniform(pl.col("lo"), pl.col("hi")).cdf("x")` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
   identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
-  moments and value-keyed methods, `Exponential`'s value-keyed methods, and `Geometric.std` / `.entropy`.
+  moments and value-keyed methods, and `Geometric.std` / `.entropy`.
   The difference is at or below `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs`
   runs the same Rust body either way and stays bit-identical.
 

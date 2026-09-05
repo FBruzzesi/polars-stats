@@ -63,20 +63,20 @@ scalar).
 ## Plugin granularity
 
 **One Rust file per distribution, one `#[polars_expr]` per method that genuinely needs Rust**: the closed-form moments
-(Bernoulli's `mean`, `variance`, `entropy`; Uniform's, Exponential's, ...) live in Python as `pl.Expr` and compose with
+(Bernoulli's `mean`, `variance`, `entropy`; Exponential's, Uniform's, ...) live in Python as `pl.Expr` and compose with
 the expression engine. Methods that go through `statrs` (sampling, transcendental `pdf`/`pmf`, `cdf`, `inverse_cdf`,
 native `ln_pdf`/`ln_pmf`, native `sf`) get a Rust plugin function, and so do the elementary value-keyed closed forms:
 they branch on the evaluation value, which puts the validator inside a `when` arm where polars can mask it away
 (see [Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)).
-`Exponential`, `Geometric` and `Uniform` are the three that have not moved yet.
+`Geometric` and `Uniform` are the two that have not moved yet.
 
 **Parameter validation needs Rust.** A bare `pl.Expr` cannot raise per row, so any method computed in Python routes its
 parameters through one small validating plugin that raises on a bad row and returns a reused quantity. For a
 closed-form distribution that covers the whole surface: `Uniform.range` returns `max - min` and raises on
-`max <= min`, `Exponential` validates `rate > 0`. Everywhere else it covers the closed-form moments only, since the
-value-keyed methods already validate inside their own plugin: `normal_sigma` validates `sigma > 0`, so `Normal.mean()`
-raises exactly as `Normal.pdf()` does, and `bernoulli_proba` does the same for `Bernoulli`'s moments. Either way a
-pure-math `mean` makes one FFI round-trip and reports an invalid parameterisation consistently, trading a little
+`max <= min`. Everywhere else it covers the closed-form moments only, since the value-keyed methods already validate
+inside their own plugin: `normal_sigma` validates `sigma > 0`, so `Normal.mean()` raises exactly as `Normal.pdf()`
+does, and `bernoulli_proba` and `exponential_rate` do the same for `Bernoulli`'s and `Exponential`'s moments. Either
+way a pure-math `mean` makes one FFI round-trip and reports an invalid parameterisation consistently, trading a little
 throughput for a uniform error surface.
 
 ## Sampling

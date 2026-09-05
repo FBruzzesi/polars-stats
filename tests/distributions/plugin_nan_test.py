@@ -14,9 +14,9 @@ in two places:
 * `Binomial`: `NaN < 0.0` is false and `NaN.floor() as u64` saturates to `0`, so unguarded bodies
   would return a confident `P(X <= 0)` (and a `pmf` of `0.0`).
 
-`Bernoulli` reimplements the short-circuit in its own driver (`bernoulli_value_keyed`), which the
-shared one could not serve because it nulls a row on any null parameter. Covered here so the two
-cannot drift.
+`Bernoulli` and `Exponential` take a third driver (`value_keyed_derived_per_row`), which repeats the
+short-circuit: the shared per-row one nulls a row on any null parameter, and their off-support
+answers are contracted to survive one. Covered here so the drivers cannot drift.
 
 Both plugin shapes are covered: scalar-parameter instances route to the `<method>_scalar` twins,
 column-parameter instances to the per-row plugins.
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, LogNormal, Normal
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, LogNormal, Normal
 from polars_stats.distributions._base import DiscreteDistribution
 
 if TYPE_CHECKING:
@@ -54,6 +54,8 @@ _CASES = [
     ("beta-columns", Beta(a=_col(2.0), b=_col(3.0))),
     ("binomial-scalar", Binomial(n=5, p=0.4)),
     ("binomial-columns", Binomial(n=_col(5, pl.Int64()), p=_col(0.4))),
+    ("exponential-scalar", Exponential(rate=1.5)),
+    ("exponential-columns", Exponential(rate=_col(1.5))),
     ("discreteuniform-scalar", DiscreteUniform(min=-2, max=9)),
     ("discreteuniform-columns", DiscreteUniform(min=_col(-2, pl.Int64()), max=_col(9, pl.Int64()))),
 ]

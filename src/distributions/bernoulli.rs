@@ -1,10 +1,11 @@
-use polars::prelude::arity::try_binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
-use crate::distributions::{align_inputs, validate_params_unary, value_keyed_scalar};
+use crate::distributions::{
+    align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
+};
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
     samples_by_index, samples_per_row, SampleKwargs, SampleScalarKwargs, SamplesKwargs,
@@ -28,23 +29,15 @@ impl BernoulliParamsKwargs {
         build_dist(self.p)
     }
 
-    /// Constant-parameter twin of the per-row [`bernoulli_value_keyed`], sharing its `derive` and
-    /// `select` bodies: validate and derive `p` once per call, then map `select` over the
-    /// evaluation-point column. The Python side routes here only once every parameter is a Python
-    /// scalar, so `derive` always sees `Some`.
-    fn value_keyed<Branches, Derive, Select>(
+    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which
+    /// validates and derives once per call rather than per row.
+    fn value_keyed<Branches>(
         &self,
         value: &Series,
-        derive: Derive,
-        select: Select,
-    ) -> PolarsResult<Series>
-    where
-        Derive: Fn(Option<f64>) -> Branches,
-        Select: Fn(&Branches, f64) -> Option<f64>,
-    {
-        self.build()?;
-        let branches = derive(Some(self.p));
-        value_keyed_scalar(value, |v| select(&branches, v))
+        derive: impl Fn(Option<f64>) -> Branches,
+        select: impl Fn(&Branches, f64) -> Option<f64>,
+    ) -> PolarsResult<Series> {
+        value_keyed_derived_scalar(value, self.p, build_dist, derive, select)
     }
 }
 
@@ -231,106 +224,53 @@ fn isf_at(p: &Option<f64>, quantile: f64) -> Option<f64> {
     p.map(|p| f64::from(p > quantile))
 }
 
-/// Apply `derive` then `select` element-wise over `(value, p)`; shared by the eight value-keyed
-/// plugins. Each method derives its own type ([`Mass`], [`Steps`], [`PpfCutoffs`], `Option<f64>`),
-/// so pairing one method's `derive` with another's `select` does not compile.
-///
-/// Null contract: a null `value` nulls the row without validating, matching
-/// [`value_keyed_per_row`](crate::distributions::value_keyed_per_row) and the samplers. A null `p`
-/// is **not** a row-level short-circuit, which is what separates this driver from the shared one: it
-/// reaches `derive` as `None` so the slots that carry no `p` still answer. Nothing is validated on a
-/// null-`p` row, since there is no parameterisation to reject.
-///
-/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `p` has been validated, so
-/// an invalid parameterisation still raises on a `NaN` row.
-///
-/// Bernoulli is the only consumer today. `Exponential` is the next single-parameter catalogue entry
-/// whose closed forms move into Rust, so hoist this into `mod.rs` beside `value_keyed_per_row` when
-/// its port makes it a second consumer, not before.
-fn bernoulli_value_keyed<Branches, Derive, Select>(
-    inputs: &[Series],
-    derive: Derive,
-    select: Select,
-) -> PolarsResult<Series>
-where
-    Derive: Fn(Option<f64>) -> Branches,
-    Select: Fn(&Branches, f64) -> Option<f64>,
-{
-    let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let proba = inputs[1].cast(&DataType::Float64)?;
-    let name = inputs[0].name().clone();
-
-    let ca: Float64Chunked = try_binary_elementwise(
-        value.f64()?,
-        proba.f64()?,
-        |value_opt, proba_opt| -> PolarsResult<Option<f64>> {
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            // Validate before the `NaN` short-circuit, so an invalid `p` still raises on a `NaN`
-            // row, exactly as `value_keyed_per_row` orders it.
-            if let Some(proba) = proba_opt {
-                build_dist(proba)?;
-            }
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                select(&derive(proba_opt), value)
-            })
-        },
-    )?;
-
-    Ok(ca.with_name(name).into_series())
-}
-
 /// Element-wise pmf: `1 - p` at 0, `p` at 1, `0` off the support.
-/// See [`bernoulli_value_keyed`] for the null/error contract.
+/// See [`value_keyed_derived_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Mass::pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, build_dist, Mass::pmf, Mass::at)
 }
 
 /// Element-wise log-pmf; see [`Mass::ln_pmf`] for the `ln_1p` reason.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Mass::ln_pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, build_dist, Mass::ln_pmf, Mass::at)
 }
 
 /// Element-wise cdf `P(X <= value)`; see [`Steps::cdf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Steps::cdf, Steps::at)
+    value_keyed_derived_per_row(inputs, build_dist, Steps::cdf, Steps::at)
 }
 
 /// Element-wise log-cdf; see [`Steps::ln_cdf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Steps::ln_cdf, Steps::at)
+    value_keyed_derived_per_row(inputs, build_dist, Steps::ln_cdf, Steps::at)
 }
 
 /// Element-wise survival function `P(X > value)`; see [`Steps::sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Steps::sf, Steps::at)
+    value_keyed_derived_per_row(inputs, build_dist, Steps::sf, Steps::at)
 }
 
 /// Element-wise log-sf; see [`Steps::ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, Steps::ln_sf, Steps::at)
+    value_keyed_derived_per_row(inputs, build_dist, Steps::ln_sf, Steps::at)
 }
 
 /// Element-wise ppf (inverse cdf), returning the support point as `f64`; see [`PpfCutoffs::at`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, PpfCutoffs::derive, PpfCutoffs::at)
+    value_keyed_derived_per_row(inputs, build_dist, PpfCutoffs::derive, PpfCutoffs::at)
 }
 
 /// Element-wise inverse survival function; see [`isf_at`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    bernoulli_value_keyed(inputs, isf_proba, isf_at)
+    value_keyed_derived_per_row(inputs, build_dist, isf_proba, isf_at)
 }
 
 /// Constant-parameter fast path for [`bernoulli_pmf`].

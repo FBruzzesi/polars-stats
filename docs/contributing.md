@@ -173,10 +173,15 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           are the worked examples: every value-keyed method is a one-line `_value_plugin` hook over a Rust body, and
           only the moments stay in `_<name>.py`.
         * Split such a body into a `derive` that turns the parameters into their branch answers and a `select` that
-          picks one by the evaluation value (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`). The Polars expression it
-          replaces computed `1 - p` once on a length-1 literal and broadcast it; a body that recomputes per row
-          regressed the constant-parameter path by up to 195% at 10M rows. `derive` runs once per call on that path
-          and once per row only when a parameter is a column.
+          picks one by the evaluation value (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`, `exponential.rs`'s
+          `derive_cdf` / `Sides::at`). The Polars expression it replaces computed `1 - p` once on a length-1 literal
+          and broadcast it; a body that recomputes per row regressed the constant-parameter path by up to 195% at
+          10M rows. `derive` runs once per call on the constant path and once per row when a parameter is a column.
+        * A one-parameter distribution pairs those two through `value_keyed_derived_per_row` and
+          `value_keyed_derived_scalar` in `src/distributions/mod.rs`; both plugin shells are one line and neither
+          names a driver internal. They are not `value_keyed_per_row`, which nulls a row on **any** null input: a
+          null parameter has to reach `derive` as `None` so the branches whose answer carries no parameter still
+          answer (`Bernoulli.pmf(2) = 0`, `Exponential.cdf(-1) = 0`).
     * Factor the validating constructor into a `build_dist(...) -> PolarsResult<Dist>` helper so an invalid parameter
       maps through a `ComputeError` consistently.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
@@ -290,8 +295,8 @@ rather than an argument to accept. Both rules were bought the same way: a `pdf`-
 found again elsewhere, and three distributions cleared from the `isf` fix by reasoning that each fell to the first
 probe aimed at it.
 
-**Where the recipes live.** `Exponential._log_sf` (an exact closed form), `Exponential._cdf` and `LogNormal.variance`
-(the `sinh` identity standing in for the `expm1` Polars does not expose), `Exponential._log_cdf` and
+**Where the recipes live.** `exponential.rs`'s `derive_ln_sf` (an exact closed form), its `derive_cdf` and
+`LogNormal.variance` (the `sinh` identity standing in for the `expm1` Polars does not expose), its `derive_ln_cdf` and
 `Uniform._log_cdf` (`log1p` on the near-certain side), `normal.rs`'s `ln_erfc` (a special function ported to log
 space, the pattern for the hard cases), and the `isf_value` bodies in `normal.rs` (a symmetry) and `lognormal.rs`
 (composing one).
