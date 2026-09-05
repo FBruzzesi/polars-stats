@@ -93,7 +93,7 @@ multi-draw fill in `rng.rs` parallelises through the re-export in `polars-core`,
 
 ### Python runtime
 
-Only `polars>=1.15,<1.44`. No other runtime dependencies.
+Only `polars>=1.15`. No other runtime dependencies.
 
 ### Dev and CI tooling
 

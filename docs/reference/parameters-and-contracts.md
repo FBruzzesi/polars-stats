@@ -127,7 +127,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | Situation | When detected | Behaviour |
 |---|---|---|
 | Wrong parameter *type* (a `list`, an `int` for a float parameter, a `bool`) | Python `__init__` | `TypeError`, no query runs |
-| Invalid parameter *value*, scalar or one column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls |
+| Invalid parameter *value*, scalar or one column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls (one exception on polars >= 1.44, see [Known limitation](index.md#compatibility)) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
 | `null` parameter on a row | per row | `null` on that row, no error |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |

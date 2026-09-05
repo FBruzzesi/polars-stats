@@ -11,6 +11,9 @@ forwarded untouched.
 `linear_space` backfills `polars.linear_space`, which is missing on older supported polars; the implementation here
 reproduces its evenly spaced, inclusive-endpoint grid on every supported version.
 
+`ARM_MASKING_HIDES_VALIDATION` gates the validation contract, which polars 1.44 breaks for the
+distributions that assemble their closed forms in Python.
+
 `arr_explode` wraps `Series.arr.explode`: polars 1.36 added the `empty_as_null` flag and 1.42 deprecated its
 default (a warning `filterwarnings = ["error"]` escalates), so newer polars needs the explicit kwarg while older
 supported polars does not accept it.
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
     from polars import Series
 
 __all__ = (
+    "ARM_MASKING_HIDES_VALIDATION",
     "LITERAL_DISPLAYS_AS_VALUE",
     "PARTITIONED_BROADCAST_AVAILABLE",
     "arr_explode",
@@ -70,6 +74,17 @@ upstream defects are the reason the partition suites are gated rather than the b
 Both are polars defects, not plugin defects: the same expressions are correct on 1.34 and above with
 an unchanged plugin. Documented for users in `docs/reference/parameters-and-contracts.md`.
 When the polars floor reaches 1.34 this constant and every gate on it can be deleted.
+"""
+
+
+ARM_MASKING_HIDES_VALIDATION = Version("1.44.0") <= PL_VERSION
+"""Whether a validating plugin inside a `when/then/otherwise` arm stops seeing the rows the arm skips.
+
+Polars 1.44 (pola-rs/polars#28498) masks the **arms** of a `when/then/otherwise` to null on the rows
+the arm does not select. It does not mask the **condition**. So a validator reached only from inside
+`.then(...)` / `.otherwise(...)` never sees an invalid row and never raises, while a validator in the
+`when(...)` condition, or one called unconditionally from inside the plugin that computes the answer,
+still does.
 """
 
 
