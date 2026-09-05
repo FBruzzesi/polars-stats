@@ -80,11 +80,8 @@ _SUPPORT_POINTS = (-3.0, -1.0, 0.0, 0.5, 1.0, 3.0, 100.0)
 _QUANTILES = (-0.5, 0.001, 0.5, 0.999, 1.5)
 """In-range quantiles plus the two out-of-range values, which take the guard branch instead of computing.
 
-A `None` quantile is deliberately *not* probed. Polars masks null rows out of an elementwise plugin's
-input on every supported version, so the parameters on a null row never reach the validator and no
-distribution raises, `DiscreteUniform` and the other Rust-backed ones included. That is a property of
-plugin dispatch, not of the branch the value selects, and removing `propagate_null_and_nan` would not
-change it, which is what separates it from the `NaN` point the second test does probe.
+A `None` quantile is not probed here. It is not a statement about which branch the value selects, so
+it gets its own test below, alongside the `NaN` point that leaks through the same wrapper.
 """
 
 
@@ -110,7 +107,7 @@ def _ids(case: _Case) -> str:
     return case.name
 
 
-def _report(case: _Case, method_fn: Callable[[pl.Expr], pl.Expr], value: float) -> str | None:
+def _report(case: _Case, method_fn: Callable[[pl.Expr], pl.Expr], value: float | None) -> str | None:
     """The `ComputeError` message the method raised at `value`, or `None` if it returned a result."""
     frame = pl.DataFrame({**case.columns, "v": pl.Series([value, value], dtype=pl.Float64)})
     try:
@@ -180,3 +177,31 @@ def test_invalid_parameter_raises_at_a_nan_evaluation_point(case: _Case, request
     # supported polars ever reaches.
     unreported = [method for method, report in reports if report is None or case.fragment not in report]
     assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a NaN point in {unreported}"
+
+
+_RUST_CASES = tuple(case for case in _CASES if case.name not in _LEAKING_METHODS)
+"""The cases whose value-keyed methods compute in Rust, derived rather than listed again.
+
+A distribution leaves `_LEAKING_METHODS` exactly when its closed forms move into Rust, so this set
+grows on its own as the port series lands.
+"""
+
+
+@pytest.mark.parametrize("case", _RUST_CASES, ids=_ids)
+def test_invalid_parameter_raises_at_a_null_evaluation_point(case: _Case) -> None:
+    """The null sibling of the test above: an invalid parameterisation raises whatever the value is.
+
+    A null *value* propagates to null, but it never downgrades an invalid parameterisation to one.
+    That is what separates it from a null *parameter*, where there is nothing to reject and the row
+    nulls. Every per-row driver validates before it reads the value, so this holds on every supported
+    polars, which is why it needs no gate where the two tests above do.
+
+    Probed through the private hooks: `propagate_null_and_nan` spells the null overlay as the same
+    `when(...).then(...).otherwise(result)` the `NaN` test above indicts, so the public wrappers still
+    mask this from polars 1.44. Deleting the wrapper is what closes that half.
+    """
+    probed = [(method, fn) for method in _NAN_METHODS if (fn := getattr(case.dist, f"_{method}", None)) is not None]
+    assert len(probed) == len(_NAN_METHODS) - 2
+    reports = [(method, _report(case, fn, None)) for method, fn in probed]
+    unreported = [method for method, report in reports if report is None or case.fragment not in report]
+    assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a null point in {unreported}"

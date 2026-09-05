@@ -160,19 +160,21 @@ where
         p1,
         p2,
         |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
-            match (value_opt, p1_opt, p2_opt) {
-                (Some(value), Some(p1), Some(p2)) => {
-                    // Build before the `NaN` short-circuit, so an invalid parameterisation still
-                    // raises on a `NaN` row. Pinned by `tests/distributions/plugin_nan_test.py`.
-                    let dist = build(p1, p2)?;
-                    Ok(if value.is_nan() {
-                        Some(f64::NAN)
-                    } else {
-                        f(&dist, value)
-                    })
-                },
-                _ => Ok(None),
-            }
+            let (Some(p1), Some(p2)) = (p1_opt, p2_opt) else {
+                return Ok(None);
+            };
+            // Build before the value is read at all, so an invalid parameterisation raises whatever
+            // the row's value is. Only a null or `NaN` *value* propagates. Pinned by
+            // `tests/distributions/plugin_nan_test.py` and `validation_contract_test.py`.
+            let dist = build(p1, p2)?;
+            let Some(value) = value_opt else {
+                return Ok(None);
+            };
+            Ok(if value.is_nan() {
+                Some(f64::NAN)
+            } else {
+                f(&dist, value)
+            })
         },
     )?;
 
@@ -224,14 +226,15 @@ where
         value.f64()?,
         param.f64()?,
         |value_opt, param_opt| -> PolarsResult<Option<f64>> {
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            // Validate before the `NaN` short-circuit, so an invalid parameter still raises on a
-            // `NaN` row. Pinned by `tests/distributions/plugin_nan_test.py`.
+            // Validate before the value is read at all, so an invalid parameter raises whatever the
+            // row's value is. Only a null or `NaN` *value* propagates. Pinned by
+            // `tests/distributions/plugin_nan_test.py` and `validation_contract_test.py`.
             if let Some(param) = param_opt {
                 validate(param)?;
             }
+            let Some(value) = value_opt else {
+                return Ok(None);
+            };
             Ok(if value.is_nan() {
                 Some(f64::NAN)
             } else {
