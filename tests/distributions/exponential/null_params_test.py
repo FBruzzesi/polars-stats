@@ -39,10 +39,10 @@ def test_method_propagates_null_in_rate(expr_fn: Callable[[Exponential], pl.Expr
 
 
 def test_value_keyed_below_support_ignores_null_rate() -> None:
-    # Closed-form trait shared with Uniform / Bernoulli: below the support the value-keyed methods
-    # return the rate-independent support constant (pdf / cdf -> 0, sf -> 1), so a null rate does NOT
-    # null the row there. statrs-backed distributions (Binomial) null it instead; this is the
-    # documented trade-off of computing the closed form in Polars rather than in a Rust plugin.
+    # Closed-form trait shared with Uniform: below the support the value-keyed methods return the
+    # rate-independent support constant (pdf / cdf -> 0, sf -> 1), so a null rate does NOT null the
+    # row there. statrs-backed distributions (Binomial) null it instead. Bernoulli keeps the same
+    # contract in Rust (tests/distributions/bernoulli/null_param_test.py).
     df = pl.DataFrame({"rate": [1.0, None, 2.0]}, schema={"rate": pl.Float64})
     e = Exponential(rate=pl.col("rate"))
     assert df.select(r=e.pdf(pl.lit(-1.0)))["r"].to_list() == [0.0, 0.0, 0.0]

@@ -453,13 +453,16 @@ class _UnivariateDistribution(ABC):
         )
 
     def _value_plugin(self, function_name: str, value: pl.Expr) -> pl.Expr:
-        """Register a value-keyed Rust plugin call `f(value, *params)` for a statrs-backed method.
+        """Register a value-keyed Rust plugin call `f(value, *params)`, statrs-backed or hand-written.
 
         Parameters are validated inside the plugin, so every value-keyed method reports an invalid
         parameterisation consistently and propagates input nulls per row. With all-constant parameters the
         call routes to the `f"{function_name}_scalar"` twin (validated once, passed as kwargs, only `value`
-        crosses FFI), bit-identical to the per-row path. Closed-form distributions (`Uniform`, `Bernoulli`)
-        never call this; their hooks compute the formula directly in Polars.
+        crosses FFI), bit-identical to the per-row path.
+
+        A value-keyed method belongs here even where its closed form is elementary: a branching Polars
+        expression cannot be trusted to reach its validator on every row (see docs/explanation/design.md).
+        `Exponential`, `Geometric` and `Uniform` have not moved yet and still assemble theirs in Polars.
         """
         return (
             register_plugin(f"{function_name}_scalar", (value,), kwargs=self._scalar_kwargs)

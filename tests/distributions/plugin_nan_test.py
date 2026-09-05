@@ -14,6 +14,10 @@ in two places:
 * `Binomial`: `NaN < 0.0` is false and `NaN.floor() as u64` saturates to `0`, so unguarded bodies
   would return a confident `P(X <= 0)` (and a `pmf` of `0.0`).
 
+`Bernoulli` reimplements the short-circuit in its own driver (`bernoulli_value_keyed`), which the
+shared one could not serve because it nulls a row on any null parameter. Covered here so the two
+cannot drift.
+
 Both plugin shapes are covered: scalar-parameter instances route to the `<method>_scalar` twins,
 column-parameter instances to the per-row plugins.
 """
@@ -26,7 +30,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Beta, Binomial, DiscreteUniform, LogNormal, Normal
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, LogNormal, Normal
 from polars_stats.distributions._base import DiscreteDistribution
 
 if TYPE_CHECKING:
@@ -40,6 +44,8 @@ def _col(value: float, dtype: PolarsDataType | None = None) -> pl.Expr:
 
 
 _CASES = [
+    ("bernoulli-scalar", Bernoulli(p=0.3)),
+    ("bernoulli-columns", Bernoulli(p=_col(0.3))),
     ("normal-scalar", Normal(mu=0.5, sigma=2.0)),
     ("normal-columns", Normal(mu=_col(0.5), sigma=_col(2.0))),
     ("lognormal-scalar", LogNormal(mu=0.5, sigma=2.0)),

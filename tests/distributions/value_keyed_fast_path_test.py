@@ -1,6 +1,7 @@
 """Validation contract of the constant-parameter value-keyed fast path.
 
-Covers Normal, LogNormal, Binomial, Beta and DiscreteUniform, the distributions with per-method Rust plugins.
+Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform and Bernoulli: the distributions with
+per-method Rust plugins.
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
 plugin that validates and builds the `statrs` distribution once (via the shared `build_dist`), instead of rebuilding it
@@ -30,7 +31,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Beta, Binomial, DiscreteUniform, LogNormal, Normal
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, LogNormal, Normal
 from polars_stats.distributions._base import ContinuousDistribution
 from tests._polars_compat import assert_series_equal
 
@@ -58,6 +59,12 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 # should raise. `int` `n` for binomial keeps its `Int64` column dtype.
 # id -> (scalar factory, column factory, should_raise)
 _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _UnivariateDistribution], bool]] = {
+    "bernoulli p=nan": (lambda: Bernoulli(_NAN), lambda: Bernoulli(_col(_NAN)), True),
+    "bernoulli p=-0.1": (lambda: Bernoulli(-0.1), lambda: Bernoulli(_col(-0.1)), True),
+    "bernoulli p=1.5": (lambda: Bernoulli(1.5), lambda: Bernoulli(_col(1.5)), True),
+    # The degenerate point masses are legitimate parameterisations; both paths must accept them.
+    "bernoulli p=0 (accepted)": (lambda: Bernoulli(0.0), lambda: Bernoulli(_col(0.0)), False),
+    "bernoulli p=1 (accepted)": (lambda: Bernoulli(1.0), lambda: Bernoulli(_col(1.0)), False),
     "normal mu=nan": (lambda: Normal(_NAN, 1.0), lambda: Normal(_col(_NAN), _col(1.0)), True),
     "normal std=0": (lambda: Normal(0.0, 0.0), lambda: Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (lambda: Normal(0.0, -1.0), lambda: Normal(_col(0.0), _col(-1.0)), True),

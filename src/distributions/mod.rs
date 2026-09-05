@@ -161,10 +161,10 @@ where
 /// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
 /// Any null input nulls the row without calling `validate`, matching the samplers.
 ///
-/// These plugins are what let the closed-form moments and (for Uniform / Bernoulli) value-keyed
-/// methods, which are pure Polars expressions, report an invalid parameterisation through the same
-/// Rust `build_dist`. The constant-parameter fast path calls the same plugin on length-1 `pl.lit`
-/// inputs, so it is built once instead of per row.
+/// These plugins are what let the closed-form moments, and the value-keyed methods still assembled
+/// in Polars (`Exponential`, `Geometric`, `Uniform`), report an invalid parameterisation through the
+/// same Rust `build_dist`. The constant-parameter fast path calls the same plugin on length-1
+/// `pl.lit` inputs, so it is built once instead of per row.
 ///
 /// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
 /// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
