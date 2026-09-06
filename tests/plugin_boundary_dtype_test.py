@@ -46,14 +46,19 @@ filter drops the rest.
 """
 
 _SHAPES = ("value", "parameter", "sampler")
-_REACHED_RUST = frozenset({"computed", "ComputeError"})
+_REACHED_RUST = frozenset({"computed", "ComputeError", "PanicException"})
+"""Outcomes only Rust can produce. A `PanicException` is a panic that unwound through polars' own entry
+point (polars before 1.25 raises one from its arrow export for `Object`): catchable, so not the abort we guard."""
 
 
 def _outcome(frame: pl.DataFrame, expr: pl.Expr) -> str:  # pragma: no cover
-    """`"computed"` or the exception name; any catchable error passes, an abort never returns."""
+    """`"computed"` or the exception name; any catchable error passes, an abort never returns.
+
+    `PanicException` subclasses `BaseException`, so `Exception` alone would let it end the child with exit 1.
+    """
     try:
         frame.select(r=expr)
-    except Exception as err:  # noqa: BLE001
+    except (Exception, pl.exceptions.PanicException) as err:  # noqa: BLE001
         return type(err).__name__
     return "computed"
 

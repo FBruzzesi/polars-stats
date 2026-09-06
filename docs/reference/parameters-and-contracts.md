@@ -74,7 +74,8 @@ propagates nulls like any other parameter.
 
 In **evaluation-point** position every non-numeric dtype is rejected: Polars fails the query with
 `InvalidOperationError`. That covers `Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object` and the temporal
-dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls.
+dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls. (On polars older than 1.25, an `Object`
+column in either position raises `PanicException` from polars' own arrow export instead.)
 
 **Parameter** position is weaker: past the integer rule above there is no dtype check, and the Rust cast decides.
 `Categorical`, `Enum`, `Struct` and `Object` fail it and raise `ComputeError`. The rest are accepted: a `String`
