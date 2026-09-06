@@ -22,10 +22,11 @@ extension-module = ["pyo3/extension-module"]
 pyo3 = { version = "0.29.2", features = ["abi3-py310"] }
 pyo3-polars = { version = "0.28.0", features = ["derive", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
-# `dtype-full` is a correctness requirement, at ~3.4 MiB on the installed extension (~0.9 MiB of wheel). `pyo3-polars` rebuilds the `Series`
-# inside *this* polars build before our function body runs, and a dtype this build lacks is a `panic!`
-# in `DataType::from_arrow` that crosses the `extern "C"` entry point as a non-unwinding abort. No
-# Rust-side guard can help: the body never runs. Pinned by `tests/plugin_boundary_dtype_test.py`.
+# `dtype-full` is a correctness requirement (~3.4 MiB on the installed extension, ~0.9 MiB on the
+# wheel). `pyo3-polars` rebuilds the incoming `Series` inside *this* polars build before our function
+# body runs, and a dtype this build lacks is a `panic!` in `DataType::from_arrow` that crosses the
+# `extern "C"` entry point as a non-unwinding abort. No Rust-side guard can help: the body never
+# runs. Pinned by `tests/plugin_boundary_dtype_test.py`.
 #
 # Everything in `dtype-full` is supported-or-refused, nothing outside it is. `object` crosses as
 # `BinaryView` and refuses at the cast; `dtype-extension` needs `pyarrow`, which we do not depend on.

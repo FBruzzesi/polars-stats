@@ -74,8 +74,8 @@ def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
 def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType, data: st.DataObject) -> None:
     """Every value-keyed method evaluates a narrow value column exactly as its `Float64` cast, nulls included.
 
-    Every grid value is exactly representable in every dtype here, so a mismatch means a misread
-    buffer, not a hook doing its arithmetic at the column's width.
+    Every grid value is exactly representable in every dtype here, so a mismatch is a misread buffer,
+    not a hook computing at the column's width.
     """
     params = data.draw(spec.params)
     dist = spec.make(params)

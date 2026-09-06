@@ -79,7 +79,8 @@ dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls.
 **Parameter** position is weaker: past the integer rule above there is no dtype check, and the Rust cast decides.
 `Categorical`, `Enum`, `Struct` and `Object` fail it and raise `ComputeError`. The rest are accepted: a `String`
 parameter is *parsed*, so `Normal(mu="mu", sigma=1.0).sample(seed=0)` on a `mu` column holding `"0.5"` draws from a
-normal centred at `0.5`, and a `Boolean`, `String` or temporal parameter carries its own dtype back out of a moment
+normal centred at `0.5`, while a string that does not parse becomes a null parameter on its row and the row nulls
+with no error. A `Boolean`, `String` or temporal parameter carries its own dtype back out of a moment
 (`Normal(mu="mu", sigma=1.0).mean()` on a `Date` column returns `Date`). Cast a parameter to `Float64` when you mean
 a number.
 
@@ -147,7 +148,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | `null` parameter on a row | per row | `null` on that row, no error, except where a branch that carries no parameter already settles the answer (see below) |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
 | Non-numeric column as an *argument* | evaluation | Polars raises `InvalidOperationError` |
-| Non-numeric column as a *parameter* | Rust evaluation, if at all | `ComputeError` for `Categorical` / `Enum` / `Struct` / `Object`; `Boolean`, `String` and the temporal dtypes are **not** rejected and compute (see [Accepted inputs](#accepted-inputs)) |
+| Non-numeric column as a *parameter* | Rust evaluation, if at all | `ComputeError` for `Categorical` / `Enum` / `Struct` / `Object`; `Boolean`, `String` and the temporal dtypes are **not** rejected and compute, an unparsable `String` nulling its row (see [Accepted inputs](#accepted-inputs)) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |
