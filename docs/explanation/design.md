@@ -40,9 +40,7 @@ unbranched expression has nothing to mask. So a closed form stays in Python when
 unconditionally or named in a `when(...)` condition, and moves to Rust when it is read only inside an arm, which is
 what branching on the evaluation value always looks like.
 
-The table below is the rule, which every new distribution follows. It is not yet a description of the tree:
-`Geometric` still assembles its value-keyed methods in Polars and is the last one left to port; the
-[reference index](../reference/index.md) carries the resulting known limitation. Method by method:
+The table below is the rule, which every distribution follows. Method by method:
 
 | Method | In Rust? | Notes |
 |---|---|---|
@@ -103,12 +101,12 @@ path is selected only when the parameters are known scalars, so nothing column-v
 
 ### Constant parameters validate once, not per row
 
-The moments (`mean`, `variance`, `std`, `entropy`) and the value-keyed closed forms still assembled in Polars
-(`Geometric`) do not build a distribution; they compute a Polars expression. But they still route their
-*validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
-`binomial_params`, `lognormal_sigma`, `exponential_rate`, `beta_params`) so an invalid parameterisation raises the same
-`ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid
-parameters raise"). With column parameters that plugin runs over the parameter columns, validating each row.
+The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
+they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
+`binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`) so an invalid parameterisation
+raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment
+(see "Invalid parameters raise"). With column parameters that plugin runs over the parameter columns, validating each
+row.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a

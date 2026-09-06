@@ -1,10 +1,10 @@
 """Every value-keyed method reports an invalid parameterisation, whichever branch the value selects.
 
 Two axes, one contract. The first test sweeps the *evaluation value* across every branch of every
-method, and is what the Rust ports exist to make green. The second holds the value at `NaN` and
-targets `propagate_null_and_nan` instead, a `when/then/otherwise` wrapped around every public
-value-keyed method: a second place the validator can sit inside an arm, one level above the
-distribution.
+method, which holds because every value-keyed method validates inside the Rust plugin that computes
+it. The second holds the value at `NaN` and targets `propagate_null_and_nan` instead, a
+`when/then/otherwise` wrapped around every public value-keyed method: a second place the validator
+can sit inside an arm, one level above the distribution.
 """
 
 from __future__ import annotations
@@ -85,16 +85,6 @@ it gets its own test below, alongside the `NaN` point that leaks through the sam
 """
 
 
-_LEAKING_METHODS: dict[str, frozenset[str]] = {
-    "Geometric": frozenset({"pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"}),
-}
-"""The (distribution, method) pairs that `ARM_MASKING_HIDES_VALIDATION` is expected to break.
-
-Measured, not assumed: these are exactly the pairs that fail on polars 1.44.1 and pass on 1.43.2.
-Every value-keyed method of the one remaining distribution leaks. Porting a distribution's closed
-forms to Rust deletes its entry here; the last one to go deletes the dict.
-"""
-
 _METHOD_VALUES: tuple[tuple[str, tuple[float, ...]], ...] = (
     *((method, _SUPPORT_POINTS) for method in _VALUE_METHODS),
     *((method, _QUANTILES) for method in _QUANTILE_METHODS),
@@ -119,20 +109,17 @@ def _report(case: _Case, method_fn: Callable[[pl.Expr], pl.Expr], value: float |
 @pytest.mark.parametrize("case", _CASES, ids=_ids)
 @pytest.mark.parametrize(("method", "values"), _METHOD_VALUES, ids=[method for method, _ in _METHOD_VALUES])
 def test_invalid_parameter_raises_whichever_branch_the_value_selects(
-    case: _Case, method: str, values: tuple[float, ...], request: pytest.FixtureRequest
+    case: _Case, method: str, values: tuple[float, ...]
 ) -> None:
     """One assertion per (distribution, method), over the whole value sweep.
 
     Which branch a value selects is an implementation detail of the method, so splitting the sweep
     into one test per value would make the pass/fail pattern an artifact of that detail rather than a
-    statement about the contract. It would also make the `polars>=1.44` gate below inexact: leakage
-    is not uniform across values within a method.
+    statement about the contract.
     """
     method_fn: Callable[[pl.Expr], pl.Expr] | None = getattr(case.dist, method, None)
     if method_fn is None:
         pytest.skip(f"{case.name} has no {method} (wrong family)")
-    if ARM_MASKING_HIDES_VALIDATION and method in _LEAKING_METHODS.get(case.name, frozenset()):
-        request.applymarker(pytest.mark.xfail(reason="pola-rs/polars#29005"))
 
     reports = [(value, _report(case, method_fn, value)) for value in values]
     # A `None` report means the invalid row in `columns` was silently computed rather than reported.
@@ -178,15 +165,7 @@ def test_invalid_parameter_raises_at_a_nan_evaluation_point(case: _Case, request
     assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a NaN point in {unreported}"
 
 
-_RUST_CASES = tuple(case for case in _CASES if case.name not in _LEAKING_METHODS)
-"""The cases whose value-keyed methods compute in Rust, derived rather than listed again.
-
-A distribution leaves `_LEAKING_METHODS` exactly when its closed forms move into Rust, so this set
-grows on its own as the port series lands.
-"""
-
-
-@pytest.mark.parametrize("case", _RUST_CASES, ids=_ids)
+@pytest.mark.parametrize("case", _CASES, ids=_ids)
 def test_invalid_parameter_raises_at_a_null_evaluation_point(case: _Case) -> None:
     """The null sibling of the test above: an invalid parameterisation raises whatever the value is.
 

@@ -246,12 +246,65 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
+/// `exp(t) - 1` through the identity `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel.
+///
+/// Not `f64::exp_m1`, which differs from this identity by one ulp on roughly a fifth of the left
+/// tail. Every expected value in `tests/distributions/exponential/` is this identity's rounding, and
+/// `_base.expm1` spells it the same way for the moments still assembled in Polars.
+///
+/// `sinh(t / 2)` overflows above `|t| ~ 1420`; every caller crosses over to a direct form long before
+/// that (`exponential::CDF_SINH_MAX`, `geometric::CDF_DIRECT_COMPLEMENT_MAX`).
+#[inline]
+pub(crate) fn expm1(t: f64) -> f64 {
+    let half = t / 2.0;
+    2.0 * half.exp() * half.sinh()
+}
+
+/// `ln|exp(t) - 1|` as `ln(2) + t / 2 + ln|sinh(t / 2)|`: [`expm1`]'s identity read term by term on
+/// the log scale, so each term is large exactly where the answer is and the rounding stays relative;
+/// `expm1(t).ln()` would round the answer's own magnitude away.
+///
+/// The absolute value carries both signs of `t`: a no-op for `t > 0`, and for `t < 0` the log of the
+/// complement `1 - exp(t)`. Same overflow limit as [`expm1`]; `_base.log_abs_expm1` spells it the same
+/// way for `LogNormal.entropy`.
+#[inline]
+pub(crate) fn ln_abs_expm1(t: f64) -> f64 {
+    let half = t / 2.0;
+    std::f64::consts::LN_2 + half + half.sinh().abs().ln()
+}
+
+/// The two sides of a support whose floor is the integer `FLOOR`, for the value-keyed methods of a
+/// distribution that computes its own closed form.
+///
+/// Below the floor every answer is a parameter-free constant, so a null parameter must not null it:
+/// `below_support` is a plain `f64`, leaving nothing to thread the parameter through by accident.
+/// `on_support` is `None` exactly when the parameter is null. Each distribution's
+/// `null_param(s)_test.py` pins its constants.
+pub(crate) struct Sides<Arm, const FLOOR: i8> {
+    pub(crate) below_support: f64,
+    pub(crate) on_support: Option<Arm>,
+}
+
+impl<Arm: Fn(f64) -> f64, const FLOOR: i8> Sides<Arm, FLOOR> {
+    /// `value < FLOOR` takes the constant, everything else the arm, so `-0.0` sits where `0.0` does.
+    ///
+    /// A `NaN` value never reaches here: every driver short-circuits it. That is what lets this be a
+    /// bare `<`; the `!(value >= FLOOR)` a negated predicate would spell puts `NaN` below the support.
+    pub(crate) fn at(&self, value: f64) -> Option<f64> {
+        if value < f64::from(FLOOR) {
+            Some(self.below_support)
+        } else {
+            self.on_support.as_ref().map(|arm| arm(value))
+        }
+    }
+}
+
 /// The closed quantile domain `[0, 1]`, for the inverses of a distribution that computes its own
 /// closed form rather than building a `statrs` one.
 ///
-/// One slot rather than the two or three a support needs, because no part of either inverse
-/// survives a null parameter, at any quantile in range or out: `Exponential`'s and `Uniform`'s
-/// `null_param(s)_test.py` each pin it.
+/// One slot rather than the two a support needs, because no part of either inverse survives a
+/// null parameter, at any quantile in range or out; each distribution's `null_param(s)_test.py` pins
+/// it.
 pub(crate) struct Domain<Arm> {
     pub(crate) inside: Option<Arm>,
 }
@@ -329,10 +382,10 @@ where
 /// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
 /// Any null input nulls the row without calling `validate`, matching the samplers.
 ///
-/// These plugins are what let the closed-form moments, and the value-keyed methods still assembled
-/// in Polars (`Geometric`), report an invalid parameterisation through the same Rust `build_dist`.
-/// The constant-parameter fast path calls the same plugin on length-1 `pl.lit` inputs, so it is
-/// built once instead of per row.
+/// These plugins are what let the closed-form moments report an invalid parameterisation through
+/// the same Rust `build_dist` as the value-keyed methods and the samplers. The constant-parameter
+/// fast path calls the same plugin on length-1 `pl.lit` inputs, so it is built once instead of per
+/// row.
 ///
 /// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
 /// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and

@@ -297,9 +297,8 @@ DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 # operands are length-1 literals that polars may fold differently from the column kernel. Every IEEE
 # operation is exactly rounded, so the measured 1-ULP gap (Uniform's `variance` / `std`) is a
 # different operation *order*, not a different formula. Extend from a failing assertion, never by
-# widening the tolerance. There is no value-keyed counterpart: every spec whose value-keyed methods
-# run in Rust is bit-exact on both routings by construction, and `geometric`, the last one still
-# assembling them in Polars, measures bit-exact too.
+# widening the tolerance. There is no value-keyed counterpart: every value-keyed method runs in Rust,
+# so one body feeds both routings and they are bit-exact by construction.
 ULP_TOLERANT_MOMENT_SPECS = frozenset({"uniform", "geometric"})
 """Specs whose moments compare to `ULP_REL_TOL` instead of bit-exactly.
 

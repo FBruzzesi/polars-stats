@@ -170,14 +170,15 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           ([pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005)), and no Polars expression can
           spell a guard that survives the optimiser. In practice this is the value-keyed set: `pdf` / `pmf`,
           `log_pdf` / `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf`, `isf`. `DiscreteUniform`, `Bernoulli`,
-          `Exponential` and `Uniform` are the worked examples: every value-keyed method is a one-line
+          `Exponential`, `Geometric` and `Uniform` are the worked examples: every value-keyed method is a one-line
           `_value_plugin` hook over a Rust body, and only the moments stay in `_<name>.py`.
         * Split such a body into a `derive` that turns the parameters into their branch answers and a `select` that
           picks one by the evaluation value. Where the branch answers are fixed once the parameters are, the table is
           non-generic and `derive` is an associated constructor (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`,
           `uniform.rs`'s `Density::pdf`); where a branch still depends on the evaluation point, the table carries an
-          `Arm` type parameter and `derive` is a free function (`exponential.rs`'s `derive_cdf` / `Sides::at`,
-          `uniform.rs`'s `derive_cdf` / `Regions::at`). The Polars expression it replaces computed `1 - p` once on a
+          `Arm` type parameter and `derive` is a free function (`exponential.rs`'s and `geometric.rs`'s `derive_cdf`
+          over the shared `Sides<Arm, FLOOR>` in `mod.rs`, `uniform.rs`'s `derive_cdf` / `Regions::at`). The Polars
+          expression it replaces computed `1 - p` once on a
           length-1 literal and broadcast it; a body that recomputes per row regressed the constant-parameter path by
           up to 195% at 10M rows. `derive` runs once per call on the constant path and once per row when a parameter
           is a column.
@@ -304,9 +305,10 @@ probe aimed at it.
 
 **Where the recipes live.** `exponential.rs`'s `derive_ln_sf` (an exact closed form), its `derive_cdf` and
 `LogNormal.variance` (the `sinh` identity standing in for the `expm1` Polars does not expose), its `derive_ln_cdf` and
-`uniform.rs`'s `derive_ln_cdf` (`log1p` on the near-certain side), `normal.rs`'s `ln_erfc` (a special function ported
-to log space, the pattern for the hard cases), and the `isf_value` bodies in `normal.rs` (a symmetry) and
-`lognormal.rs` (composing one).
+`uniform.rs`'s `derive_ln_cdf` (`log1p` on the near-certain side), `geometric.rs`'s `smallest_support_point` (the
+one-ulp tie rule of a discrete inverse, decided in the log domain both sides entered through), `normal.rs`'s `ln_erfc`
+(a special function ported to log space, the pattern for the hard cases), and the `isf_value` bodies in `normal.rs` (a
+symmetry) and `lognormal.rs` (composing one).
 
 ## Conventions
 

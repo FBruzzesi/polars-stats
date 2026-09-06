@@ -52,9 +52,9 @@ magnitudes are in the inherited limits below.
 * **Discrete `ppf` / `isf` at a step boundary.** `Binomial.ppf` is a binary search resolved to the
   cdf's own precision, so a quantile within `1e-12` *relative* of a cdf step may return the
   neighbouring support point. `Geometric.ppf` / `isf` decide the same tie in the log domain, testing
-  `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`. That is deliberate and it is
-  the more accurate rule: across 1997 probes sitting on and either side of exact step boundaries it
-  disagrees with exact rational arithmetic 357 times, against 490 for the alternative. The price is
+  `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`. That is deliberate: across
+  1997 probes sitting on and either side of exact step boundaries it disagrees with exact rational
+  arithmetic 357 times, against 490 for the alternative. The price is
   that `ppf` and `cdf` are not exact mutual inverses there, and the miss goes both ways, by at most
   one support point: at `p = 1e-8` with `q = sf(1)`, `isf(q)` is `2` where `1` is the answer. On a
   step the two roundings decide the last bit, so which side a given quantile falls on is also the
@@ -65,8 +65,16 @@ magnitudes are in the inherited limits below.
   [the error glibc documents](https://www.gnu.org/software/libc/manual/html_node/Errors-in-Math-Functions.html)
   for it. Only the one-support-point bound is portable, so it is the only thing pinned. `scipy`'s
   [`geom._ppf`](https://github.com/scipy/scipy/blob/main/scipy/stats/_discrete_distns.py) made the
-  opposite trade (it tests against its own `_cdf`, so it is self-consistent and less accurate). Parity
-  is gated at integer equality rather than at a float tolerance.
+  opposite trade: it tests against its own `_cdf`, so `ppf(cdf(k))` round-trips to `k` there.
+  `Geometric(0.3).ppf(0.51)` shows the two rules part. The double nearest `0.51` sits `8.9e-18`
+  above the exact `cdf(2) = 0.51`, so the two readings of the input have different answers: `2` for
+  the decimal `0.51`, `3` for the stored double. Both libraries form the same ratio,
+  `log1p(-0.51) / log1p(-0.3) = 2.0000000000000004`, and ceil it to `3`; the step-back decides. scipy
+  re-derives `cdf(2)` in the linear domain, where its `expm1` lands exactly on `0.51`, so
+  `cdf(2) >= q` reads true and it steps back to `2`. This library compares `2 * log1p(-0.3)` against
+  `log1p(-0.51)`, where the two sides differ by one ulp, and answers `3`. `isf(0.49)` mirrors it (`3`
+  here, `2` in scipy, whose `isf` is `ppf(1 - q)`). Parity is gated at integer equality rather than
+  at a float tolerance.
 
     `DiscreteUniform.ppf` / `isf` are closed forms rather than searches, and `ppf` carries scipy's
     own rounding, bit for bit: in a one-ulp quantile window above each cdf step edge, `q * N` rounds

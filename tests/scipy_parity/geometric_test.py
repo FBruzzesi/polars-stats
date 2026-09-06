@@ -16,8 +16,8 @@ from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 # so the grid holds only valid parameters. `p = 1` is excluded because scipy's generic discrete
 # entropy does not answer there (see the divergence note below).
 _PS = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9]
-# Interior quantiles only: scipy's discrete ppf/isf return the below-support sentinel -1 at the
-# exact endpoints q in {0, 1}, which this support-clamped ppf/isf does not reproduce.
+# Interior quantiles only: scipy's discrete ppf/isf return the point below the support, `a - 1 = 0`,
+# at the exact endpoints q in {0, 1}, which this support-clamped ppf/isf does not reproduce.
 _QUANTILES = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
 # Spans below the support, several integer points, a non-integer, and well into the upper tail.
 _VALUE_GRID = [-1.0, 0.0, 1.0, 2.0, 3.7, 10.0, 50.0]
@@ -46,7 +46,7 @@ def test_method_matches_scipy(case: Case[Geometric], p: float) -> None:
     """Every closed-form method matches `scipy.stats.geom(p)` across `_PS` x grids.
 
     Table-driven: adding a method is one row in `_CASES`. `ppf`/`isf` use interior quantiles only,
-    since scipy's discrete inverse returns the below-support sentinel -1 at `q` in `{0, 1}`, which
+    since scipy's discrete inverse returns the point below the support (`0`) at `q` in `{0, 1}`, which
     the support-clamped inverses here do not reproduce. Method-specific behaviour (support handling,
     null propagation) is asserted in the per-method test files.
     """
@@ -129,9 +129,10 @@ def test_memorylessness_of_sf() -> None:
 
 # NOTE: Deliberate divergences from scipy, recorded here rather than rediscovered as surprises.
 #
-# * Endpoints of the inverse: scipy's discrete `ppf(0)` returns its below-support sentinel `-1`,
-#   while the smallest support point here (`k = 1`) is the only meaningful answer; `ppf(1)` is `inf`
-#   on both sides. Interior-quantile parity covers everything else.
+# * Endpoints of the inverse: scipy's discrete `ppf(0)` and `isf(1)` return the point below the
+#   support, `a - 1 = 0`; this library answers the smallest support point, `1`, the value every
+#   `q > 0` already inverts to on both sides. `ppf(1)` is `inf` on both sides. Interior-quantile
+#   parity covers everything else.
 # * `p = 0`: scipy accepts it and returns degenerate values; this crate raises, as the geometric
 #   law degenerates to "never succeeds" and has no finite moments.
 # * `entropy` at `p = 1`: this crate answers `0.0` by the `0 * log 0 = 0` convention; scipy's

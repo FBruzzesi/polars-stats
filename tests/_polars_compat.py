@@ -11,8 +11,8 @@ forwarded untouched.
 `linear_space` backfills `polars.linear_space`, which is missing on older supported polars; the implementation here
 reproduces its evenly spaced, inclusive-endpoint grid on every supported version.
 
-`ARM_MASKING_HIDES_VALIDATION` gates the validation contract, which polars 1.44 breaks for the
-distributions that assemble their closed forms in Python.
+`ARM_MASKING_HIDES_VALIDATION` gates the validation contract at a null or `NaN` evaluation point, which
+polars 1.44 breaks by masking the `propagate_null_and_nan` wrapper's arms before the plugin can validate.
 
 `arr_explode` wraps `Series.arr.explode`: polars 1.36 added the `empty_as_null` flag and 1.42 deprecated its
 default (a warning `filterwarnings = ["error"]` escalates), so newer polars needs the explicit kwarg while older

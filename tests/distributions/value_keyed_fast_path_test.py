@@ -1,7 +1,6 @@
 """Validation contract of the constant-parameter value-keyed fast path.
 
-Covers Normal, LogNormal, Binomial, Beta, DiscreteUniform, Bernoulli, Exponential and Uniform: the
-distributions with per-method Rust plugins.
+Covers every distribution: each has per-method Rust plugins.
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
 plugin that validates and builds the `statrs` distribution once (via the shared `build_dist`), instead of rebuilding it
@@ -31,7 +30,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, LogNormal, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, Geometric, LogNormal, Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution
 from tests._polars_compat import assert_series_equal
 
@@ -89,6 +88,12 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     # An infinite rate is accepted by statrs as the degenerate point mass at 0, like the Normal
     # scale and unlike the Beta shape; both paths must accept it identically.
     "exponential rate=inf (accepted)": (lambda: Exponential(_INF), lambda: Exponential(_col(_INF)), False),
+    "geometric p=nan": (lambda: Geometric(_NAN), lambda: Geometric(_col(_NAN)), True),
+    "geometric p=1.5": (lambda: Geometric(1.5), lambda: Geometric(_col(1.5)), True),
+    # `p = 0` is the one endpoint Geometric rejects where Bernoulli accepts it: the trial count of a
+    # never-succeeding trial is not representable.
+    "geometric p=0": (lambda: Geometric(0.0), lambda: Geometric(_col(0.0)), True),
+    "geometric p=1 (accepted)": (lambda: Geometric(1.0), lambda: Geometric(_col(1.0)), False),
     "discreteuniform min>max": (
         lambda: DiscreteUniform(6, 1),
         lambda: DiscreteUniform(_col(6, pl.Int64()), _col(1, pl.Int64())),

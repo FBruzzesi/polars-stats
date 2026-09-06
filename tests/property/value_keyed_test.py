@@ -7,9 +7,7 @@ In Rust both plugins call the same named per-method body, so for any parameteris
 must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]`` contract. A
 divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
 
-The comparison is bit-exact for every spec. ``geometric`` still evaluates a Polars expression on both
-paths, on length-1 operands under a constant parameterisation, which polars is free to fold
-differently; measured, it does not.
+The comparison is bit-exact for every spec.
 """
 
 from __future__ import annotations
