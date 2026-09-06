@@ -14,6 +14,8 @@ reproduces its evenly spaced, inclusive-endpoint grid on every supported version
 `ARM_MASKING_HIDES_VALIDATION` gates the validation contract at a null or `NaN` evaluation point, which
 polars 1.44 breaks by masking the `propagate_null_and_nan` wrapper's arms before the plugin can validate.
 
+`available_dtypes` drops the dtypes an older supported polars has no name for.
+
 `arr_explode` wraps `Series.arr.explode`: polars 1.36 added the `empty_as_null` flag and 1.42 deprecated its
 default (a warning `filterwarnings = ["error"]` escalates), so newer polars needs the explicit kwarg while older
 supported polars does not accept it.
@@ -36,6 +38,7 @@ __all__ = (
     "PARTITIONED_BROADCAST_AVAILABLE",
     "arr_explode",
     "assert_series_equal",
+    "available_dtypes",
     "linear_space",
 )
 
@@ -86,6 +89,11 @@ the arm does not select. It does not mask the **condition**. So a validator reac
 `when(...)` condition, or one called unconditionally from inside the plugin that computes the answer,
 still does.
 """
+
+
+def available_dtypes(*names: str) -> tuple[pl.DataType, ...]:
+    """Instantiate each named dtype the installed polars has; `Int128`, `UInt128` and `Float16` postdate the floor."""
+    return tuple(dtype() for name in names if (dtype := getattr(pl, name, None)) is not None)
 
 
 def arr_explode(series: Series) -> Series:

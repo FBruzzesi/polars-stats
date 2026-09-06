@@ -76,7 +76,7 @@ polars-stats/
 
 | Crate | Purpose |
 |---|---|
-| `polars` / `polars-arrow` | Series and expression types in Rust (pinned transitively by `pyo3-polars`) |
+| `polars` / `polars-arrow` | Series and expression types in Rust (pinned transitively by `pyo3-polars`; `dtype-full` adds ~3.4 MiB to the installed extension, ~0.9 MiB to the wheel, and stops an unknown dtype aborting the interpreter at the plugin boundary) |
 | `polars-core` | `POOL` and its `rayon` re-export, so the multi-draw fill runs on the thread pool Polars itself uses |
 | `pyo3-polars` | the `#[polars_expr]` macro and FFI glue (source of ABI churn) |
 | `pyo3` | Python FFI, abi3 for forward compatibility |
