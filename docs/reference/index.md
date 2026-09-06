@@ -68,29 +68,20 @@ mean of a different distribution on every row.
 
 !!! warning "Known limitation on polars >= 1.44"
 
-    On polars 1.44.0 and newer, `Geometric` may **return a value instead of raising
-    `ComputeError`** when a *column-valued* parameter is invalid on a row the selected branch does
-    not cover.
+    On polars 1.44.0 and newer, an invalid parameter goes unreported on a row whose **evaluation point
+    is null or `NaN`**, for every distribution and both parameter spellings, scalar included.
 
     Polars 1.44.0 ([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) masks the arms
-    of a `when/then/otherwise` to null on the rows an arm does not select, so a validator reached only
-    from inside an arm never sees the offending row. `Geometric` assembles its value-keyed closed
-    forms (`pmf`, `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf`, `isf`) as branching Polars
-    expressions, so it is affected.
-
-    **Not affected:** every other distribution (they compute in Rust and validate unconditionally),
-    `Geometric`'s own moments (`mean`, `variance`, `std`, `median`, `entropy`), and every *valid*
-    computation, whose results are unchanged. `Bernoulli`, `Exponential` and `Uniform` were affected
-    up to and including v0.0.2 and no longer are: their closed forms now compute in Rust.
-
-    One narrower case survives for *every* distribution and *both* parameter spellings, scalar
-    included: a **null or `NaN` evaluation point** is masked out of the plugin's input by the wrapper
-    that gives you `null -> null` and `NaN -> NaN`, so an invalid parameter goes unreported on those
-    rows. With a column parameter that is per row; with a scalar one it takes the whole batch, so
+    of a `when/then/otherwise` to null on the rows an arm does not select. Every value-keyed method
+    validates inside the Rust plugin that computes it, but the wrapper that gives you `null -> null` and
+    `NaN -> NaN` sits one level above, and it masks those rows out of the plugin's input before it can
+    validate. With a column parameter that is per row; with a scalar one it takes the whole batch, so
     `Bernoulli(p=1.5).pmf(col)` returns `[nan, nan]` over an all-`NaN` column but still raises as soon
     as one evaluation point is finite.
 
+    **Not affected:** every finite evaluation point, on every method of every distribution, and every
+    *valid* computation, whose results are unchanged.
+
     **Workarounds:** pin `polars<1.44` yourself, or validate column parameters before passing them.
 
-    Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005). The limitation
-    goes away once `Geometric` moves its closed forms into Rust, which is in progress.
+    Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005).

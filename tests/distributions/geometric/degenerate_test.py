@@ -5,7 +5,7 @@ At `p = 1` the shared entry `log1p(-p)` is `-inf`, so `floor(value) * log1p(-p)`
 below-support constant *before* forming that product, and each inverse short-circuits on `p == 1`
 before dividing `-inf` by `-inf`. Nothing else pins that ordering: the scipy parity grid excludes
 `p = 1` (scipy's generic discrete `ppf`, `isf`, `median` and `entropy` do not answer there) and the
-per-method grids stop at `p = 0.8`, so a reordered `when` chain would leak `NaN` and still ship green.
+per-method grids stop at `p = 0.8`, so a reordered branch would leak `NaN` and still ship green.
 """
 
 from __future__ import annotations
@@ -67,12 +67,23 @@ def test_value_keyed_method_at_p_one_from_a_column(
     assert got == [e for _, e in cases]
 
 
-@pytest.mark.parametrize("quantile", [0.0, 1e-300, 0.25, 0.5, 0.75, 1.0])
+_QUANTILES = [0.0, 1e-300, 0.25, 0.5, 0.75, 1.0]
+
+
+@pytest.mark.parametrize("quantile", _QUANTILES)
 def test_both_inverses_collapse_to_the_mass_point(quantile: float, unit_frame: pl.DataFrame) -> None:
     """Every quantile inverts to `k = 1`, including the endpoints where the ratio would be `NaN`."""
     frame = unit_frame.select(ppf=Geometric(p=1.0).ppf(quantile), isf=Geometric(p=1.0).isf(quantile))
     assert frame.item(0, "ppf") == 1.0
     assert frame.item(0, "isf") == 1.0
+
+
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+def test_both_inverses_collapse_to_the_mass_point_from_a_column(method: str) -> None:
+    """The per-row path short-circuits on `p == 1` too: `p = 1` is a value, not a constant-folding artefact."""
+    frame = pl.DataFrame({"p": [1.0] * len(_QUANTILES), "q": _QUANTILES})
+    got = frame.select(r=getattr(Geometric(p=pl.col("p")), method)(pl.col("q")))["r"].to_list()
+    assert got == [1.0] * len(_QUANTILES)
 
 
 def test_moments_at_p_one(unit_frame: pl.DataFrame) -> None:

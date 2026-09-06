@@ -64,8 +64,8 @@ def test_ppf_at_an_exact_step_boundary_can_miss_by_one(
     """On a step the answer is the definition's support point or a neighbour, and no further.
 
     The tie-break compares `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`.
-    That is deliberate and the more accurate rule (1997 boundary probes: 357 disagreements with
-    exact arithmetic against 490 for the alternative), and the price is that `ppf` and `cdf` are not
+    That is deliberate (1997 boundary probes: 357 disagreements with exact arithmetic against 490 for
+    the alternative), and the price is that `ppf` and `cdf` are not
     exact mutual inverses on a step: the two roundings decide the last bit there. Which side they
     fall on is the platform's `exp` and `log1p`, not the rule, so only the bound is portable and
     only the bound is pinned. At `p = 0.1` one ulp above `cdf(10)`, Apple's libm answers `10` and
@@ -79,6 +79,23 @@ def test_ppf_at_an_exact_step_boundary_can_miss_by_one(
 
     got = unit_frame.select(v=Geometric(p=p).ppf(quantile)).item(0, "v")
     assert abs(got - _smallest_support_point_exact(p, quantile)) <= 1
+
+
+@pytest.mark.parametrize(("p", "step"), [(0.1, 10), (0.3, 4), (0.5, 20), (0.05, 13)])
+def test_ppf_at_an_exact_step_boundary_agrees_across_routings(p: float, step: int, unit_frame: pl.DataFrame) -> None:
+    """A column `p` takes the same tie-break as a Python-float `p`, on a frame longer than one row.
+
+    `unit_frame` is the one length at which a Polars expression on a literal `p` folds like a column
+    one, so the scalar tests above cannot see the two routings drift apart at a step.
+    """
+    cdf_at_step = unit_frame.select(v=Geometric(p=p).cdf(float(step))).item(0, "v")
+    quantiles = [math.nextafter(cdf_at_step, 0.0), cdf_at_step, math.nextafter(cdf_at_step, 1.0)]
+    frame = pl.DataFrame({"q": quantiles, "p": [p] * len(quantiles)})
+
+    got = frame.select(scalar=Geometric(p=p).ppf(pl.col("q")), column=Geometric(p=pl.col("p")).ppf(pl.col("q")))
+    assert got["scalar"].to_list() == got["column"].to_list()
+    for quantile, k in zip(quantiles, got["scalar"].to_list(), strict=True):
+        assert abs(k - _smallest_support_point_exact(p, quantile)) <= 1
 
 
 @pytest.mark.parametrize("quantile", [-0.1, 1.5])

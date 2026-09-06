@@ -4,8 +4,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
 use crate::distributions::{
-    align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
-    Domain,
+    align_inputs, expm1, validate_params_unary, value_keyed_derived_per_row,
+    value_keyed_derived_scalar, Domain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
@@ -71,50 +71,6 @@ fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
 /// it below would overflow past `t ~ 1420`. The two branches agree to `1e-16` here.
 const CDF_SINH_MAX: f64 = 1.0;
 
-/// `exp(t) - 1` through the identity `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel.
-///
-/// Not `f64::exp_m1`, which differs from this identity by one ulp on roughly a fifth of the left
-/// tail. Every expected value in `tests/distributions/exponential/` is this identity's rounding, and
-/// `_base.expm1` spells it the same way for the distributions still assembled in Polars.
-///
-/// `sinh(t / 2)` overflows above `|t| ~ 1420`; the only caller crosses over at [`CDF_SINH_MAX`],
-/// long before that.
-#[inline]
-fn expm1(t: f64) -> f64 {
-    let half = t / 2.0;
-    2.0 * half.exp() * half.sinh()
-}
-
-// Exponential hoists less than Bernoulli: every on-support answer is a function of the rate *and*
-// the evaluation point, so a `derive_*` captures the rate-only terms and the rest stays in the arm.
-// Free functions rather than associated ones, because each returns a distinct opaque arm type.
-
-/// The two sides of the support, for the six value-keyed methods.
-///
-/// Below `x = 0` every answer is the rate-free support constant, so a null rate must not null it.
-/// `below_support` is an `f64` rather than an `Option<f64>`, leaving nothing to thread a rate
-/// through by accident; all six constants are pinned by
-/// `tests/distributions/exponential/null_params_test.py`. `on_support` is `None` exactly when the
-/// rate is null.
-struct Sides<Arm> {
-    below_support: f64,
-    on_support: Option<Arm>,
-}
-
-impl<Arm: Fn(f64) -> f64> Sides<Arm> {
-    /// `x < 0` takes the support constant, everything else the arm, so `-0.0` is on the support.
-    ///
-    /// A `NaN` point never reaches here: both drivers short-circuit it. That is what lets this be a
-    /// bare `<`; the `!(x >= 0)` a negated predicate would spell puts `NaN` below the support.
-    fn at(&self, value: f64) -> Option<f64> {
-        if value < 0.0 {
-            Some(self.below_support)
-        } else {
-            self.on_support.as_ref().map(|arm| arm(value))
-        }
-    }
-}
-
 /// `rate * exp(-rate * x)` on `x >= 0`, `0` below, keeping the subnormal range exact.
 ///
 /// Reassociated as `(rate * exp(-rate * x / 2)) * exp(-rate * x / 2)`: the same product with the
@@ -122,7 +78,7 @@ impl<Arm: Fn(f64) -> f64> Sides<Arm> {
 /// range while the scale is still to be applied, and the final multiply then magnifies what the
 /// subnormal threw away. Halving the exponent keeps the intermediate normal, at the cost of one
 /// multiply and no branch.
-fn derive_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: 0.0,
         on_support: rate.map(|rate| {
@@ -136,7 +92,7 @@ fn derive_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 
 /// `ln(rate) - rate * x` on `x >= 0`, `-inf` below. `ln(rate)` is the only term the rate alone fixes,
 /// so it is the only one [`value_keyed_derived_scalar`] can lift out of the loop.
-fn derive_ln_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_ln_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: f64::NEG_INFINITY,
         on_support: rate.map(|rate| {
@@ -150,7 +106,7 @@ fn derive_ln_pdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 ///
 /// `1 - exp(-t)` cancels to `0` below `t ~ 1.1e-16`, so the small branch reads it as `-expm1(-t)`;
 /// see [`CDF_SINH_MAX`] for why the crossover is where it is.
-fn derive_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: 0.0,
         on_support: rate.map(|rate| {
@@ -176,7 +132,7 @@ fn derive_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 /// against the computed cdf. It coincides with [`CDF_SINH_MAX`] rather than deriving from it, which
 /// is what lets the left arm inline [`derive_cdf`]'s `expm1` branch: on the support and below
 /// `t = 1` that is the only branch it would take.
-fn derive_ln_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_ln_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: f64::NEG_INFINITY,
         on_support: rate.map(|rate| {
@@ -196,7 +152,7 @@ fn derive_ln_cdf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 ///
 /// The closed form, never `1 - cdf`: the complement quantises the upper tail to the `1.1e-16`
 /// spacing of `1.0` and reaches `0.0` below that.
-fn derive_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: 1.0,
         on_support: rate.map(|rate| move |x: f64| (-rate * x).exp()),
@@ -204,7 +160,7 @@ fn derive_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
 }
 
 /// `-rate * x` on `x >= 0`, `0` below: the plain log of [`derive_sf`].
-fn derive_ln_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64> {
+fn derive_ln_sf(rate: Option<f64>) -> Sides<impl Fn(f64) -> f64, 0> {
     Sides {
         below_support: 0.0,
         on_support: rate.map(|rate| move |x: f64| -rate * x),

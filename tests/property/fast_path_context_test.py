@@ -136,12 +136,7 @@ def test_moment_fast_path_matches_per_row_across_contexts(spec: DistSpec, moment
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_value_keyed_fast_path_matches_per_row_across_contexts(spec: DistSpec, data: st.DataObject) -> None:
-    """Density / log-density / cdf / sf / ppf scalar fast paths equal the per-row path under every context.
-
-    This is where the `Geometric` closed forms get their cross-context coverage: its value-keyed
-    methods are pure Polars, routing validation through the same `_checked` gate as the moments, so a
-    broadcast bug in that gate is the only way they diverge.
-    """
+    """Density / log-density / cdf / sf / ppf scalar fast paths equal the per-row path under every context."""
     params = data.draw(spec.params)
     scalar = spec.make(params)
     per_row = spec.make_columns(params)

@@ -137,7 +137,8 @@ Polars defaults to `ddof=1`.
 | Randomness | `random_state` / global NumPy state | per-call `seed` only, no global state |
 | Accuracy | reference implementation | matched to `1e-12` absolute in the parity suite, relaxed to `1e-9` / `1e-6` for erf-based and search-based `ppf` methods |
 | `DiscreteUniform.median()` | `randint.median()` is `ppf(0.5)`, a support point | the midpoint `(min + max) / 2`, which for an even support size is not a support point |
-| Discrete `ppf(0)` / `isf(1)` | the below-support sentinel `low - 1` | clamped to the support, so `ppf(0)` is `min` and `isf(1)` is `min` |
+| Discrete `ppf(0)` / `isf(1)` | the point below the support, `a - 1` (`geom.ppf(0)` is `0`, `binom.ppf(0)` is `-1`); continuous families answer the support bound | the smallest support point for every family (`Geometric.ppf(0)` is `1`), the value `ppf(q)` gives for every `q > 0` |
+| Discrete `ppf` / `isf` exactly on a cdf step | `geom(0.3).ppf(0.51)` is `2`, the answer for the decimal `0.51` | `3`, the answer for the stored double; on a step the two can differ by one support point, see [Numerical accuracy](../explanation/accuracy.md#structural) |
 
 ## What has no equivalent
 

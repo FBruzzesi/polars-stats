@@ -63,6 +63,18 @@ def test_isf_overshoots_by_one_at_an_exact_step_boundary(unit_frame: pl.DataFram
     assert unit_frame.select(v=Geometric(p=p).isf(math.nextafter(sf_at_floor, 1.0))).item(0, "v") == support_floor
 
 
+def test_isf_step_boundary_agrees_across_routings(unit_frame: pl.DataFrame) -> None:
+    """A column `p` takes the same tie-break as a Python-float `p`, on a frame longer than one row."""
+    p = 1e-8
+    sf_at_floor = unit_frame.select(v=Geometric(p=p).sf(1.0)).item(0, "v")
+    quantiles = [sf_at_floor, math.nextafter(sf_at_floor, 0.0), math.nextafter(sf_at_floor, 1.0)]
+    frame = pl.DataFrame({"q": quantiles, "p": [p] * len(quantiles)})
+
+    got = frame.select(scalar=Geometric(p=p).isf(pl.col("q")), column=Geometric(p=pl.col("p")).isf(pl.col("q")))
+    assert got["scalar"].to_list() == [2.0, 2.0, 1.0]
+    assert got["column"].to_list() == [2.0, 2.0, 1.0]
+
+
 @pytest.mark.parametrize("quantile", [-0.1, 1.5])
 def test_isf_out_of_range_quantile_is_null(quantile: float, unit_frame: pl.DataFrame) -> None:
     result = unit_frame.select(v=Geometric(p=0.3).isf(quantile)).item(0, "v")
