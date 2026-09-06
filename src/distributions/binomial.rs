@@ -6,20 +6,26 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row, samples_u64_output,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Binomial`, mapping an invalid `p` to a `ComputeError`.
+/// `p` alone: finite, in `[0, 1]`. `n` has no domain of its own beyond the `u64` [`coerce_n`] makes
+/// it.
+const P: ParamDomain = ParamDomain {
+    name: "p",
+    domain: "in [0, 1]",
+    accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
+};
+
+/// Construct a `statrs::Binomial` behind [`P`], as the row loops' backstop.
 ///
 /// `statrs::Binomial::new(p, n)` takes the arguments in the opposite order to this crate's `(n, p)`
 /// and only rejects a `NaN` `p` or `p` outside `[0, 1]`. Its `n` is a `u64` and so is this one, so no
-/// row converts a trial count and a negative cannot arrive here at all. The failure
-/// surfaces as `InvalidOperation`, so an invalid parameterisation fails the whole evaluation rather
-/// than silently nulling the row.
+/// row converts a trial count and a negative cannot arrive here at all.
 fn build_dist(n: u64, p: f64) -> PolarsResult<Binomial> {
     Binomial::new(p, n).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {p}: {e}").into())
@@ -97,12 +103,14 @@ struct BinomialParamsKwargs {
 impl BinomialParamsKwargs {
     /// The `statrs` distribution, for the value-keyed methods.
     fn build(&self) -> PolarsResult<Binomial> {
+        P.check(self.p)?;
         build_dist(self.n, self.p)
     }
 
     /// The `rand_distr` sampler, for the samplers. The free [`build_sampler`] carries the note on
     /// why the two families use different distribution types.
     fn build_sampler(&self) -> PolarsResult<BinomialSampler> {
+        P.check(self.p)?;
         build_sampler(self.n, self.p)
     }
 
@@ -141,6 +149,7 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let n = coerce_n(&inputs[1])?;
     let p = inputs[2].cast(&DataType::Float64)?;
+    P.check_column(p.f64()?)?;
 
     value_keyed_per_row(
         value.f64()?,
@@ -169,6 +178,7 @@ where
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
+    P.check_column(p.f64()?)?;
 
     validate_params_binary(&n, p.f64()?, |n, p| {
         // TODO(FBruzzesi): Remove `n == u64::MAX` guard once fixed upstream in statrs
@@ -202,6 +212,7 @@ fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Seri
     let p = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(p.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -256,6 +267,7 @@ fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Se
     let p = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(p.f64()?)?;
 
     let rows = ternary_param_rows(&n, p.f64()?, index.u64()?, build_sampler);
 
@@ -420,6 +432,7 @@ fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
     let p = inputs[1].cast(&DataType::Float64)?;
+    P.check_column(p.f64()?)?;
 
     validate_params_binary(&n, p.f64()?, |n, p| {
         build_dist(n, p)?;

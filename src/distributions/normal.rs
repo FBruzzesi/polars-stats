@@ -8,17 +8,17 @@ use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Normal`, mapping the invalid-parameter case to a `ComputeError`.
+/// Construct a `statrs::Normal` behind [`MU`] and [`SIGMA`], as the row loops' backstop.
 ///
-/// `statrs::Normal::new` rejects a non-finite `mu`, a `NaN` `sigma`, or `sigma <= 0`. That surfaces as
-/// `InvalidOperation`, so an invalid scale fails the whole evaluation rather than silently nulling the row.
+/// `statrs::Normal::new` rejects a `NaN` `mu`, a `NaN` `sigma` or `sigma <= 0`, and accepts an
+/// infinite `mu` or `sigma`, so the two domains are what refuse the infinities, not the constructor.
 fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
     Normal::new(mu, sigma).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -26,6 +26,26 @@ fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
                 .into(),
         )
     })
+}
+
+/// `mu` alone: finite.
+const MU: ParamDomain = ParamDomain {
+    name: "mu",
+    domain: "finite",
+    accepts: f64::is_finite,
+};
+
+/// `sigma` alone: finite, strictly positive.
+const SIGMA: ParamDomain = ParamDomain {
+    name: "sigma",
+    domain: "finite and strictly positive",
+    accepts: |sigma| sigma.is_finite() && sigma > 0.0,
+};
+
+/// The column pass every column-parameter funnel runs before its row loop.
+fn validate(mu: &Float64Chunked, sigma: &Float64Chunked) -> PolarsResult<()> {
+    MU.check_column(mu)?;
+    SIGMA.check_column(sigma)
 }
 
 /// Normal's constant parameters, deserialised once per call.
@@ -40,6 +60,8 @@ struct NormalParamsKwargs {
 
 impl NormalParamsKwargs {
     fn build(&self) -> PolarsResult<Normal> {
+        MU.check(self.mu)?;
+        SIGMA.check(self.sigma)?;
         build_dist(self.mu, self.sigma)
     }
 
@@ -64,6 +86,7 @@ fn normal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let mu = inputs[0].cast(&DataType::Float64)?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
+    validate(mu.f64()?, sigma.f64()?)?;
 
     validate_params_binary(mu.f64()?, sigma.f64()?, |mu, sigma| {
         build_dist(mu, sigma)?;
@@ -81,6 +104,7 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let mu = inputs[1].cast(&DataType::Float64)?;
     let sigma = inputs[2].cast(&DataType::Float64)?;
+    validate(mu.f64()?, sigma.f64()?)?;
 
     value_keyed_per_row(
         value.f64()?,
@@ -112,6 +136,7 @@ fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series
     let sigma = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate(mu.f64()?, sigma.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -164,6 +189,7 @@ fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Seri
     let sigma = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate(mu.f64()?, sigma.f64()?)?;
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 

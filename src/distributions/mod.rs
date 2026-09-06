@@ -11,7 +11,8 @@ pub mod uniform;
 use std::borrow::Cow;
 
 use polars::prelude::arity::{
-    try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
+    binary_elementwise, ternary_elementwise, try_binary_elementwise, try_ternary_elementwise,
+    try_unary_elementwise, unary_elementwise,
 };
 use polars::prelude::*;
 
@@ -60,6 +61,93 @@ pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>>
     ))
 }
 
+/// What one float parameter must satisfy on its own, stated once per distribution file and checked
+/// the same way in both regimes: [`Self::check`] once per call on a constant, [`Self::check_column`]
+/// over the whole column before any row is built.
+///
+/// Every domain spells finiteness explicitly. The `statrs` constructors do not check it
+/// (`Normal::new(0.0, f64::INFINITY)` is `Ok`), so the constructor error inside a row loop is a
+/// backstop, not what the contract rests on.
+pub(crate) struct ParamDomain {
+    pub(crate) name: &'static str,
+    /// Read as "`name` must be {domain}".
+    pub(crate) domain: &'static str,
+    pub(crate) accepts: fn(f64) -> bool,
+}
+
+impl ParamDomain {
+    fn violation(&self, value: f64) -> String {
+        format!("{} must be {}, got {}", self.name, self.domain, value)
+    }
+
+    pub(crate) fn check(&self, value: f64) -> PolarsResult<()> {
+        polars_ensure!((self.accepts)(value), ComputeError: "{}", self.violation(value));
+        Ok(())
+    }
+
+    /// Raise on the first present value outside the domain, naming its row.
+    ///
+    /// A plain iterator with an early exit, not the vectorised primitives: those would build one
+    /// boolean column per predicate and still need a scan to name the offender.
+    pub(crate) fn check_column(&self, ca: &Float64Chunked) -> PolarsResult<()> {
+        for (row, value) in ca.iter().enumerate() {
+            if let Some(value) = value {
+                polars_ensure!(
+                    (self.accepts)(value),
+                    ComputeError: "{} at row {}", self.violation(value), row
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What two parameters must satisfy together (`Uniform`'s `max > min`, `DiscreteUniform`'s
+/// `min <= max`), checked only where both are present: a row with one null bound is `null` under
+/// the null contract, and the present bound still passes its own [`ParamDomain`].
+pub(crate) struct PairDomain<N> {
+    pub(crate) names: (&'static str, &'static str),
+    /// Read as "`names.1` must be {domain}".
+    pub(crate) domain: &'static str,
+    pub(crate) accepts: fn(N, N) -> bool,
+}
+
+impl<N: Copy + std::fmt::Display> PairDomain<N> {
+    fn violation(&self, a: N, b: N) -> String {
+        let (a_name, b_name) = self.names;
+        format!(
+            "{b_name} must be {}, got {a_name}={a}, {b_name}={b}",
+            self.domain
+        )
+    }
+
+    pub(crate) fn check(&self, a: N, b: N) -> PolarsResult<()> {
+        polars_ensure!((self.accepts)(a, b), ComputeError: "{}", self.violation(a, b));
+        Ok(())
+    }
+
+    /// The column twin of [`Self::check`]: raise on the first row where both are present and the
+    /// pair is outside the domain, naming the row.
+    pub(crate) fn check_columns<T>(
+        &self,
+        a: &ChunkedArray<T>,
+        b: &ChunkedArray<T>,
+    ) -> PolarsResult<()>
+    where
+        T: PolarsNumericType<Native = N>,
+    {
+        for (row, pair) in a.iter().zip(b.iter()).enumerate() {
+            if let (Some(a), Some(b)) = pair {
+                polars_ensure!(
+                    (self.accepts)(a, b),
+                    ComputeError: "{} at row {}", self.violation(a, b), row
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Shared driver for the constant-parameter value-keyed fast paths.
 ///
 /// The constant-parameter counterpart of each distribution's `value_keyed` helper: when every
@@ -100,23 +188,22 @@ where
 
 /// Constant-parameter twin of [`value_keyed_derived_per_row`], over [`value_keyed_scalar`].
 ///
-/// Validates and derives once per call, then maps `select` over the evaluation-point column. The
-/// Python side routes here only once the parameter is a Python scalar, so `derive` always sees
-/// `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`, `Exponential`'s
-/// `ln(rate)`) are computed once instead of per row.
-pub(crate) fn value_keyed_derived_scalar<Dist, Branches, Validate, Derive, Select>(
+/// Checks the parameter against `domain` and derives once per call, then maps `select` over the
+/// evaluation-point column. The Python side routes here only once the parameter is a Python scalar,
+/// so `derive` always sees `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`,
+/// `Exponential`'s `ln(rate)`) are computed once instead of per row.
+pub(crate) fn value_keyed_derived_scalar<Branches, Derive, Select>(
     value: &Series,
     param: f64,
-    validate: Validate,
+    domain: &ParamDomain,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64) -> PolarsResult<Dist>,
     Derive: Fn(Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
-    validate(param)?;
+    domain.check(param)?;
     let branches = derive(Some(param));
     value_keyed_scalar(value, |v| select(&branches, v))
 }
@@ -189,59 +276,46 @@ where
 /// with another's `select` does not compile. Both run per row here; [`value_keyed_derived_scalar`]
 /// is the twin that runs `derive` once per call.
 ///
+/// Validation is `domain`'s column pass, run once over the parameter column before any row is
+/// built: an invalid present parameter raises whatever else its row holds, a null or `NaN` value
+/// included. Nothing inside the row loop validates.
+///
 /// Null contract, and the reason this is not [`value_keyed_per_row`]: that driver nulls the row on
 /// **any** null input without calling `build`, which is right for a `statrs`-backed distribution and
 /// wrong here. A null parameter reaches `derive` as `None`, so the branches whose answer is a
 /// parameter-free constant still answer: `Bernoulli`'s `pmf(2) = 0` and `Exponential`'s
 /// `cdf(-1) = 0` survive a null parameter, and each distribution's `null_param(s)_test.py` pins it.
-/// A null **value** still nulls the row without validating, matching the samplers. Nothing is
-/// validated on a null-parameter row, since there is no parameterisation to reject.
+/// A null **value** nulls the row, matching the samplers.
 ///
-/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `validate` has run, so an
-/// invalid parameterisation still raises on a `NaN` row, exactly as [`value_keyed_per_row`] orders
-/// it.
+/// `NaN` contract: a `NaN` value short-circuits to `NaN`, as in [`value_keyed_scalar`].
 ///
-/// `validate` is each distribution's `build_dist`; its return value is discarded, since these
-/// methods compute from the parameter rather than from the built distribution.
-///
-/// Keep `validate`, `derive` and `select` generic `Fn`s: they monomorphise into the row loop, where
-/// a `&dyn Fn` or a `fn` pointer would cost an indirect call per row.
-pub(crate) fn value_keyed_derived_per_row<Dist, Branches, Validate, Derive, Select>(
+/// Keep `derive` and `select` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn`
+/// or a `fn` pointer would cost an indirect call per row.
+pub(crate) fn value_keyed_derived_per_row<Branches, Derive, Select>(
     inputs: &[Series],
-    validate: Validate,
+    domain: &ParamDomain,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64) -> PolarsResult<Dist>,
     Derive: Fn(Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
     let value = inputs[0].cast(&DataType::Float64)?;
     let param = inputs[1].cast(&DataType::Float64)?;
+    let param_ca = param.f64()?;
     let name = inputs[0].name().clone();
+    domain.check_column(param_ca)?;
 
-    let ca: Float64Chunked = try_binary_elementwise(
-        value.f64()?,
-        param.f64()?,
-        |value_opt, param_opt| -> PolarsResult<Option<f64>> {
-            // Validate before the value is read at all, so an invalid parameter raises whatever the
-            // row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
-            if let Some(param) = param_opt {
-                validate(param)?;
-            }
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                select(&derive(param_opt), value)
-            })
-        },
-    )?;
+    let ca: Float64Chunked = binary_elementwise(value.f64()?, param_ca, |value_opt, param_opt| {
+        let value = value_opt?;
+        if value.is_nan() {
+            Some(f64::NAN)
+        } else {
+            select(&derive(param_opt), value)
+        }
+    });
 
     Ok(ca.with_name(name).into_series())
 }
@@ -322,27 +396,28 @@ impl<Arm: Fn(f64) -> f64> Domain<Arm> {
     }
 }
 
-/// Two-parameter sibling of [`value_keyed_derived_per_row`], over `try_ternary_elementwise`.
+/// Two-parameter sibling of [`value_keyed_derived_per_row`], over `ternary_elementwise`.
 ///
 /// "Pair" counts the *distribution parameters* (`Uniform`'s two bounds); the driver itself takes
 /// three `Series`. Kept beside the one-parameter version rather than generified over arity, because
 /// `derive` needs both `Option`s in scope to answer from one bound while the other is null.
 ///
-/// Null contract: as in [`value_keyed_derived_per_row`], with the parameter half now two-sided. A
-/// null **value** nulls the row without validating. A null parameter reaches `derive` as `None`, so
-/// the branches a single known parameter already settles still answer. Nothing is validated there,
-/// since a half-specified parameterisation is not one to reject.
+/// `validate` is the caller's column pass over the two parameter columns, each bound alone and the
+/// pair together, run once before any row is built. Nothing inside the row loop validates.
 ///
-/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `validate` has run, so an
-/// invalid parameterisation still raises on a `NaN` row.
-pub(crate) fn value_keyed_derived_pair_per_row<Dist, Branches, Validate, Derive, Select>(
+/// Null contract: as in [`value_keyed_derived_per_row`], with the parameter half now two-sided. A
+/// null **value** nulls the row. A null parameter reaches `derive` as `None`, so the branches a
+/// single known parameter already settles still answer.
+///
+/// `NaN` contract: a `NaN` value short-circuits to `NaN`.
+pub(crate) fn value_keyed_derived_pair_per_row<Branches, Validate, Derive, Select>(
     inputs: &[Series],
     validate: Validate,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64, f64) -> PolarsResult<Dist>,
+    Validate: Fn(&Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
     Derive: Fn(Option<f64>, Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
@@ -350,29 +425,18 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let param_a = inputs[1].cast(&DataType::Float64)?;
     let param_b = inputs[2].cast(&DataType::Float64)?;
+    let (a, b) = (param_a.f64()?, param_b.f64()?);
     let name = inputs[0].name().clone();
+    validate(a, b)?;
 
-    let ca: Float64Chunked = try_ternary_elementwise(
-        value.f64()?,
-        param_a.f64()?,
-        param_b.f64()?,
-        |value_opt, a_opt, b_opt| -> PolarsResult<Option<f64>> {
-            // Validate before the value is read at all, so an invalid parameterisation raises
-            // whatever the row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
-            if let (Some(a), Some(b)) = (a_opt, b_opt) {
-                validate(a, b)?;
-            }
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                select(&derive(a_opt, b_opt), value)
-            })
-        },
-    )?;
+    let ca: Float64Chunked = ternary_elementwise(value.f64()?, a, b, |value_opt, a_opt, b_opt| {
+        let value = value_opt?;
+        if value.is_nan() {
+            Some(f64::NAN)
+        } else {
+            select(&derive(a_opt, b_opt), value)
+        }
+    });
 
     Ok(ca.with_name(name).into_series())
 }

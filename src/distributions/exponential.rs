@@ -5,7 +5,7 @@ use statrs::distribution::Exp;
 
 use crate::distributions::{
     align_inputs, expm1, validate_params_unary, value_keyed_derived_per_row,
-    value_keyed_derived_scalar, Domain, Sides,
+    value_keyed_derived_scalar, Domain, ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
@@ -13,11 +13,17 @@ use crate::rng::{
     SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Exp`, mapping the invalid-parameter case to a `ComputeError`.
+/// `rate` alone: strictly positive and finite.
+const RATE: ParamDomain = ParamDomain {
+    name: "rate",
+    domain: "strictly positive and finite",
+    accepts: |rate| rate.is_finite() && rate > 0.0,
+};
+
+/// Construct a `statrs::Exp` behind [`RATE`], as the row loops' backstop.
 ///
-/// `statrs::Exp::new` rejects a `NaN` rate or `rate <= 0` (a positive-infinite rate is accepted, as a
-/// degenerate point mass at 0). That surfaces as `InvalidOperation`, so an invalid rate fails the whole
-/// evaluation rather than silently nulling the row.
+/// `statrs::Exp::new` rejects a `NaN` rate or `rate <= 0` and accepts a positive-infinite one (a
+/// degenerate point mass at 0), so [`RATE`] is what refuses `inf`, not the constructor.
 fn build_dist(rate: f64) -> PolarsResult<Exp> {
     Exp::new(rate).map_err(|e| {
         PolarsError::InvalidOperation(
@@ -34,10 +40,11 @@ struct ExponentialParamsKwargs {
 
 impl ExponentialParamsKwargs {
     fn build(&self) -> PolarsResult<Exp> {
+        RATE.check(self.rate)?;
         build_dist(self.rate)
     }
 
-    /// Binds the constant rate and `build_dist` into [`value_keyed_derived_scalar`], which
+    /// Binds the constant rate and its domain into [`value_keyed_derived_scalar`], which
     /// validates and derives once per call rather than per row.
     fn value_keyed<Branches>(
         &self,
@@ -45,12 +52,12 @@ impl ExponentialParamsKwargs {
         derive: impl Fn(Option<f64>) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
-        value_keyed_derived_scalar(value, self.rate, build_dist, derive, select)
+        value_keyed_derived_scalar(value, self.rate, &RATE, derive, select)
     }
 }
 
-/// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `InvalidOperation`
-/// if `rate` is `NaN` or `rate <= 0`. `null` propagates.
+/// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `ComputeError` if
+/// `rate` is not finite or `rate <= 0`. `null` propagates.
 ///
 /// The moments derive from this so they report an invalid rate consistently with
 /// `exponential_sample`, instead of silently computing with a non-positive rate. The value-keyed
@@ -58,6 +65,7 @@ impl ExponentialParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
+    RATE.check_column(rate.f64()?)?;
 
     validate_params_unary(rate.f64()?, |rate| {
         build_dist(rate)?;
@@ -195,49 +203,49 @@ fn derive_isf(rate: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
 /// See [`value_keyed_derived_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn exponential_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_pdf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_pdf, Sides::at)
 }
 
 /// Element-wise log-pdf; see [`derive_ln_pdf`].
 #[polars_expr(output_type=Float64)]
 fn exponential_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_pdf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_ln_pdf, Sides::at)
 }
 
 /// Element-wise cdf `P(X <= value)`; see [`derive_cdf`] and [`CDF_SINH_MAX`].
 #[polars_expr(output_type=Float64)]
 fn exponential_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_cdf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_cdf, Sides::at)
 }
 
 /// Element-wise log-cdf; see [`derive_ln_cdf`].
 #[polars_expr(output_type=Float64)]
 fn exponential_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_cdf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_ln_cdf, Sides::at)
 }
 
 /// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn exponential_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_sf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_sf, Sides::at)
 }
 
 /// Element-wise log-sf; see [`derive_ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn exponential_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_sf, Sides::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_ln_sf, Sides::at)
 }
 
 /// Element-wise ppf (inverse cdf); see [`derive_ppf`].
 #[polars_expr(output_type=Float64)]
 fn exponential_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ppf, Domain::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_ppf, Domain::at)
 }
 
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn exponential_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_isf, Domain::at)
+    value_keyed_derived_per_row(inputs, &RATE, derive_isf, Domain::at)
 }
 
 /// Constant-rate fast path for [`exponential_pdf`].
@@ -335,6 +343,7 @@ fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<S
     let rate = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    RATE.check_column(rate.f64()?)?;
 
     sample_per_row_binary(
         name,
@@ -385,6 +394,7 @@ fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult
     let rate = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    RATE.check_column(rate.f64()?)?;
 
     let rows = binary_param_rows(rate.f64()?, index.u64()?, build_dist);
 

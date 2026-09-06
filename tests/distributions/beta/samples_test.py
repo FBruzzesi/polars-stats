@@ -73,5 +73,5 @@ def test_samples_null_param_row_is_null_array(seed: int) -> None:
 
 def test_samples_non_positive_shape_raises(seed: int) -> None:
     dframe = pl.DataFrame({"a": [2.0, 1.0], "b": [3.0, -2.0]})  # row 1: b = -2.0
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         dframe.select(s=Beta(a=pl.col("a"), b=pl.col("b")).samples(size=4, seed=seed))

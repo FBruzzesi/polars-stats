@@ -5,6 +5,7 @@ use statrs::distribution::Bernoulli;
 
 use crate::distributions::{
     align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    ParamDomain,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
@@ -12,6 +13,14 @@ use crate::rng::{
     SamplesScalarKwargs,
 };
 
+/// `p` alone: finite, in `[0, 1]`.
+const P: ParamDomain = ParamDomain {
+    name: "p",
+    domain: "in [0, 1]",
+    accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
+};
+
+/// Construct a `statrs::Bernoulli` behind [`P`], as the row loops' backstop.
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
     Bernoulli::new(proba).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {proba}: {e}").into())
@@ -26,10 +35,11 @@ struct BernoulliParamsKwargs {
 
 impl BernoulliParamsKwargs {
     fn build(&self) -> PolarsResult<Bernoulli> {
+        P.check(self.p)?;
         build_dist(self.p)
     }
 
-    /// Binds the constant parameter and `build_dist` into [`value_keyed_derived_scalar`], which
+    /// Binds the constant parameter and its domain into [`value_keyed_derived_scalar`], which
     /// validates and derives once per call rather than per row.
     fn value_keyed<Branches>(
         &self,
@@ -37,12 +47,12 @@ impl BernoulliParamsKwargs {
         derive: impl Fn(Option<f64>) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
-        value_keyed_derived_scalar(value, self.p, build_dist, derive, select)
+        value_keyed_derived_scalar(value, self.p, &P, derive, select)
     }
 }
 
 /// Element-wise validation of the success probability: returns `p` unchanged, raising
-/// `InvalidOperation` if `p` is outside `[0, 1]`. `null` propagates.
+/// `ComputeError` if `p` is outside `[0, 1]`. `null` propagates.
 ///
 /// The moments derive from this so they report an invalid `p` consistently with `bernoulli_sample`,
 /// instead of silently computing a negative variance. The value-keyed methods validate inside their
@@ -50,6 +60,7 @@ impl BernoulliParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
+    P.check_column(proba.f64()?)?;
 
     validate_params_unary(proba.f64()?, |proba| {
         build_dist(proba)?;
@@ -228,49 +239,49 @@ fn isf_at(p: &Option<f64>, quantile: f64) -> Option<f64> {
 /// See [`value_keyed_derived_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Mass::pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, &P, Mass::pmf, Mass::at)
 }
 
 /// Element-wise log-pmf; see [`Mass::ln_pmf`] for the `ln_1p` reason.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Mass::ln_pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, &P, Mass::ln_pmf, Mass::at)
 }
 
 /// Element-wise cdf `P(X <= value)`; see [`Steps::cdf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Steps::cdf, Steps::at)
+    value_keyed_derived_per_row(inputs, &P, Steps::cdf, Steps::at)
 }
 
 /// Element-wise log-cdf; see [`Steps::ln_cdf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Steps::ln_cdf, Steps::at)
+    value_keyed_derived_per_row(inputs, &P, Steps::ln_cdf, Steps::at)
 }
 
 /// Element-wise survival function `P(X > value)`; see [`Steps::sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Steps::sf, Steps::at)
+    value_keyed_derived_per_row(inputs, &P, Steps::sf, Steps::at)
 }
 
 /// Element-wise log-sf; see [`Steps::ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, Steps::ln_sf, Steps::at)
+    value_keyed_derived_per_row(inputs, &P, Steps::ln_sf, Steps::at)
 }
 
 /// Element-wise ppf (inverse cdf), returning the support point as `f64`; see [`PpfCutoffs::at`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, PpfCutoffs::derive, PpfCutoffs::at)
+    value_keyed_derived_per_row(inputs, &P, PpfCutoffs::derive, PpfCutoffs::at)
 }
 
 /// Element-wise inverse survival function; see [`isf_at`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, isf_proba, isf_at)
+    value_keyed_derived_per_row(inputs, &P, isf_proba, isf_at)
 }
 
 /// Constant-parameter fast path for [`bernoulli_pmf`].
@@ -349,6 +360,7 @@ fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(proba.f64()?)?;
 
     sample_per_row_binary(
         name,
@@ -399,6 +411,7 @@ fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(proba.f64()?)?;
 
     let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
 

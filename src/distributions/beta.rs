@@ -5,23 +5,41 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Beta`, mapping the invalid-parameter case to a `ComputeError`.
-///
-/// `statrs::Beta::new(shape_a, shape_b)` rejects a `NaN`, infinite, or non-positive shape. That surfaces as
-/// `InvalidOperation`, so an invalid shape fails the whole evaluation rather than silently nulling the row.
+/// Construct a `statrs::Beta` behind [`A`] and [`B`], as the row loops' backstop; `statrs` rejects
+/// the same set (a `NaN`, infinite or non-positive shape).
 fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
     Beta::new(a, b).map_err(|e| {
         PolarsError::InvalidOperation(
             format!("a and b must be finite and strictly positive, got a={a}, b={b}: {e}").into(),
         )
     })
+}
+
+/// `a` alone: finite, strictly positive.
+const A: ParamDomain = ParamDomain {
+    name: "a",
+    domain: "finite and strictly positive",
+    accepts: |a| a.is_finite() && a > 0.0,
+};
+
+/// `b` alone: finite, strictly positive.
+const B: ParamDomain = ParamDomain {
+    name: "b",
+    domain: "finite and strictly positive",
+    accepts: |b| b.is_finite() && b > 0.0,
+};
+
+/// The column pass every column-parameter funnel runs before its row loop.
+fn validate(a: &Float64Chunked, b: &Float64Chunked) -> PolarsResult<()> {
+    A.check_column(a)?;
+    B.check_column(b)
 }
 
 /// Beta's constant shapes, deserialised once per call.
@@ -36,6 +54,8 @@ struct BetaParamsKwargs {
 
 impl BetaParamsKwargs {
     fn build(&self) -> PolarsResult<Beta> {
+        A.check(self.a)?;
+        B.check(self.b)?;
         build_dist(self.a, self.b)
     }
 
@@ -61,6 +81,7 @@ fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
+    validate(a.f64()?, b.f64()?)?;
 
     validate_params_binary(a.f64()?, b.f64()?, |a, b| {
         build_dist(a, b)?;
@@ -78,6 +99,7 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let a = inputs[1].cast(&DataType::Float64)?;
     let b = inputs[2].cast(&DataType::Float64)?;
+    validate(a.f64()?, b.f64()?)?;
 
     value_keyed_per_row(
         value.f64()?,
@@ -102,6 +124,7 @@ where
     let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
+    validate(a.f64()?, b.f64()?)?;
 
     validate_params_binary(a.f64()?, b.f64()?, |a, b| Ok(f(&build_dist(a, b)?)))
 }
@@ -130,6 +153,7 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate(a.f64()?, b.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -182,6 +206,7 @@ fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate(a.f64()?, b.f64()?)?;
 
     let rows = ternary_param_rows(a.f64()?, b.f64()?, index.u64()?, build_dist);
 

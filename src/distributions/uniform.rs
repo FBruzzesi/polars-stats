@@ -1,34 +1,53 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
-use statrs::distribution::Uniform;
 
 use crate::distributions::{
     align_inputs, validate_params_binary, value_keyed_derived_pair_per_row, value_keyed_scalar,
-    Domain,
+    Domain, PairDomain, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
+/// `min` alone: finite.
+const MIN: ParamDomain = ParamDomain {
+    name: "min",
+    domain: "finite",
+    accepts: f64::is_finite,
+};
+
+/// `max` alone: finite.
+const MAX: ParamDomain = ParamDomain {
+    name: "max",
+    domain: "finite",
+    accepts: f64::is_finite,
+};
+
+/// The pair: `max > min`, and a width `max - min` that does not overflow to `inf`. It does for
+/// `min=-1e308, max=1e308`, and with it every derived quantity (`range`, the moments, the draw)
+/// would silently emit `inf` instead of erroring.
+const BOUNDS: PairDomain<f64> = PairDomain {
+    names: ("min", "max"),
+    domain: "strictly greater than min, and max - min must be finite",
+    accepts: |min, max| max > min && (max - min).is_finite(),
+};
+
+/// Both bounds alone and the pair together: the constant regime's once-per-call check, and the row
+/// loops' backstop.
 fn build_dist(min: f64, max: f64) -> PolarsResult<(f64, f64)> {
-    // `statrs` accepts any finite `min < max`, but a support wider than `f64::MAX` (e.g.
-    // `min=-1e308, max=1e308`) makes `max - min` overflow to `inf`, and with it every derived
-    // quantity: `range`, the moments, and the draw itself would all silently emit `inf` instead
-    // of erroring. Reject it here so all uniform plugins report it as an invalid
-    // parameterisation.
-    if !(max - min).is_finite() {
-        return Err(PolarsError::InvalidOperation(
-            format!("max - min must be finite, got min={min:e}, max={max:e}").into(),
-        ));
-    }
-    Uniform::new(min, max).map_err(|e| {
-        PolarsError::InvalidOperation(
-            format!("max must be strictly greater than min, got min={min}, max={max}: {e}").into(),
-        )
-    })?;
+    MIN.check(min)?;
+    MAX.check(max)?;
+    BOUNDS.check(min, max)?;
     Ok((min, max))
+}
+
+/// [`build_dist`] over columns: the pass every column-bounds funnel runs before its row loop.
+fn validate_bounds(min: &Float64Chunked, max: &Float64Chunked) -> PolarsResult<()> {
+    MIN.check_column(min)?;
+    MAX.check_column(max)?;
+    BOUNDS.check_columns(min, max)
 }
 
 /// Uniform's constant bounds, deserialised once per call.
@@ -279,50 +298,50 @@ fn derive_isf(min: Option<f64>, max: Option<f64>) -> Domain<impl Fn(f64) -> f64>
 /// See [`value_keyed_derived_pair_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn uniform_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, Density::pdf, Density::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, Density::pdf, Density::at)
 }
 
 /// Element-wise log-pdf; see [`Density::ln_pdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, Density::ln_pdf, Density::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, Density::ln_pdf, Density::at)
 }
 
 /// Element-wise cdf `P(X <= value)`; see [`derive_cdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_cdf, Regions::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_cdf, Regions::at)
 }
 
 /// Element-wise log-cdf; see [`derive_ln_cdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_ln_cdf, Regions::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_ln_cdf, Regions::at)
 }
 
 /// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn uniform_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_sf, Regions::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_sf, Regions::at)
 }
 
 /// Element-wise log-sf; see [`derive_ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_ln_sf, Regions::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_ln_sf, Regions::at)
 }
 
 /// Element-wise ppf (inverse cdf); see [`derive_inverse`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_ppf, Domain::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_ppf, Domain::at)
 }
 
 /// Element-wise inverse survival function; see [`derive_inverse`] for why it never forms a
 /// complement.
 #[polars_expr(output_type=Float64)]
 fn uniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, build_dist, derive_isf, Domain::at)
+    value_keyed_derived_pair_per_row(inputs, validate_bounds, derive_isf, Domain::at)
 }
 
 /// Constant-bounds fast path for [`uniform_pdf`].
@@ -413,6 +432,7 @@ fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Serie
     let max = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate_bounds(min.f64()?, max.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -468,6 +488,7 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
     let max = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    validate_bounds(min.f64()?, max.f64()?)?;
 
     let rows = ternary_param_rows(min.f64()?, max.f64()?, index.u64()?, build_dist);
 
@@ -479,8 +500,7 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
 /// Element-wise support width `max - min`, validating the parameterisation.
 ///
 /// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
-/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `InvalidOperation`
-/// (surfaces as a `ComputeError`).
+/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `ComputeError`.
 ///
 /// Every closed-form Python method derives from this width, so routing it through Rust is what
 /// lets them report an invalid parameterisation consistently with `uniform_sample`, instead of
@@ -490,6 +510,7 @@ fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let min = inputs[0].cast(&DataType::Float64)?;
     let max = inputs[1].cast(&DataType::Float64)?;
+    validate_bounds(min.f64()?, max.f64()?)?;
 
     validate_params_binary(min.f64()?, max.f64()?, |lo, hi| {
         build_dist(lo, hi).map(|(lo, hi)| hi - lo)

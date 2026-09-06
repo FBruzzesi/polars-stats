@@ -8,10 +8,11 @@ per row. Two properties of that routing are pinned here, both of which the bit-e
 (`tests/property/value_keyed_test.py`, valid params only) does not exercise:
 
 * **Both paths agree on validation.** For an invalid parameterisation both the fast path and the
-  general per-row path must raise the same `ComputeError`; for a non-finite-but-accepted one (a
-  positive-infinite scale, which `statrs` allows: only `NaN` or a non-positive scale is rejected)
-  both must produce identical output. The fast path cannot quietly accept or reject something the
-  per-row path does not.
+  general per-row path must raise the same `ComputeError`; for an accepted degenerate one
+  (`Bernoulli`'s point masses, `Geometric`'s `p = 1`, `DiscreteUniform`'s one-point support) both
+  must produce identical output. A non-finite parameter is invalid by the library's own check,
+  whether or not `statrs` would accept it. The fast path cannot quietly accept or reject something
+  the per-row path does not.
 * **The fast path validates up front.** `build_dist` runs once before any value is touched, so
   invalid scalar parameters raise even on a zero-row frame; the per-row path validates inside its
   per-element closure, which never runs on an empty frame, so it returns empty. This divergence is
@@ -68,26 +69,24 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     "normal std=0": (lambda: Normal(0.0, 0.0), lambda: Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (lambda: Normal(0.0, -1.0), lambda: Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (lambda: Normal(0.0, _NAN), lambda: Normal(_col(0.0), _col(_NAN)), True),
-    # A positive-infinite scale is accepted by statrs (only NaN / non-positive is rejected); both
-    # paths must accept it identically, not merely both reject the bad cases.
-    "normal std=inf (accepted)": (lambda: Normal(0.0, _INF), lambda: Normal(_col(0.0), _col(_INF)), False),
+    # `statrs` accepts a positive-infinite scale; the library's own finiteness check refuses it, and
+    # both paths must apply that check.
+    "normal std=inf": (lambda: Normal(0.0, _INF), lambda: Normal(_col(0.0), _col(_INF)), True),
     "lognormal sigma=nan": (lambda: LogNormal(0.0, _NAN), lambda: LogNormal(_col(0.0), _col(_NAN)), True),
     "lognormal sigma=-1": (lambda: LogNormal(0.0, -1.0), lambda: LogNormal(_col(0.0), _col(-1.0)), True),
-    "lognormal sigma=inf (accepted)": (lambda: LogNormal(0.0, _INF), lambda: LogNormal(_col(0.0), _col(_INF)), False),
+    "lognormal sigma=inf": (lambda: LogNormal(0.0, _INF), lambda: LogNormal(_col(0.0), _col(_INF)), True),
     "binomial p=nan": (lambda: Binomial(5, _NAN), lambda: Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "binomial p=1.5": (lambda: Binomial(5, 1.5), lambda: Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "beta a=nan": (lambda: Beta(_NAN, 1.0), lambda: Beta(_col(_NAN), _col(1.0)), True),
     "beta a=0": (lambda: Beta(0.0, 1.0), lambda: Beta(_col(0.0), _col(1.0)), True),
     "beta b=-1": (lambda: Beta(2.0, -1.0), lambda: Beta(_col(2.0), _col(-1.0)), True),
-    # An infinite shape is *rejected* by statrs, unlike the Normal / LogNormal scale; both paths must
-    # agree on that too.
-    "beta a=inf (rejected)": (lambda: Beta(_INF, 1.0), lambda: Beta(_col(_INF), _col(1.0)), True),
+    "beta a=inf": (lambda: Beta(_INF, 1.0), lambda: Beta(_col(_INF), _col(1.0)), True),
     "exponential rate=nan": (lambda: Exponential(_NAN), lambda: Exponential(_col(_NAN)), True),
     "exponential rate=0": (lambda: Exponential(0.0), lambda: Exponential(_col(0.0)), True),
     "exponential rate=-1": (lambda: Exponential(-1.0), lambda: Exponential(_col(-1.0)), True),
-    # An infinite rate is accepted by statrs as the degenerate point mass at 0, like the Normal
-    # scale and unlike the Beta shape; both paths must accept it identically.
-    "exponential rate=inf (accepted)": (lambda: Exponential(_INF), lambda: Exponential(_col(_INF)), False),
+    # `statrs` accepts an infinite rate as the degenerate point mass at 0; the library's finiteness
+    # check refuses it, as for the Normal scale.
+    "exponential rate=inf": (lambda: Exponential(_INF), lambda: Exponential(_col(_INF)), True),
     "geometric p=nan": (lambda: Geometric(_NAN), lambda: Geometric(_col(_NAN)), True),
     "geometric p=1.5": (lambda: Geometric(1.5), lambda: Geometric(_col(1.5)), True),
     # `p = 0` is the one endpoint Geometric rejects where Bernoulli accepts it: the trial count of a

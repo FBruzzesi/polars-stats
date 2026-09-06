@@ -5,26 +5,27 @@ use rand::distr::Distribution;
 use statrs::distribution::DiscreteUniform;
 
 use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, PairDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_i64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::DiscreteUniform`, mapping an invalid parameterisation to `InvalidOperation`.
-///
-/// `statrs` only rejects `max < min` (`min == max` is the legitimate one-point mass), so the one
-/// extra guard here is the support count: `max - min + 1` overflows `i64` for a span wider than
-/// `i64::MAX - 1`, and every closed form divides by that count. The width is computed in `i128`
-/// so the check itself cannot wrap.
+/// The pair: `min <= max` (`min == max` is the legitimate one-point mass), and a support count
+/// `max - min + 1` that fits in `i64`, since every closed form divides by that count. The width is
+/// computed in `i128` so the check itself cannot wrap. The bounds have no domain of their own: an
+/// integer column is one by dtype, through [`coerce_bound`].
+const BOUNDS: PairDomain<i64> = PairDomain {
+    names: ("min", "max"),
+    domain: "greater than or equal to min, with a support width max - min + 1 that fits in i64",
+    accepts: |min, max| min <= max && i64::try_from(i128::from(max) - i128::from(min) + 1).is_ok(),
+};
+
+/// Construct a `statrs::DiscreteUniform` behind [`BOUNDS`]: the constant regime's once-per-call
+/// check, and the row loops' backstop. `statrs` itself only rejects `max < min`.
 fn build_dist(min: i64, max: i64) -> PolarsResult<DiscreteUniform> {
-    let n = max as i128 - min as i128 + 1;
-    if n > i64::MAX as i128 {
-        return Err(PolarsError::InvalidOperation(
-            format!("support width max - min + 1 must fit in i64, got min={min}, max={max}").into(),
-        ));
-    }
+    BOUNDS.check(min, max)?;
     DiscreteUniform::new(min, max).map_err(|e| {
         PolarsError::InvalidOperation(
             format!("max must be greater than or equal to min, got min={min}, max={max}: {e}")
@@ -344,6 +345,7 @@ where
     let name = inputs[0].name().clone();
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
+    BOUNDS.check_columns(&min, &max)?;
 
     let ca: Float64Chunked = match coerce_points(&inputs[0])? {
         Points::Float(v) => try_ternary_elementwise(&v, &min, &max, |v, lo, hi| {
@@ -429,6 +431,7 @@ fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     let value = inputs[0].cast(&DataType::Float64)?;
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
+    BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
         value.f64()?,
         &min,
@@ -446,6 +449,7 @@ fn discreteuniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
     let value = inputs[0].cast(&DataType::Float64)?;
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
+    BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
         value.f64()?,
         &min,
@@ -549,6 +553,7 @@ fn discreteuniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let min = coerce_bound(&inputs[0])?;
     let max = coerce_bound(&inputs[1])?;
+    BOUNDS.check_columns(&min, &max)?;
 
     validate_params_binary(&min, &max, |lo, hi| {
         build_dist(lo, hi)?;
@@ -576,6 +581,7 @@ fn discreteuniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResu
     let max = coerce_bound(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    BOUNDS.check_columns(&min, &max)?;
 
     sample_per_row_ternary(
         name,
@@ -629,6 +635,7 @@ fn discreteuniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsRe
     let max = coerce_bound(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    BOUNDS.check_columns(&min, &max)?;
 
     let rows = ternary_param_rows(&min, &max, index.u64()?, build_dist);
 

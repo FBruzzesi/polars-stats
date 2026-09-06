@@ -37,7 +37,7 @@ _METHODS: dict[str, Callable[[Beta], pl.Expr]] = {
 def test_method_raises_on_non_positive_shape_column(expr_fn: Callable[[Beta], pl.Expr]) -> None:
     df = pl.DataFrame({"a": [2.0, -1.0], "b": [3.0, 2.0], "x": [0.5, 0.5], "q": [0.5, 0.5]})
     dist = Beta(a=pl.col("a"), b=pl.col("b"))  # row 1: a = -1.0
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         df.select(r=expr_fn(dist))
 
 
@@ -45,7 +45,7 @@ def test_method_raises_on_non_positive_shape_column(expr_fn: Callable[[Beta], pl
 def test_method_raises_on_non_positive_shape_scalar(expr_fn: Callable[[Beta], pl.Expr]) -> None:
     df = pl.DataFrame({"x": [0.5], "q": [0.5]})
     dist = Beta(a=2.0, b=-1.0)
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         df.select(r=expr_fn(dist))
 
 
@@ -59,5 +59,5 @@ def test_method_raises_on_non_positive_shape_scalar(expr_fn: Callable[[Beta], pl
 )
 def test_infinite_shape_raises(dist: Beta) -> None:
     # Unlike the Normal / LogNormal scale, statrs rejects an infinite Beta shape.
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         pl.DataFrame({"x": [0.5]}).select(r=dist.pdf(pl.col("x")))
