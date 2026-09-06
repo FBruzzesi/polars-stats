@@ -60,13 +60,28 @@ A length-1 *expression* is accepted wherever a column is and broadcasts rather t
     Computing a parameter with `.over("g")` and using it in a plain `select` is fine too; it is only putting the
     distribution expression itself inside `over()` or `agg()` that is affected.
 
-Numeric columns of any width are cast to `Float64` at evaluation, so an integer column works wherever a float is
-expected. The integer parameters are the exception: the count `n` and `DiscreteUniform`'s bounds must already hold
+Numeric columns are cast to `Float64` at evaluation, so an integer column works wherever a float is expected. That
+covers every signed and unsigned integer width up to `Int128` / `UInt128`, and `Float16` / `Float32` / `Float64`.
+`Decimal` is the one numeric dtype the two positions treat differently: it works as a *parameter*, but as an
+evaluation point it raises `InvalidOperationError`, because the null/`NaN` guard applied to the value column has no
+`NaN` to test for on a decimal.
+
+The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
 bounds to `Int64`, so a `UInt64` bound *value* above `i64::MAX` raises rather than wrapping. The rule is judged on the
 dtype, so a float column raises even when every value in it is null; a `Null`-dtype column
-propagates nulls like any other parameter. A non-numeric column raises at
-evaluation: Polars fails the query with `InvalidOperationError` rather than returning nulls.
+propagates nulls like any other parameter.
+
+In **evaluation-point** position every non-numeric dtype is rejected: Polars fails the query with
+`InvalidOperationError`. That covers `Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object` and the temporal
+dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls.
+
+**Parameter** position is weaker: past the integer rule above there is no dtype check, and the Rust cast decides.
+`Categorical`, `Enum`, `Struct` and `Object` fail it and raise `ComputeError`. The rest are accepted: a `String`
+parameter is *parsed*, so `Normal(mu="mu", sigma=1.0).sample(seed=0)` on a `mu` column holding `"0.5"` draws from a
+normal centred at `0.5`, and a `Boolean`, `String` or temporal parameter carries its own dtype back out of a moment
+(`Normal(mu="mu", sigma=1.0).mean()` on a `Date` column returns `Date`). Cast a parameter to `Float64` when you mean
+a number.
 
 ## Parameter validity
 
@@ -131,7 +146,8 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | `null` value or quantile argument on a row | per row | `null` on that row |
 | `null` parameter on a row | per row | `null` on that row, no error, except where a branch that carries no parameter already settles the answer (see below) |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
-| Non-numeric column as an argument or parameter | evaluation | Polars raises `InvalidOperationError` |
+| Non-numeric column as an *argument* | evaluation | Polars raises `InvalidOperationError` |
+| Non-numeric column as a *parameter* | Rust evaluation, if at all | `ComputeError` for `Categorical` / `Enum` / `Struct` / `Object`; `Boolean`, `String` and the temporal dtypes are **not** rejected and compute (see [Accepted inputs](#accepted-inputs)) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |

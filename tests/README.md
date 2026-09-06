@@ -3,6 +3,10 @@
 Tests for the distribution surface live in three places, split by what they assert.
 A new distribution adds tests by following the existing files, not by writing fixtures from scratch.
 
+One module sits outside that split: `plugin_boundary_dtype_test.py` asserts only that a dtype
+crossing the FFI boundary leaves the interpreter alive, in a subprocess per case because the abort it
+guards against would take pytest down with it. A new distribution adds nothing there.
+
 ## 1. Per-method behavioural tests: `tests/distributions/<name>/`
 
 One directory per distribution, mirroring [`distributions/bernoulli/`](distributions/bernoulli),

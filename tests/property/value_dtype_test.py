@@ -1,4 +1,4 @@
-"""Value-keyed methods accept integer-typed evaluation points; non-numeric dtypes fail fast.
+"""Value-keyed methods accept narrow numeric evaluation points; non-numeric dtypes fail fast.
 
 `propagate_null_and_nan` in `_base.py` applies `is_nan` to the coerced value expression as-is,
 with no `Float64` cast. That relies on two polars behaviours, both verified on every supported
@@ -8,17 +8,20 @@ version (1.15.0 through current) and pinned here so a regression in either direc
   integer-typed value column, or the integer literal a scalar like `cdf(0)` coerces to,
   flows through the guard and must evaluate exactly as its `Float64`-cast equivalent. The Rust
   plugins cast the evaluation point to `Float64` internally; the closed-form hooks combine it
-  under polars supertype rules; both are exact for the integer grids used here.
+  under polars supertype rules; both are exact for the grids used here.
 * `is_nan` raises `InvalidOperationError` for non-numeric dtypes (`Boolean`, `String`, temporal),
   so an invalid value column is rejected up front, before any hook or plugin sees it. This is the
   strict half of the contract: a numeric `String` column must not silently parse through the
   statrs-backed paths (both a Python-side `cast` and the plugin's internal Rust cast would
   otherwise accept it).
+
+Whether a dtype reaches either half at all is `tests/plugin_boundary_dtype_test.py`'s question.
 """
 
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -28,15 +31,15 @@ from hypothesis import strategies as st
 
 from polars_stats import Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
-from tests._polars_compat import assert_series_equal
+from tests._polars_compat import assert_series_equal, available_dtypes
 from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
     from tests.property._specs import DistSpec
 
-_INT_DTYPES = (pl.Int64(), pl.UInt32())
-"""One signed and one unsigned integer dtype; the guard and the hooks are dtype-generic past that."""
+_VALUE_DTYPES = (pl.Int64(), pl.UInt32(), pl.Float32(), *available_dtypes("Int128", "UInt128", "Float16"))
+"""`Int64` and `UInt32` cover the contract; `Int128`, `UInt128` and `Float16` each need a polars build feature."""
 
 _MAX_GRID = 16
 
@@ -48,7 +51,7 @@ def _int_grid(lo: float, hi: float, dtype: pl.DataType) -> list[int | None]:
     negative part of a signed evaluation range.
     """
     lo_i, hi_i = math.floor(lo), math.ceil(hi)
-    if dtype in (pl.UInt8(), pl.UInt16(), pl.UInt32(), pl.UInt64()):
+    if dtype.is_unsigned_integer():
         lo_i = max(lo_i, 0)
         hi_i = max(hi_i, lo_i)
     step = max(1, (hi_i - lo_i) // _MAX_GRID)
@@ -65,20 +68,21 @@ def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
     raise TypeError(msg)  # pragma: no cover
 
 
-@pytest.mark.parametrize("dtype", _INT_DTYPES, ids=str)
+@pytest.mark.parametrize("dtype", _VALUE_DTYPES, ids=str)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
-def test_integer_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType, data: st.DataObject) -> None:
-    """Every value-keyed method evaluates an integer value column exactly as its `Float64` cast.
+def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType, data: st.DataObject) -> None:
+    """Every value-keyed method evaluates a narrow value column exactly as its `Float64` cast, nulls included.
 
-    A null in the integer column must also propagate identically (the guard's null branch is
-    dtype-agnostic, but this pins it on the integer path specifically).
+    Every grid value is exactly representable in every dtype here, so a mismatch means a misread
+    buffer, not a hook doing its arithmetic at the column's width.
     """
     params = data.draw(spec.params)
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
-    values = pl.DataFrame({"x": _int_grid(lo, hi, dtype)}, schema={"x": dtype})
-    quantiles = pl.DataFrame({"q": [0, 1, None]}, schema={"q": dtype})
+    values = pl.Series("x", _int_grid(lo, hi, dtype)).cast(dtype).to_frame()
+    q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.25, 0.5, 0.75, 1.0, None]
+    quantiles = pl.Series("q", q_grid).cast(dtype).to_frame()
 
     x, q = pl.col("x"), pl.col("q")
     cases = [
@@ -91,10 +95,8 @@ def test_integer_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType
         (quantiles, dist.ppf(q), dist.ppf(q.cast(pl.Float64()))),
         (quantiles, dist.isf(q), dist.isf(q.cast(pl.Float64()))),
     ]
-    for frame, int_expr, float_expr in cases:
-        as_int = frame.select(r=int_expr)["r"]
-        as_float = frame.select(r=float_expr)["r"]
-        assert_series_equal(as_int, as_float, check_exact=True)
+    for frame, narrow_expr, wide_expr in cases:
+        assert_series_equal(frame.select(r=narrow_expr)["r"], frame.select(r=wide_expr)["r"], check_exact=True)
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
@@ -111,18 +113,29 @@ def test_integer_scalar_value_matches_float_scalar(spec: DistSpec, data: st.Data
     assert_series_equal(frame.select(r=dist.cdf(1))["r"], frame.select(r=dist.cdf(1.0))["r"], check_exact=True)
 
 
+_REFUSED_VALUES = (
+    pl.Series("x", [True, False]),
+    pl.Series("x", ["0.5", "1.0"]),
+    pl.Series("x", [Decimal("0.50"), Decimal("1.00")], dtype=pl.Decimal(10, 2)),
+    pl.Series("x", ["a", "b"], dtype=pl.Categorical),
+    pl.Series("x", ["a", "b"], dtype=pl.Enum(["a", "b"])),
+    pl.Series("x", [{"a": 1}, {"a": 2}], dtype=pl.Struct({"a": pl.Int64})),
+    pl.Series("x", [1, 2], dtype=pl.Int32).cast(pl.Date),
+    pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Datetime("us")),
+    pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Duration("us")),
+    pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Time),
+)
+"""Every dtype an evaluation point may not be. `Decimal` is numeric but `is_nan` has no `NaN` to test on it."""
+
+
 @pytest.mark.parametrize(
     "dist",
     [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
     ids=["normal", "uniform"],
 )
-@pytest.mark.parametrize(
-    "series",
-    [pl.Series("x", [True, False]), pl.Series("x", ["0.5", "1.0"])],
-    ids=["boolean", "string"],
-)
+@pytest.mark.parametrize("series", _REFUSED_VALUES, ids=lambda s: str(s.dtype))
 def test_non_numeric_value_column_raises(dist: _UnivariateDistribution, series: pl.Series) -> None:
-    """A `Boolean` or `String` value column is rejected up front, plugin-backed or closed-form alike.
+    """A non-numeric value column is rejected up front, plugin-backed or closed-form alike.
 
     Only the exception type is pinned, not the message: whether the guard's `is_nan` or a hook
     operation (e.g. `Uniform`'s division on a `String`) resolves first is a polars
@@ -131,3 +144,33 @@ def test_non_numeric_value_column_raises(dist: _UnivariateDistribution, series: 
     """
     with pytest.raises(pl.exceptions.InvalidOperationError):
         series.to_frame().select(dist.cdf(pl.col("x")))
+
+
+_REFUSED_PARAMETERS = (
+    pl.Series("mu", ["a", "b"], dtype=pl.Categorical),
+    pl.Series("mu", ["a", "b"], dtype=pl.Enum(["a", "b"])),
+    pl.Series("mu", [{"a": 1}, {"a": 2}], dtype=pl.Struct({"a": pl.Int64})),
+)
+"""Parameter dtypes the Rust cast refuses; `Boolean`, `String` and the temporal dtypes survive it and compute."""
+
+
+@pytest.mark.parametrize("series", _REFUSED_PARAMETERS, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("method", ["mean", "sample"], ids=str)
+def test_refused_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
+    """A refused *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
+    dist = Normal(mu="mu", sigma=1.0)
+    expr = dist.mean() if method == "mean" else dist.sample(seed=0)
+    with pytest.raises(pl.exceptions.ComputeError):
+        series.to_frame().select(r=expr)
+
+
+@pytest.mark.parametrize("dtype", [*available_dtypes("Int128", "UInt128", "Float16"), pl.Decimal(10, 2)], ids=str)
+def test_feature_gated_parameter_column_computes(dtype: pl.DataType) -> None:
+    """A parameter column in a build-feature-gated dtype reaches Rust with its value intact.
+
+    `cdf`, not a moment: a moment returns the parameter column itself and never reads its value.
+    """
+    frame = pl.Series("mu", [1, 2], dtype=pl.Int64()).cast(dtype).to_frame()
+    narrow = frame.select(r=Normal(mu="mu", sigma=1.0).cdf(0.0))["r"]
+    wide = frame.select(r=Normal(mu=pl.col("mu").cast(pl.Float64()), sigma=1.0).cdf(0.0))["r"]
+    assert_series_equal(narrow, wide, check_exact=True)
