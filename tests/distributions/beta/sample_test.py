@@ -86,7 +86,7 @@ def test_sample_non_positive_shape_row_raises(seed: int) -> None:
     # An invalid shape on a row raises (no early Python validation), the same way Normal reports a
     # non-positive scale. Plugin errors surface as `ComputeError`.
     dframe = pl.DataFrame({"a": [2.0, 1.0, 3.0], "b": [3.0, -2.0, 1.0]})  # row 1: b = -2.0
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         dframe.with_columns(z=Beta(a=pl.col("a"), b=pl.col("b")).sample(seed=seed))
 
 

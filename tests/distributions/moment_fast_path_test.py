@@ -9,11 +9,11 @@ all-scalar parameters that plugin is called once on length-1 `pl.lit` inputs ins
 this module pins the parts that test does not reach:
 
 * **Both paths agree on validation.** An invalid scalar parameterisation must raise the same
-  `ComputeError` as the equivalent per-row columns; an accepted non-finite one (a positive-infinite
-  scale, which `statrs` allows) must produce identical output on both. The fast path cannot quietly
-  accept or reject something the per-row path does not. Unlike the value-keyed fast-path test, this
-  covers `Uniform` and `Bernoulli` too: their moments *do* route through a validator, so the scalar
-  path can drift there.
+  `ComputeError` as the equivalent per-row columns, a non-finite parameter included: finiteness is
+  the library's own check, applied whether or not `statrs` would accept the value. The fast path
+  cannot quietly accept or reject something the per-row path does not. Unlike the value-keyed
+  fast-path test, this covers `Uniform` and `Bernoulli` too: their moments *do* route through a
+  validator, so the scalar path can drift there.
 * **The validator runs once, whatever the frame height.** A length-1 plugin input exists independently
   of the frame, so an empty frame still validates and an invalid scalar parameterisation still raises,
   matching the value-keyed kwargs fast path (`value_keyed_fast_path_test.py`). The scalar moment is then
@@ -58,17 +58,19 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 
 # id -> (scalar instance, equivalent per-row instance, should_raise). `variance` is the representative
 # moment: it routes through the parameter validator for every distribution (Normal/LogNormal/Binomial
-# via `_moment`, Uniform via `range`, Bernoulli via `_checked_p`). The accepted-`inf` cases guard that
-# the fast path does not reject a parameterisation the per-row path accepts.
+# via `_moment`, Uniform via `range`, Bernoulli via `_checked_p`). The `inf` cases guard that the fast
+# path applies the library's own finiteness check where `statrs` alone would accept the value.
 _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]] = {
     "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0)), True),
+    "normal mu=inf": (Normal(_INF, 1.0), Normal(_col(_INF), _col(1.0)), True),
     "normal std=0": (Normal(0.0, 0.0), Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (Normal(0.0, -1.0), Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (Normal(0.0, _NAN), Normal(_col(0.0), _col(_NAN)), True),
-    "normal std=inf (accepted)": (Normal(0.0, _INF), Normal(_col(0.0), _col(_INF)), False),
+    "normal std=inf": (Normal(0.0, _INF), Normal(_col(0.0), _col(_INF)), True),
     "lognormal sigma=-1": (LogNormal(0.0, -1.0), LogNormal(_col(0.0), _col(-1.0)), True),
     "lognormal sigma=nan": (LogNormal(0.0, _NAN), LogNormal(_col(0.0), _col(_NAN)), True),
-    "lognormal sigma=inf (accepted)": (LogNormal(0.0, _INF), LogNormal(_col(0.0), _col(_INF)), False),
+    "lognormal sigma=inf": (LogNormal(0.0, _INF), LogNormal(_col(0.0), _col(_INF)), True),
+    "lognormal mu=inf": (LogNormal(_INF, 1.0), LogNormal(_col(_INF), _col(1.0)), True),
     "uniform max<min": (Uniform(2.0, 1.0), Uniform(_col(2.0), _col(1.0)), True),
     "uniform max=min": (Uniform(1.0, 1.0), Uniform(_col(1.0), _col(1.0)), True),
     "uniform min=nan": (Uniform(_NAN, 1.0), Uniform(_col(_NAN), _col(1.0)), True),
@@ -87,8 +89,7 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
     "beta b=-1": (Beta(2.0, -1.0), Beta(_col(2.0), _col(-1.0)), True),
     "beta a=nan": (Beta(_NAN, 1.0), Beta(_col(_NAN), _col(1.0)), True),
-    # An infinite shape is *rejected* by statrs, unlike the Normal / LogNormal scale.
-    "beta a=inf (rejected)": (Beta(_INF, 1.0), Beta(_col(_INF), _col(1.0)), True),
+    "beta a=inf": (Beta(_INF, 1.0), Beta(_col(_INF), _col(1.0)), True),
 }
 
 
@@ -134,8 +135,8 @@ def test_moment_fast_path_on_empty_frame_is_a_scalar() -> None:
     """On a zero-row frame the scalar moment is still one row, and still validates.
 
     Both follow from the scalar path being built from length-1 literals, exactly as
-    `df.head(0).select(pl.lit(1.0))` is one row. The per-row path validates inside its row closure,
-    which never runs on an empty frame, so it returns empty without raising.
+    `df.head(0).select(pl.lit(1.0))` is one row. The per-row path's column pass sees no value on an
+    empty frame, so it returns empty without raising.
     """
     empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
 

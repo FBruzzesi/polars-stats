@@ -65,5 +65,5 @@ def test_samples_null_rate_row_is_null_array(seed: int) -> None:
 
 def test_samples_non_positive_rate_raises(seed: int) -> None:
     dframe = pl.DataFrame({"rate": [1.0, -0.5]})  # row 1: rate <= 0
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         dframe.select(s=Exponential(rate=pl.col("rate")).samples(size=4, seed=seed))

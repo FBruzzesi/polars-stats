@@ -36,7 +36,7 @@ _METHODS: dict[str, Callable[[Exponential], pl.Expr]] = {
 def test_method_raises_on_non_positive_rate_column(expr_fn: Callable[[Exponential], pl.Expr]) -> None:
     df = pl.DataFrame({"rate": [1.0, -0.5], "x": [0.5, 0.5], "q": [0.5, 0.5]})  # row 1: rate <= 0
     e = Exponential(rate=pl.col("rate"))
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         df.select(r=expr_fn(e))
 
 
@@ -44,7 +44,7 @@ def test_method_raises_on_non_positive_rate_column(expr_fn: Callable[[Exponentia
 def test_method_raises_on_non_positive_rate_scalar(expr_fn: Callable[[Exponential], pl.Expr]) -> None:
     df = pl.DataFrame({"x": [0.5], "q": [0.5]})
     e = Exponential(rate=-1.0)
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         df.select(r=expr_fn(e))
 
 
@@ -52,5 +52,5 @@ def test_method_raises_on_non_positive_rate_scalar(expr_fn: Callable[[Exponentia
 def test_method_raises_on_nan_rate_scalar(expr_fn: Callable[[Exponential], pl.Expr]) -> None:
     df = pl.DataFrame({"x": [0.5], "q": [0.5]})
     e = Exponential(rate=float("nan"))
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         df.select(r=expr_fn(e))

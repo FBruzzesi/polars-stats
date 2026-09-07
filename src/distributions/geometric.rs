@@ -4,20 +4,24 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, expm1, ln_abs_expm1, validate_params_unary, value_keyed_derived_per_row,
-    value_keyed_derived_scalar, Domain, Sides,
+    align_inputs, expm1, ln_abs_expm1, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    Domain, ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row,
     samples_u64_output, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// `statrs::Geometric::new` rejects `NaN` and any `p` outside `(0, 1]`, so unlike `Bernoulli` the
-/// degenerate `p = 0` point mass is not representable.
+/// Unlike `Bernoulli`, the degenerate `p = 0` point mass is not representable.
+const P: ParamDomain = ParamDomain {
+    name: "p",
+    rule: "in (0, 1]",
+    accepts: |p| p.is_finite() && p > 0.0 && p <= 1.0,
+};
+
+/// Cannot fail behind [`P`]'s pass; the `statrs` error is kept as the backstop.
 fn build_dist(proba: f64) -> PolarsResult<Geometric> {
-    Geometric::new(proba).map_err(|e| {
-        PolarsError::InvalidOperation(format!("p must be in (0, 1], got {proba}: {e}").into())
-    })
+    Geometric::new(proba).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` (a few
@@ -27,9 +31,8 @@ fn ln_failure(proba: f64) -> f64 {
     (-proba).ln_1p()
 }
 
-/// The samplers' per-row state: [`ln_failure`], validated through [`build_dist`] so an invalid `p`
-/// raises identically either way. Built once per row, not once per draw: the multi-draw and
-/// constant-parameter paths take many draws per state.
+/// The samplers' per-row state: [`ln_failure`], behind [`build_dist`]'s backstop. Built once per
+/// row, not once per draw: the multi-draw and constant-parameter paths take many draws per state.
 fn build_sampler(proba: f64) -> PolarsResult<f64> {
     build_dist(proba)?;
     Ok(ln_failure(proba))
@@ -43,10 +46,11 @@ struct GeometricParamsKwargs {
 
 impl GeometricParamsKwargs {
     fn build_sampler(&self) -> PolarsResult<f64> {
+        P.check(self.p)?;
         build_sampler(self.p)
     }
 
-    /// Binds the constant `p` and `build_dist` into [`value_keyed_derived_scalar`], which validates
+    /// Binds the constant `p` and its domain into [`value_keyed_derived_scalar`], which validates
     /// and derives once per call rather than per row.
     fn value_keyed<Branches>(
         &self,
@@ -54,24 +58,17 @@ impl GeometricParamsKwargs {
         derive: impl Fn(Option<f64>) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
-        value_keyed_derived_scalar(value, self.p, build_dist, derive, select)
+        value_keyed_derived_scalar(value, self.p, &P, derive, select)
     }
 }
 
-/// Element-wise validation of the success probability: returns `p` unchanged, raising
-/// `InvalidOperation` if `p` is outside `(0, 1]`. `null` propagates.
-///
-/// The moments derive from this so they report an invalid `p` consistently with `geometric_sample`,
-/// instead of silently computing with a non-positive probability. The value-keyed methods validate
-/// inside their own plugin instead.
+/// `p` unchanged after [`P`]'s column pass, `null` included. The moments derive from this so an
+/// invalid `p` raises as it does from `geometric_sample`.
 #[polars_expr(output_type=Float64)]
 fn geometric_p(inputs: &[Series]) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
-
-    validate_params_unary(proba.f64()?, |proba| {
-        build_dist(proba)?;
-        Ok(proba)
-    })
+    P.check_column(proba.f64()?)?;
+    Ok(proba)
 }
 
 /// Crossover of [`derive_cdf`], in units of `ln(sf)`.
@@ -286,49 +283,49 @@ fn derive_isf(p: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
 /// See [`value_keyed_derived_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn geometric_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, &P, derive_pmf, Mass::at)
 }
 
 /// Element-wise log-pmf; see [`derive_ln_pmf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_pmf, Mass::at)
+    value_keyed_derived_per_row(inputs, &P, derive_ln_pmf, Mass::at)
 }
 
 /// Element-wise cdf `P(X <= value)`; see [`derive_cdf`] and [`CDF_DIRECT_COMPLEMENT_MAX`].
 #[polars_expr(output_type=Float64)]
 fn geometric_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_cdf, Tail::at)
+    value_keyed_derived_per_row(inputs, &P, derive_cdf, Tail::at)
 }
 
 /// Element-wise log-cdf; see [`derive_ln_cdf`] and [`LN_CDF_LN_1P_MAX`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_cdf, Tail::at)
+    value_keyed_derived_per_row(inputs, &P, derive_ln_cdf, Tail::at)
 }
 
 /// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn geometric_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_sf, Tail::at)
+    value_keyed_derived_per_row(inputs, &P, derive_sf, Tail::at)
 }
 
 /// Element-wise log-sf; see [`derive_ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ln_sf, Tail::at)
+    value_keyed_derived_per_row(inputs, &P, derive_ln_sf, Tail::at)
 }
 
 /// Element-wise ppf (inverse cdf); see [`derive_ppf`] and [`smallest_support_point`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_ppf, Domain::at)
+    value_keyed_derived_per_row(inputs, &P, derive_ppf, Domain::at)
 }
 
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn geometric_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, build_dist, derive_isf, Domain::at)
+    value_keyed_derived_per_row(inputs, &P, derive_isf, Domain::at)
 }
 
 /// Constant-`p` fast path for [`geometric_pmf`].
@@ -409,7 +406,7 @@ fn draw(ln_failure: &f64, rng: &mut impl rand::Rng) -> u64 {
 
 /// Element-wise Geometric sampler over `(p, row_index)`, returning `UInt64`.
 ///
-/// Per row, `null` propagates and an invalid `p` raises via [`build_sampler`]. Seeding and
+/// Per row, `null` propagates; an invalid `p` raises from [`P`]'s column pass first. Seeding and
 /// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=UInt64)]
 fn geometric_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
@@ -417,6 +414,7 @@ fn geometric_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(proba.f64()?)?;
 
     sample_per_row_binary(
         name,
@@ -467,6 +465,7 @@ fn geometric_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
     let proba = inputs[0].cast(&DataType::Float64)?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    P.check_column(proba.f64()?)?;
 
     let rows = binary_param_rows(proba.f64()?, index.u64()?, build_sampler);
 

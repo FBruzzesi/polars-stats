@@ -83,8 +83,8 @@ except pl.exceptions.ComputeError as exc:
     print(str(exc).splitlines()[0])
 ```
 
-Scalar parameters are validated once and column parameters per row, but a bad scalar and a bad column row surface the
-same way:
+A scalar parameter is checked once and a column parameter over the whole column before any row computes, and a bad
+scalar and a bad column row surface the same way:
 
 ```python exec="yes" source="above" session="nulls-and-errors" result="python"
 try:

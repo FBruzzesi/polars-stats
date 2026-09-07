@@ -11,7 +11,7 @@ pub mod uniform;
 use std::borrow::Cow;
 
 use polars::prelude::arity::{
-    try_binary_elementwise, try_ternary_elementwise, try_unary_elementwise, unary_elementwise,
+    binary_elementwise, ternary_elementwise, try_ternary_elementwise, unary_elementwise,
 };
 use polars::prelude::*;
 
@@ -60,30 +60,108 @@ pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>>
     ))
 }
 
+/// What one float parameter must satisfy on its own, checked once per call: [`Self::check`] on a
+/// constant, [`Self::check_column`] over the whole column before any row is built.
+///
+/// Every rule spells finiteness because the `statrs` constructors do not (`Normal::new(0.0,
+/// f64::INFINITY)` is `Ok`); behind the pass, the constructor inside a row loop cannot fail.
+pub(crate) struct ParamDomain {
+    pub(crate) name: &'static str,
+    /// Read as "`name` must be {rule}".
+    pub(crate) rule: &'static str,
+    pub(crate) accepts: fn(f64) -> bool,
+}
+
+impl ParamDomain {
+    pub(crate) const fn finite(name: &'static str) -> Self {
+        Self {
+            name,
+            rule: "finite",
+            accepts: f64::is_finite,
+        }
+    }
+
+    pub(crate) const fn positive(name: &'static str) -> Self {
+        Self {
+            name,
+            rule: "finite and strictly positive",
+            accepts: |x| x.is_finite() && x > 0.0,
+        }
+    }
+
+    pub(crate) const fn probability(name: &'static str) -> Self {
+        Self {
+            name,
+            rule: "in [0, 1]",
+            accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
+        }
+    }
+
+    pub(crate) fn check(&self, value: f64) -> PolarsResult<()> {
+        polars_ensure!(
+            (self.accepts)(value),
+            ComputeError: "{} must be {}, got {}", self.name, self.rule, value
+        );
+        Ok(())
+    }
+
+    /// Nulls are skipped: a missing parameter is a missing answer, not an invalid one.
+    pub(crate) fn check_column(&self, ca: &Float64Chunked) -> PolarsResult<()> {
+        ca.iter().flatten().try_for_each(|value| self.check(value))
+    }
+}
+
+/// What two parameters must satisfy together (`Uniform`'s `max > min`, `DiscreteUniform`'s
+/// `min <= max`), checked only where both are present.
+pub(crate) struct PairDomain<N> {
+    pub(crate) names: (&'static str, &'static str),
+    /// Read as "`names.1` must be {rule}".
+    pub(crate) rule: &'static str,
+    pub(crate) accepts: fn(N, N) -> bool,
+}
+
+impl<N: Copy + std::fmt::Display> PairDomain<N> {
+    pub(crate) fn check(&self, a: N, b: N) -> PolarsResult<()> {
+        let (a_name, b_name) = self.names;
+        polars_ensure!(
+            (self.accepts)(a, b),
+            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, self.rule, a_name, a, b_name, b
+        );
+        Ok(())
+    }
+
+    pub(crate) fn check_columns<T>(
+        &self,
+        a: &ChunkedArray<T>,
+        b: &ChunkedArray<T>,
+    ) -> PolarsResult<()>
+    where
+        T: PolarsNumericType<Native = N>,
+    {
+        a.iter().zip(b.iter()).try_for_each(|pair| match pair {
+            (Some(a), Some(b)) => self.check(a, b),
+            _ => Ok(()),
+        })
+    }
+}
+
 /// Shared driver for the constant-parameter value-keyed fast paths.
 ///
 /// The constant-parameter counterpart of each distribution's `value_keyed` helper: when every
 /// distribution parameter is a Python scalar, the caller validates them and builds the
 /// distribution **once**, and only the evaluation-point column crosses FFI. This maps `f` over
-/// that single column, where `f` is the same per-method body the per-row path uses (a named
-/// function in each distribution file), so the two paths cannot drift and output is bit-identical.
+/// that single column, where `f` is the same per-method body the per-row path uses, so the two
+/// paths cannot drift and output is bit-identical.
 ///
-/// Null contract: `value` is the only nullable input this driver sees. The distribution
-/// parameters are not passed here at all; the caller validates them once (via `build_dist`,
-/// which raises on an invalid or non-finite parameterisation before this runs) and bakes them
-/// into `f` through a pre-built `dist`. So a null `value` propagates to null, and `f` returning
-/// `None` nulls the row on the method's own terms (e.g. `ppf` outside `[0, 1]`), matching the
-/// per-row path element for element.
+/// Null contract: `value` is the only nullable input this driver sees; a null `value` propagates,
+/// and `f` returning `None` nulls the row on the method's own terms (`ppf` outside `[0, 1]`).
 ///
 /// `NaN` contract: a `NaN` evaluation point short-circuits to `NaN` (scipy semantics) before `f`
 /// runs, for every method including `ppf`. The short-circuit is central (here and in
-/// [`value_keyed_per_row`]) rather than per body, because two bodies genuinely need it and none
-/// may be forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`
-/// (aborting the whole query), and binomial's support mapping saturates (`NaN.floor() as u64` is
-/// `0`), returning a confident `P(X <= 0)`. The Python-side `propagate_null_and_nan` guard cannot
-/// substitute: polars evaluates every `when`/`then`/`otherwise` branch over the full column, so a
-/// plugin runs on the `NaN` rows even though the guard discards their output. Pinned by
-/// `tests/distributions/plugin_nan_test.py`.
+/// [`value_keyed_per_row`]) rather than per body, because two bodies need it and none may be
+/// forgotten: the regularized incomplete beta behind `Beta` `cdf`/`sf` panics on `NaN`, aborting
+/// the whole query, and binomial's support mapping saturates (`NaN.floor() as u64` is `0`),
+/// returning a confident `P(X <= 0)`. Pinned by `tests/distributions/plugin_nan_test.py`.
 pub(crate) fn value_keyed_scalar<F>(value: &Series, f: F) -> PolarsResult<Series>
 where
     F: Fn(f64) -> Option<f64>,
@@ -100,23 +178,22 @@ where
 
 /// Constant-parameter twin of [`value_keyed_derived_per_row`], over [`value_keyed_scalar`].
 ///
-/// Validates and derives once per call, then maps `select` over the evaluation-point column. The
-/// Python side routes here only once the parameter is a Python scalar, so `derive` always sees
-/// `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`, `Exponential`'s
-/// `ln(rate)`) are computed once instead of per row.
-pub(crate) fn value_keyed_derived_scalar<Dist, Branches, Validate, Derive, Select>(
+/// Checks the parameter against `domain` and derives once per call, then maps `select` over the
+/// evaluation-point column. The Python side routes here only once the parameter is a Python scalar,
+/// so `derive` always sees `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`,
+/// `Exponential`'s `ln(rate)`) are computed once instead of per row.
+pub(crate) fn value_keyed_derived_scalar<Branches, Derive, Select>(
     value: &Series,
     param: f64,
-    validate: Validate,
+    domain: &ParamDomain,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64) -> PolarsResult<Dist>,
     Derive: Fn(Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
-    validate(param)?;
+    domain.check(param)?;
     let branches = derive(Some(param));
     value_keyed_scalar(value, |v| select(&branches, v))
 }
@@ -124,20 +201,20 @@ where
 /// Shared driver for the column-parameter value-keyed per-row paths.
 ///
 /// The column-parameter counterpart of [`value_keyed_scalar`]: at least one distribution parameter
-/// is a column, so `build` validates and constructs once per row instead of once per call. `f` is
-/// the same named per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two
-/// paths cannot drift and agree bit for bit.
+/// is a column, so `build` constructs once per row instead of once per call. `f` is the same named
+/// per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two paths cannot
+/// drift and agree bit for bit.
 ///
 /// The caller does the cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`, so a
 /// mixed `(u64, f64)` parameterisation (Binomial's `UInt64` `n` beside its `Float64` `p`) fits, as in
 /// [`ternary_param_rows`](crate::rng::ternary_param_rows). `S` needs no trait bound: it is whatever
 /// `build` returns.
 ///
-/// Null contract: any null among `(value, p1, p2)` nulls the row without calling `build`, matching
-/// the samplers.
+/// The caller has run the parameter columns through their [`ParamDomain`]s, so `build` cannot fail
+/// here; it stays `PolarsResult` because the `statrs` constructors are.
 ///
-/// `NaN` contract: as in [`value_keyed_scalar`], except that the short-circuit runs after `build`,
-/// so an invalid parameterisation still raises on a `NaN` row.
+/// Null contract: any null among `(value, p1, p2)` nulls the row without calling `build`, matching
+/// the samplers. `NaN` contract: as in [`value_keyed_scalar`].
 ///
 /// Keep `build` and `f` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn` or a
 /// `fn` pointer would cost an indirect call per row.
@@ -160,21 +237,13 @@ where
         p1,
         p2,
         |value_opt, p1_opt, p2_opt| -> PolarsResult<Option<f64>> {
-            let (Some(p1), Some(p2)) = (p1_opt, p2_opt) else {
+            let (Some(value), Some(p1), Some(p2)) = (value_opt, p1_opt, p2_opt) else {
                 return Ok(None);
             };
-            // Build before the value is read at all, so an invalid parameterisation raises whatever
-            // the row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
-            let dist = build(p1, p2)?;
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                f(&dist, value)
-            })
+            if value.is_nan() {
+                return Ok(Some(f64::NAN));
+            }
+            Ok(f(&build(p1, p2)?, value))
         },
     )?;
 
@@ -189,59 +258,44 @@ where
 /// with another's `select` does not compile. Both run per row here; [`value_keyed_derived_scalar`]
 /// is the twin that runs `derive` once per call.
 ///
+/// `domain`'s column pass runs once before any row is built, so nothing inside the row loop
+/// validates.
+///
 /// Null contract, and the reason this is not [`value_keyed_per_row`]: that driver nulls the row on
-/// **any** null input without calling `build`, which is right for a `statrs`-backed distribution and
-/// wrong here. A null parameter reaches `derive` as `None`, so the branches whose answer is a
-/// parameter-free constant still answer: `Bernoulli`'s `pmf(2) = 0` and `Exponential`'s
-/// `cdf(-1) = 0` survive a null parameter, and each distribution's `null_param(s)_test.py` pins it.
-/// A null **value** still nulls the row without validating, matching the samplers. Nothing is
-/// validated on a null-parameter row, since there is no parameterisation to reject.
+/// **any** null input, which is right for a `statrs`-backed distribution and wrong here. A null
+/// parameter reaches `derive` as `None`, so the branches whose answer is a parameter-free constant
+/// still answer: `Bernoulli`'s `pmf(2) = 0` and `Exponential`'s `cdf(-1) = 0` survive a null
+/// parameter, pinned by each distribution's `null_param(s)_test.py`. A null **value** nulls the row.
 ///
-/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `validate` has run, so an
-/// invalid parameterisation still raises on a `NaN` row, exactly as [`value_keyed_per_row`] orders
-/// it.
+/// `NaN` contract: a `NaN` value short-circuits to `NaN`, as in [`value_keyed_scalar`].
 ///
-/// `validate` is each distribution's `build_dist`; its return value is discarded, since these
-/// methods compute from the parameter rather than from the built distribution.
-///
-/// Keep `validate`, `derive` and `select` generic `Fn`s: they monomorphise into the row loop, where
-/// a `&dyn Fn` or a `fn` pointer would cost an indirect call per row.
-pub(crate) fn value_keyed_derived_per_row<Dist, Branches, Validate, Derive, Select>(
+/// Keep `derive` and `select` generic `Fn`s: they monomorphise into the row loop, where a `&dyn Fn`
+/// or a `fn` pointer would cost an indirect call per row.
+pub(crate) fn value_keyed_derived_per_row<Branches, Derive, Select>(
     inputs: &[Series],
-    validate: Validate,
+    domain: &ParamDomain,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64) -> PolarsResult<Dist>,
     Derive: Fn(Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
     let value = inputs[0].cast(&DataType::Float64)?;
     let param = inputs[1].cast(&DataType::Float64)?;
+    let param_ca = param.f64()?;
     let name = inputs[0].name().clone();
+    domain.check_column(param_ca)?;
 
-    let ca: Float64Chunked = try_binary_elementwise(
-        value.f64()?,
-        param.f64()?,
-        |value_opt, param_opt| -> PolarsResult<Option<f64>> {
-            // Validate before the value is read at all, so an invalid parameter raises whatever the
-            // row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
-            if let Some(param) = param_opt {
-                validate(param)?;
-            }
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                select(&derive(param_opt), value)
-            })
-        },
-    )?;
+    let ca: Float64Chunked = binary_elementwise(value.f64()?, param_ca, |value_opt, param_opt| {
+        let value = value_opt?;
+        if value.is_nan() {
+            Some(f64::NAN)
+        } else {
+            select(&derive(param_opt), value)
+        }
+    });
 
     Ok(ca.with_name(name).into_series())
 }
@@ -322,27 +376,24 @@ impl<Arm: Fn(f64) -> f64> Domain<Arm> {
     }
 }
 
-/// Two-parameter sibling of [`value_keyed_derived_per_row`], over `try_ternary_elementwise`.
+/// Two-parameter sibling of [`value_keyed_derived_per_row`], over `ternary_elementwise`.
 ///
 /// "Pair" counts the *distribution parameters* (`Uniform`'s two bounds); the driver itself takes
 /// three `Series`. Kept beside the one-parameter version rather than generified over arity, because
 /// `derive` needs both `Option`s in scope to answer from one bound while the other is null.
 ///
-/// Null contract: as in [`value_keyed_derived_per_row`], with the parameter half now two-sided. A
-/// null **value** nulls the row without validating. A null parameter reaches `derive` as `None`, so
-/// the branches a single known parameter already settles still answer. Nothing is validated there,
-/// since a half-specified parameterisation is not one to reject.
-///
-/// `NaN` contract: a `NaN` value short-circuits to `NaN`, but only after `validate` has run, so an
-/// invalid parameterisation still raises on a `NaN` row.
-pub(crate) fn value_keyed_derived_pair_per_row<Dist, Branches, Validate, Derive, Select>(
+/// `check_params` is the caller's column pass over the two parameter columns, each bound alone and
+/// the pair together, run once before any row is built. Null and `NaN` contracts as in
+/// [`value_keyed_derived_per_row`], with the parameter half two-sided: the branches a single known
+/// bound already settles still answer.
+pub(crate) fn value_keyed_derived_pair_per_row<Branches, CheckParams, Derive, Select>(
     inputs: &[Series],
-    validate: Validate,
+    check_params: CheckParams,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Validate: Fn(f64, f64) -> PolarsResult<Dist>,
+    CheckParams: Fn(&Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
     Derive: Fn(Option<f64>, Option<f64>) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
@@ -350,86 +401,18 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let param_a = inputs[1].cast(&DataType::Float64)?;
     let param_b = inputs[2].cast(&DataType::Float64)?;
+    let (a, b) = (param_a.f64()?, param_b.f64()?);
     let name = inputs[0].name().clone();
+    check_params(a, b)?;
 
-    let ca: Float64Chunked = try_ternary_elementwise(
-        value.f64()?,
-        param_a.f64()?,
-        param_b.f64()?,
-        |value_opt, a_opt, b_opt| -> PolarsResult<Option<f64>> {
-            // Validate before the value is read at all, so an invalid parameterisation raises
-            // whatever the row's value is. Only a null or `NaN` *value* propagates. Pinned by
-            // `tests/distributions/plugin_nan_test.py` and `invalid_param_null_value_test.py`.
-            if let (Some(a), Some(b)) = (a_opt, b_opt) {
-                validate(a, b)?;
-            }
-            let Some(value) = value_opt else {
-                return Ok(None);
-            };
-            Ok(if value.is_nan() {
-                Some(f64::NAN)
-            } else {
-                select(&derive(a_opt, b_opt), value)
-            })
-        },
-    )?;
+    let ca: Float64Chunked = ternary_elementwise(value.f64()?, a, b, |value_opt, a_opt, b_opt| {
+        let value = value_opt?;
+        if value.is_nan() {
+            Some(f64::NAN)
+        } else {
+            select(&derive(a_opt, b_opt), value)
+        }
+    });
 
     Ok(ca.with_name(name).into_series())
-}
-
-/// Shared driver for the two-parameter validation plugins: `validate` builds the distribution per
-/// row and returns the `Float64` to emit, either a parameter itself (`sigma`) or a quantity derived
-/// from both (Uniform's `max - min`), `?`-propagating the `InvalidOperation` out of `build_dist`.
-/// Any null input nulls the row without calling `validate`, matching the samplers.
-///
-/// These plugins are what let the closed-form moments report an invalid parameterisation through
-/// the same Rust `build_dist` as the value-keyed methods and the samplers. The constant-parameter
-/// fast path calls the same plugin on length-1 `pl.lit` inputs, so it is built once instead of per
-/// row.
-///
-/// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial)
-/// fits, as in [`ternary_param_rows`](crate::rng::ternary_param_rows): the caller does the cast and
-/// the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`.
-///
-/// Takes no output name: polars resolves a plugin expression's output name from its first input, so
-/// the frame column follows `inputs[0]` (pinned by `tests/distributions/output_name_test.py`).
-///
-/// Keep `validate` a generic `F: Fn`: it monomorphises into the row loop, where a `&dyn Fn` or a
-/// `fn` pointer would cost an indirect call per row.
-pub(crate) fn validate_params_binary<A, B, F>(
-    a: &ChunkedArray<A>,
-    b: &ChunkedArray<B>,
-    validate: F,
-) -> PolarsResult<Series>
-where
-    A: PolarsNumericType,
-    B: PolarsNumericType,
-    F: Fn(A::Native, B::Native) -> PolarsResult<f64>,
-{
-    let ca: Float64Chunked =
-        try_binary_elementwise(a, b, |a_opt, b_opt| -> PolarsResult<Option<f64>> {
-            match (a_opt, b_opt) {
-                (Some(a), Some(b)) => Ok(Some(validate(a, b)?)),
-                _ => Ok(None),
-            }
-        })?;
-
-    Ok(ca.into_series())
-}
-
-/// Single-parameter counterpart of [`validate_params_binary`], same contracts
-/// (`bernoulli_proba`, `exponential_rate`).
-pub(crate) fn validate_params_unary<A, F>(a: &ChunkedArray<A>, validate: F) -> PolarsResult<Series>
-where
-    A: PolarsNumericType,
-    F: Fn(A::Native) -> PolarsResult<f64>,
-{
-    let ca: Float64Chunked = try_unary_elementwise(a, |a_opt| -> PolarsResult<Option<f64>> {
-        match a_opt {
-            Some(a) => Ok(Some(validate(a)?)),
-            None => Ok(None),
-        }
-    })?;
-
-    Ok(ca.into_series())
 }

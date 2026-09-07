@@ -25,7 +25,7 @@ def test_construct_scalar_invalid_shape_defers_to_eval(a: float, b: float) -> No
     # No early Python validation (matching Normal / Uniform): construction succeeds; the invalid
     # shape surfaces as a ComputeError when a method is evaluated, not a ValueError here.
     Beta(a=a, b=b)
-    with pytest.raises(pl.exceptions.ComputeError, match="a and b must be finite and strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="must be finite and strictly positive"):
         pl.DataFrame({"x": [0.5]}).select(r=Beta(a=a, b=b).pdf(pl.col("x")))
 
 

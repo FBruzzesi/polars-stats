@@ -74,7 +74,7 @@ def test_sample_null_rate_row_is_null(seed: int) -> None:
 def test_sample_non_positive_rate_row_raises(seed: int) -> None:
     # An invalid rate on a row raises (no early Python validation), like Uniform / Bernoulli.
     dframe = pl.DataFrame({"rate": [1.0, -0.5, 2.0]})  # row 1: rate <= 0
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         dframe.with_columns(e=Exponential(rate=pl.col("rate")).sample(seed=seed))
 
 

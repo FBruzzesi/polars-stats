@@ -1,30 +1,29 @@
+use polars::prelude::arity::binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Continuous, ContinuousCDF, LogNormal, Normal};
 
 use crate::distributions::{
-    align_inputs, normal, validate_params_binary, value_keyed_per_row, value_keyed_scalar,
+    align_inputs, normal, value_keyed_per_row, value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::LogNormal`, mapping the invalid-parameter case to a `ComputeError`.
-///
-/// `statrs::LogNormal::new` rejects a `NaN` `mu`, a `NaN` `sigma`, or `sigma <= 0`. That surfaces as
-/// `InvalidOperation`, so an invalid parameterisation fails the whole evaluation rather than silently
-/// nulling the row.
+const MU: ParamDomain = ParamDomain::finite("mu");
+const SIGMA: ParamDomain = ParamDomain::positive("sigma");
+
+fn check_params(mu: &Float64Chunked, sigma: &Float64Chunked) -> PolarsResult<()> {
+    MU.check_column(mu)?;
+    SIGMA.check_column(sigma)
+}
+
+/// `statrs::LogNormal::new` accepts an infinite `mu` or `sigma`, so [`MU`] and [`SIGMA`] are what
+/// refuse them; behind their pass this cannot fail.
 fn build_dist(mu: f64, sigma: f64) -> PolarsResult<LogNormal> {
-    LogNormal::new(mu, sigma).map_err(|e| {
-        PolarsError::InvalidOperation(
-            format!(
-                "sigma must be finite and strictly positive (mu must be finite), got mu={mu}, sigma={sigma}: {e}"
-            )
-            .into(),
-        )
-    })
+    LogNormal::new(mu, sigma).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// LogNormal's constant parameters, deserialised once per call.
@@ -39,6 +38,8 @@ struct LogNormalParamsKwargs {
 
 impl LogNormalParamsKwargs {
     fn build(&self) -> PolarsResult<LogNormal> {
+        MU.check(self.mu)?;
+        SIGMA.check(self.sigma)?;
         build_dist(self.mu, self.sigma)
     }
 
@@ -58,7 +59,7 @@ impl LogNormalParamsKwargs {
 /// / `isf`, which reuse the normal's `ln_erfc` forms on `ln(x)`.
 ///
 /// Infallible: any `(location, scale)` a built `LogNormal` carries is a valid `Normal`
-/// parameterisation, so validation stays with [`build_dist`] alone.
+/// parameterisation, so this carries no check of its own.
 fn underlying_normal(dist: &LogNormal) -> Normal {
     Normal::new(dist.location(), dist.scale())
         .expect("Normal::new accepts every (location, scale) a built LogNormal carries")
@@ -74,6 +75,7 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let mu = inputs[1].cast(&DataType::Float64)?;
     let sigma = inputs[2].cast(&DataType::Float64)?;
+    check_params(mu.f64()?, sigma.f64()?)?;
 
     value_keyed_per_row(
         value.f64()?,
@@ -85,21 +87,24 @@ where
     )
 }
 
-/// Validate the `(mu, sigma)` parameterisation and return the validated `sigma`.
+/// `sigma` where both of `(mu, sigma)` are present, null elsewhere, after [`check_params`].
 ///
 /// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
 /// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
-/// value-keyed methods. `null` in either input propagates; invalid raises via [`build_dist`].
+/// value-keyed methods.
 #[polars_expr(output_type=Float64)]
 fn lognormal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let mu = inputs[0].cast(&DataType::Float64)?;
     let sigma = inputs[1].cast(&DataType::Float64)?;
+    check_params(mu.f64()?, sigma.f64()?)?;
 
-    validate_params_binary(mu.f64()?, sigma.f64()?, |mu, sigma| {
-        build_dist(mu, sigma)?;
-        Ok(sigma)
-    })
+    let ca: Float64Chunked = binary_elementwise(
+        mu.f64()?,
+        sigma.f64()?,
+        |mu: Option<f64>, sigma: Option<f64>| mu.and(sigma),
+    );
+    Ok(ca.into_series())
 }
 
 /// One LogNormal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -113,8 +118,8 @@ fn draw(dist: &LogNormal, rng: &mut impl rand::Rng) -> f64 {
 
 /// Element-wise LogNormal sampler over `(mu, sigma, row_index)`, returning `Float64`.
 ///
-/// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
-/// and chunk-invariance follow [`sample_per_row_ternary`].
+/// Per row, `null` propagates; an invalid parameterisation raises from [`check_params`] first.
+/// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Float64)]
 fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
@@ -122,6 +127,7 @@ fn lognormal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Ser
     let sigma = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    check_params(mu.f64()?, sigma.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -174,6 +180,7 @@ fn lognormal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<S
     let sigma = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
+    check_params(mu.f64()?, sigma.f64()?)?;
 
     let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
 

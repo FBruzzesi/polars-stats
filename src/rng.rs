@@ -163,8 +163,8 @@ impl DrawValue for bool {
 ///
 /// The column-parameter counterpart of [`sample_by_index`], and the single-draw counterpart of
 /// [`samples_per_row`]. `build` constructs the row's draw state once per row; `draw` takes one
-/// value from that row's stream. Any null input nulls the row without calling `build`; an invalid
-/// parameterisation `?`-raises out of the row closure.
+/// value from that row's stream. Any null input nulls the row without calling `build`; the caller
+/// has run the parameter columns through their domain pass, so `build` cannot fail here.
 ///
 /// Seeding follows [`sample_by_index`]: row `i` draws from a stream keyed `(root_seed, i)`, a
 /// function of position only, never of the parameters, so the scalar and column paths stay
