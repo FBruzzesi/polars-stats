@@ -4,7 +4,7 @@ use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
 use crate::distributions::{
-    align_inputs, in_unit_domain, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    align_inputs, on_unit_interval, value_keyed_derived_per_row, value_keyed_derived_scalar,
     ParamDomain,
 };
 use crate::rng::{
@@ -178,21 +178,19 @@ impl PpfCutoffs {
     }
 
     /// Smallest `x` with `cdf(x) >= q`: `0.0` if `q <= 1 - p` else `1.0`; `None` (null) outside
-    /// `[0, 1]`. The support point comes back as `Float64` rather than a `Boolean` so the wrapper's
-    /// `NaN -> NaN` contract stays representable.
+    /// `[0, 1]`. The support point is a `Float64`, not a `Boolean`, so `NaN` stays representable.
     ///
     /// `q == 1` is a separate branch because `1 - p` rounds to exactly `1.0` below `p ~ 1.1e-16`,
     /// which made `q > 1 - p` false and answered `0.0` where `1.0` is the only correct answer. Every
     /// representable `q < 1` is safely below the true `1 - p` for such a `p`, so the branch is
     /// needed only at the endpoint; `p == 0` keeps `0.0`.
     fn at(&self, quantile: f64) -> Option<f64> {
-        if !(0.0..=1.0).contains(&quantile) {
-            return None;
-        }
-        Some(if quantile == 1.0 {
-            self.at_quantile_one
-        } else {
-            f64::from(quantile > self.step)
+        (0.0..=1.0).contains(&quantile).then(|| {
+            if quantile == 1.0 {
+                self.at_quantile_one
+            } else {
+                f64::from(quantile > self.step)
+            }
         })
     }
 }
@@ -253,7 +251,7 @@ fn bernoulli_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_isf, in_unit_domain)
+    value_keyed_derived_per_row(inputs, &P, derive_isf, on_unit_interval)
 }
 
 /// Constant-parameter fast path for [`bernoulli_pmf`].
@@ -310,7 +308,7 @@ fn bernoulli_ppf_scalar(inputs: &[Series], kwargs: BernoulliParamsKwargs) -> Pol
 /// Constant-parameter fast path for [`bernoulli_isf`].
 #[polars_expr(output_type=Float64)]
 fn bernoulli_isf_scalar(inputs: &[Series], kwargs: BernoulliParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
 /// One Bernoulli draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

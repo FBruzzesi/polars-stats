@@ -4,7 +4,7 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
 use crate::distributions::{
-    align_inputs, expm1, in_unit_domain, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    align_inputs, expm1, on_unit_interval, value_keyed_derived_per_row, value_keyed_derived_scalar,
     ParamDomain, Sides,
 };
 use crate::rng::{
@@ -210,13 +210,13 @@ fn exponential_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise ppf (inverse cdf); see [`derive_ppf`].
 #[polars_expr(output_type=Float64)]
 fn exponential_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &RATE, derive_ppf, in_unit_domain)
+    value_keyed_derived_per_row(inputs, &RATE, derive_ppf, on_unit_interval)
 }
 
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn exponential_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &RATE, derive_isf, in_unit_domain)
+    value_keyed_derived_per_row(inputs, &RATE, derive_isf, on_unit_interval)
 }
 
 /// Constant-rate fast path for [`exponential_pdf`].
@@ -279,7 +279,7 @@ fn exponential_ppf_scalar(
     inputs: &[Series],
     kwargs: ExponentialParamsKwargs,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_ppf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_ppf, on_unit_interval)
 }
 
 /// Constant-rate fast path for [`exponential_isf`].
@@ -288,7 +288,7 @@ fn exponential_isf_scalar(
     inputs: &[Series],
     kwargs: ExponentialParamsKwargs,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
 /// One Exponential draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

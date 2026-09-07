@@ -1,7 +1,7 @@
 """Null-bound contract: every method, both bounds, on and off the support.
 
-A null bound nulls the answer wherever the point sits, so the `(bounds, value)` table below is
-keyed to reach every region a known bound could have decided from, not to vary the expectation.
+The `(bounds, value)` table reaches every region the known bound alone could have placed the point
+in; the expectation is null throughout.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from polars_stats import Uniform
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Every method must propagate a null bound to a null result, evaluated here at an on-support point.
-# The points outside the support, which the known bound alone places, are covered below.
+# Evaluated at an on-support point; the points a known bound alone places are covered below.
 _METHODS: dict[str, Callable[[Uniform], pl.Expr]] = {
     "pdf": lambda u: u.pdf(pl.lit(0.5)),
     "log_pdf": lambda u: u.log_pdf(pl.lit(0.5)),
@@ -98,7 +97,6 @@ def test_value_keyed_answer_nulls_under_a_null_bound(bounds: tuple[float | None,
 def test_inverse_nulls_under_a_null_bound(
     method: str, quantile: float, bounds: tuple[float | None, float | None]
 ) -> None:
-    """Endpoints and out-of-range quantiles as well as interior ones, under either null bound."""
     lo, hi = bounds
     df = pl.DataFrame({"lo": [0.0, lo], "hi": [1.0, hi]}, schema=_SCHEMA)
     result = df.select(r=getattr(_column_bounds(), method)(quantile))["r"]

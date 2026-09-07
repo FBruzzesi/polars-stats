@@ -33,9 +33,7 @@ class Uniform(ContinuousDistribution):
     overflowing ``float64``) is not checked at construction; matching every other distribution, it
     raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
 
-    A null bound nulls every method, on the support and off it, including where the other bound
-    alone would have placed the point outside. Both inverses null at every quantile under either
-    null bound.
+    A null bound nulls every method, on the support and off it.
     """
 
     _min: pl.Expr

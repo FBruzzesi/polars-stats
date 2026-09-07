@@ -47,5 +47,4 @@ def test_moment_nulls_under_a_null_p(method: str) -> None:
 @pytest.mark.parametrize("method", ["ppf", "isf"])
 @pytest.mark.parametrize("quantile", [0.0, 0.5, 1.0, 2.0])
 def test_inverse_nulls_under_a_null_p(method: str, quantile: float) -> None:
-    """Null inside `[0, 1]` because the answer needs `p`, and null outside it by the domain contract."""
     assert _null_p().select(r=getattr(Geometric(p=pl.col("p")), method)(quantile))["r"].item() is None

@@ -15,8 +15,7 @@ from polars_stats import Exponential
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Every closed-form method must propagate a null rate to a null result. The value-keyed methods are
-# evaluated at an on-support point (`x >= 0`, `q in [0, 1]`), where the rate enters the formula.
+# The value-keyed methods are evaluated at an on-support point (`x >= 0`, `q in [0, 1]`).
 _METHODS: dict[str, Callable[[Exponential], pl.Expr]] = {
     "pdf": lambda e: e.pdf(pl.lit(0.5)),
     "log_pdf": lambda e: e.log_pdf(pl.lit(0.5)),
@@ -44,6 +43,5 @@ def test_method_propagates_null_in_rate(expr_fn: Callable[[Exponential], pl.Expr
 @pytest.mark.parametrize("method", ["ppf", "isf"])
 @pytest.mark.parametrize("quantile", [0.0, 0.5, 1.0, 2.0])
 def test_inverse_nulls_under_a_null_rate(method: str, quantile: float) -> None:
-    """Endpoints as well as interior ones."""
     df = pl.DataFrame({"rate": [None]}, schema={"rate": pl.Float64})
     assert df.select(r=getattr(Exponential(rate=pl.col("rate")), method)(quantile))["r"].item() is None

@@ -4,7 +4,7 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, expm1, in_unit_domain, ln_abs_expm1, value_keyed_derived_per_row,
+    align_inputs, expm1, ln_abs_expm1, on_unit_interval, value_keyed_derived_per_row,
     value_keyed_derived_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
@@ -310,13 +310,13 @@ fn geometric_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise ppf (inverse cdf); see [`derive_ppf`] and [`smallest_support_point`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ppf, in_unit_domain)
+    value_keyed_derived_per_row(inputs, &P, derive_ppf, on_unit_interval)
 }
 
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn geometric_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_isf, in_unit_domain)
+    value_keyed_derived_per_row(inputs, &P, derive_isf, on_unit_interval)
 }
 
 /// Constant-`p` fast path for [`geometric_pmf`].
@@ -367,13 +367,13 @@ fn geometric_ln_sf_scalar(
 /// Constant-`p` fast path for [`geometric_ppf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_ppf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_ppf, on_unit_interval)
 }
 
 /// Constant-`p` fast path for [`geometric_isf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_isf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
 /// One Geometric draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

@@ -178,7 +178,7 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           `uniform.rs`'s `Density::pdf`); where a branch still depends on the evaluation point, the table carries an
           `Arm` type parameter and `derive` is a free function (`exponential.rs`'s and `geometric.rs`'s `derive_cdf`
           over the shared `Sides<Arm, FLOOR>` in `mod.rs`, `uniform.rs`'s `derive_cdf` / `Regions::at`). An inverse
-          needs no table at all: `derive` returns the arm and `select` is the shared `in_unit_domain`. The Polars
+          needs no table at all: `derive` returns the arm and `select` is the shared `on_unit_interval`. The Polars
           expression it replaces computed `1 - p` once on a
           length-1 literal and broadcast it; a body that recomputes per row regressed the constant-parameter path by
           up to 195% at 10M rows. `derive` runs once per call on the constant path and once per row when a parameter

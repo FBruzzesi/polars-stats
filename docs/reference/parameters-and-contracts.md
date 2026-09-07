@@ -163,8 +163,6 @@ per bound for `Uniform`, whose two bounds might otherwise have settled the answe
 is null and whose `max` is `1.0`, `pdf(5.0)` and `cdf(5.0)` are both `null`, as is every method at `0.5`. Both
 inverses null at every quantile under either null bound, in range and out.
 
-`fill_null` on the parameter column restores the older, narrower answer for anyone who wants it.
-
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in
 [Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf).

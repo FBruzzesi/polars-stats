@@ -4,8 +4,8 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 
 use crate::distributions::{
-    align_inputs, in_unit_domain, value_keyed_derived_pair_per_row, value_keyed_scalar, PairDomain,
-    ParamDomain,
+    align_inputs, on_unit_interval, value_keyed_derived_pair_per_row, value_keyed_scalar,
+    PairDomain, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
@@ -63,31 +63,12 @@ impl UniformParamsKwargs {
 /// Where both inverses switch which bound they interpolate from; see [`derive_inverse`].
 const MEDIAN_QUANTILE: f64 = 0.5;
 
-/// A validated `(min, max)` pair and its width, which every branch table below reads.
-#[derive(Clone, Copy)]
-struct Span {
-    min: f64,
-    max: f64,
-    range: f64,
-}
-
-impl Span {
-    fn new(min: f64, max: f64) -> Self {
-        Span {
-            min,
-            max,
-            range: max - min,
-        }
-    }
-
-    /// Where the two log methods swap conditioning, as `min + range / 2` rather than
-    /// `(min + max) / 2`.
-    ///
-    /// The two round differently on a span that straddles zero, and `min + max` can overflow where
-    /// `range / 2` cannot: `range` is already known finite.
-    fn midpoint(self) -> f64 {
-        self.min + self.range / 2.0
-    }
+/// Where the two log methods swap conditioning, as `min + range / 2` rather than `(min + max) / 2`.
+///
+/// The two round differently on a span that straddles zero, and `min + max` can overflow where
+/// `range / 2` cannot: `range` is already known finite.
+fn midpoint(min: f64, range: f64) -> f64 {
+    min + range / 2.0
 }
 
 /// `pdf` / `log_pdf`: the answer on the closed support `[min, max]`, and off it.
@@ -166,8 +147,8 @@ fn derive_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
         below_min: 0.0,
         at_or_above_max: 1.0,
         interior: {
-            let span = Span::new(min, max);
-            move |value: f64| (value - span.min) / span.range
+            let range = max - min;
+            move |value: f64| (value - min) / range
         },
     }
 }
@@ -185,13 +166,13 @@ fn derive_ln_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
         below_min: f64::NEG_INFINITY,
         at_or_above_max: 0.0,
         interior: {
-            let span = Span::new(min, max);
-            let midpoint = span.midpoint();
+            let range = max - min;
+            let midpoint = midpoint(min, range);
             move |value: f64| {
                 if value > midpoint {
-                    (-((span.max - value) / span.range)).ln_1p()
+                    (-((max - value) / range)).ln_1p()
                 } else {
-                    ((value - span.min) / span.range).ln()
+                    ((value - min) / range).ln()
                 }
             }
         },
@@ -209,8 +190,8 @@ fn derive_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
         below_min: 1.0,
         at_or_above_max: 0.0,
         interior: {
-            let span = Span::new(min, max);
-            move |value: f64| (span.max - value) / span.range
+            let range = max - min;
+            move |value: f64| (max - value) / range
         },
     }
 }
@@ -224,13 +205,13 @@ fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
         below_min: 0.0,
         at_or_above_max: f64::NEG_INFINITY,
         interior: {
-            let span = Span::new(min, max);
-            let midpoint = span.midpoint();
+            let range = max - min;
+            let midpoint = midpoint(min, range);
             move |value: f64| {
                 if value > midpoint {
-                    ((span.max - value) / span.range).ln()
+                    ((max - value) / range).ln()
                 } else {
-                    (-((value - span.min) / span.range)).ln_1p()
+                    (-((value - min) / range)).ln_1p()
                 }
             }
         },
@@ -249,11 +230,11 @@ fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
 /// sits at `max`. Mirroring rather than `ppf(1 - q)`: below `q ~ 1.1e-16` that complement rounds to
 /// `1.0` and the whole tail collapses onto one bound.
 fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
-    let span = Span::new(min, max);
+    let range = max - min;
     let (at_zero, at_one, step) = if ascending {
-        (span.min, span.max, span.range)
+        (min, max, range)
     } else {
-        (span.max, span.min, -span.range)
+        (max, min, -range)
     };
     move |quantile: f64| {
         if quantile <= MEDIAN_QUANTILE {
@@ -314,14 +295,14 @@ fn uniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise ppf (inverse cdf); see [`derive_inverse`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_ppf, in_unit_domain)
+    value_keyed_derived_pair_per_row(inputs, check_params, derive_ppf, on_unit_interval)
 }
 
 /// Element-wise inverse survival function; see [`derive_inverse`] for why it never forms a
 /// complement.
 #[polars_expr(output_type=Float64)]
 fn uniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_isf, in_unit_domain)
+    value_keyed_derived_pair_per_row(inputs, check_params, derive_isf, on_unit_interval)
 }
 
 /// Constant-bounds fast path for [`uniform_pdf`].
@@ -363,13 +344,13 @@ fn uniform_ln_sf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> Polar
 /// Constant-bounds fast path for [`uniform_ppf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_ppf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_ppf, on_unit_interval)
 }
 
 /// Constant-bounds fast path for [`uniform_isf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_isf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
+    kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
 /// One half-open `[lo, hi)` draw: `lo + (hi - lo) * U[0, 1)`, matching scipy's

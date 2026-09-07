@@ -54,7 +54,7 @@ class Bernoulli(DiscreteDistribution):
         return self._checked("bernoulli_proba", self._p)
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
-        """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere; the off-support ``0`` carries no ``p``."""
+        """``1 - p`` at 0, ``p`` at 1, ``0`` elsewhere."""
         return self._value_plugin("bernoulli_pmf", value)
 
     def _log_pmf(self, value: pl.Expr) -> pl.Expr:

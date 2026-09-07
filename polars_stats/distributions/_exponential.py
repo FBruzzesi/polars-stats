@@ -32,8 +32,7 @@ class Exponential(ContinuousDistribution):
     evaluated. The support is ``x >= 0``: ``pdf`` and ``cdf`` are ``0`` for ``x < 0``, and ``sf`` is
     ``1`` there.
 
-    A null ``rate`` nulls every method, on the support and below it. Both inverses null at every
-    quantile, in range and out.
+    A null ``rate`` nulls every method, on the support and below it.
 
     The value-keyed methods compute in Rust, so an invalid ``rate`` is reported whichever branch the
     value selects. The moments stay in Polars, reading ``rate`` through the same Rust validator.

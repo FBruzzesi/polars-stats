@@ -347,31 +347,24 @@ impl<Arm: Fn(f64) -> f64, const FLOOR: i8> Sides<Arm, FLOOR> {
     }
 }
 
-/// The `select` every inverse shares: the arm inside the closed quantile domain `[0, 1]`, `None`
+/// The `select` every inverse shares: the arm on the closed quantile interval `[0, 1]`, `None`
 /// (null) outside it. `-0.0` is inside, since `-0.0 == 0.0`.
-///
-/// An inverse needs no branch table, unlike a support: outside `[0, 1]` the answer is null rather
-/// than a constant, so `derive` returns the arm itself and this is the whole selector.
 ///
 /// A `NaN` quantile never reaches here: every driver short-circuits it, which is what lets this be a
 /// plain range check.
 #[inline]
-pub(crate) fn in_unit_domain<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) -> Option<f64> {
-    if !(0.0..=1.0).contains(&quantile) {
-        return None;
-    }
-    Some(arm(quantile))
+pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) -> Option<f64> {
+    (0.0..=1.0).contains(&quantile).then(|| arm(quantile))
 }
 
 /// Two-parameter sibling of [`value_keyed_derived_per_row`], over `ternary_elementwise`.
 ///
 /// "Pair" counts the *distribution parameters* (`Uniform`'s two bounds); the driver itself takes
-/// three `Series`. Not generified over arity: `binary_elementwise` and `ternary_elementwise` are
-/// separate polars combinators, so a trait over arity would cost more than the two bodies share.
+/// three `Series`.
 ///
-/// `check_params` is the caller's column pass over the two parameter columns, each bound alone and
-/// the pair together, run once before any row is built. Null and `NaN` contracts as in
-/// [`value_keyed_derived_per_row`]: a null in either bound nulls the row.
+/// `check_params` is the caller's column pass over the two parameter columns, each alone and the
+/// pair together, run once before any row is built. Null and `NaN` contracts as in
+/// [`value_keyed_derived_per_row`]: a null in either parameter nulls the row.
 pub(crate) fn value_keyed_derived_pair_per_row<Branches, CheckParams, Derive, Select>(
     inputs: &[Series],
     check_params: CheckParams,
