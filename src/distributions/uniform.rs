@@ -4,7 +4,7 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 
 use crate::distributions::{
-    align_inputs, value_keyed_derived_pair_per_row, value_keyed_scalar, Domain, PairDomain,
+    align_inputs, in_unit_domain, value_keyed_derived_pair_per_row, value_keyed_scalar, PairDomain,
     ParamDomain,
 };
 use crate::rng::{
@@ -46,19 +46,16 @@ struct UniformParamsKwargs {
 
 impl UniformParamsKwargs {
     /// Constant-bounds twin of [`value_keyed_derived_pair_per_row`]: validates and derives once per
-    /// call, then maps `select` over the evaluation-point column.
-    ///
-    /// The Python side routes here only once both bounds are Python scalars, so `derive` always sees
-    /// `Some` and the bound-only terms it hoists (`1 / range`, `-ln(range)`) are computed once
-    /// instead of per row.
+    /// call, then maps `select` over the evaluation-point column, so the bound-only terms `derive`
+    /// hoists (`1 / range`, `-ln(range)`) are computed once instead of per row.
     fn value_keyed<Branches>(
         &self,
         value: &Series,
-        derive: impl Fn(Option<f64>, Option<f64>) -> Branches,
+        derive: impl Fn(f64, f64) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         checked_bounds(self.min, self.max)?;
-        let branches = derive(Some(self.min), Some(self.max));
+        let branches = derive(self.min, self.max);
         value_keyed_scalar(value, |v| select(&branches, v))
     }
 }
@@ -74,18 +71,15 @@ struct Span {
     range: f64,
 }
 
-/// `None` when either bound is null, leaving the `interior` / `on_support` slots below `None` on
-/// exactly the rows whose answer needs both bounds.
-fn span(min: Option<f64>, max: Option<f64>) -> Option<Span> {
-    let (min, max) = (min?, max?);
-    Some(Span {
-        min,
-        max,
-        range: max - min,
-    })
-}
-
 impl Span {
+    fn new(min: f64, max: f64) -> Self {
+        Span {
+            min,
+            max,
+            range: max - min,
+        }
+    }
+
     /// Where the two log methods swap conditioning, as `min + range / 2` rather than
     /// `(min + max) / 2`.
     ///
@@ -97,35 +91,32 @@ impl Span {
 }
 
 /// `pdf` / `log_pdf`: the answer on the closed support `[min, max]`, and off it.
-///
-/// The bounds are `Option`s and the off-support answer a plain `f64`, so a slot answers whenever the
-/// bound that places the point is known, whatever the other one is.
 struct Density {
-    min: Option<f64>,
-    max: Option<f64>,
+    min: f64,
+    max: f64,
     off_support: f64,
-    on_support: Option<f64>,
+    on_support: f64,
 }
 
 impl Density {
     /// `1 / range` on the support, `0` off it.
-    fn pdf(min: Option<f64>, max: Option<f64>) -> Self {
+    fn pdf(min: f64, max: f64) -> Self {
         Density {
             min,
             max,
             off_support: 0.0,
-            on_support: span(min, max).map(|s| 1.0 / s.range),
+            on_support: 1.0 / (max - min),
         }
     }
 
     /// `-ln(range)` on the support, `-inf` off it. From the width rather than as `ln(pdf)`, so it
     /// stays exact where the density itself has underflowed or overflowed.
-    fn ln_pdf(min: Option<f64>, max: Option<f64>) -> Self {
+    fn ln_pdf(min: f64, max: f64) -> Self {
         Density {
             min,
             max,
             off_support: f64::NEG_INFINITY,
-            on_support: span(min, max).map(|s| -s.range.ln()),
+            on_support: -(max - min).ln(),
         }
     }
 
@@ -135,10 +126,11 @@ impl Density {
     ///
     /// A `NaN` point never reaches here: both drivers short-circuit it.
     fn at(&self, value: f64) -> Option<f64> {
-        if self.min.is_some_and(|min| value < min) || self.max.is_some_and(|max| value > max) {
-            return Some(self.off_support);
-        }
-        self.on_support
+        Some(if value < self.min || value > self.max {
+            self.off_support
+        } else {
+            self.on_support
+        })
     }
 }
 
@@ -147,33 +139,36 @@ impl Density {
 ///
 /// These saturate from `max` up, so `max` takes `at_or_above_max` rather than the interior.
 struct Regions<Arm> {
-    min: Option<f64>,
-    max: Option<f64>,
+    min: f64,
+    max: f64,
     below_min: f64,
     at_or_above_max: f64,
-    interior: Option<Arm>,
+    interior: Arm,
 }
 
 impl<Arm: Fn(f64) -> f64> Regions<Arm> {
     fn at(&self, value: f64) -> Option<f64> {
-        if self.min.is_some_and(|min| value < min) {
-            return Some(self.below_min);
-        }
-        if self.max.is_some_and(|max| value >= max) {
-            return Some(self.at_or_above_max);
-        }
-        self.interior.as_ref().map(|arm| arm(value))
+        Some(if value < self.min {
+            self.below_min
+        } else if value >= self.max {
+            self.at_or_above_max
+        } else {
+            (self.interior)(value)
+        })
     }
 }
 
 /// `(value - min) / range` on the support, clamped to `0` below and `1` from `max` up.
-fn derive_cdf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f64> {
+fn derive_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
         max,
         below_min: 0.0,
         at_or_above_max: 1.0,
-        interior: span(min, max).map(|s| move |value: f64| (value - s.min) / s.range),
+        interior: {
+            let span = Span::new(min, max);
+            move |value: f64| (value - span.min) / span.range
+        },
     }
 }
 
@@ -183,22 +178,23 @@ fn derive_cdf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f64
 /// small negative, so the near-certain half reads the *survival* fraction through `ln_1p` instead.
 /// The other half is well conditioned and takes the plain log, the same branch `normal.rs`'s
 /// `ln_half_erfc` takes.
-fn derive_ln_cdf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f64> {
+fn derive_ln_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
         max,
         below_min: f64::NEG_INFINITY,
         at_or_above_max: 0.0,
-        interior: span(min, max).map(|s| {
-            let midpoint = s.midpoint();
+        interior: {
+            let span = Span::new(min, max);
+            let midpoint = span.midpoint();
             move |value: f64| {
                 if value > midpoint {
-                    (-((s.max - value) / s.range)).ln_1p()
+                    (-((span.max - value) / span.range)).ln_1p()
                 } else {
-                    ((value - s.min) / s.range).ln()
+                    ((value - span.min) / span.range).ln()
                 }
             }
-        }),
+        },
     }
 }
 
@@ -206,34 +202,38 @@ fn derive_ln_cdf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> 
 ///
 /// The closed form, never `1 - cdf`: the complement quantises the upper tail to the `1.1e-16`
 /// spacing of `1.0` and reaches `0.0` below that.
-fn derive_sf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f64> {
+fn derive_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
         max,
         below_min: 1.0,
         at_or_above_max: 0.0,
-        interior: span(min, max).map(|s| move |value: f64| (s.max - value) / s.range),
+        interior: {
+            let span = Span::new(min, max);
+            move |value: f64| (span.max - value) / span.range
+        },
     }
 }
 
 /// The mirror of [`derive_ln_cdf`]: `0` below `min`, `-inf` from `max` up, and the `ln_1p` branch on
 /// the **lower** half, which is where the survival function is the near-certain one.
-fn derive_ln_sf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f64> {
+fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
         max,
         below_min: 0.0,
         at_or_above_max: f64::NEG_INFINITY,
-        interior: span(min, max).map(|s| {
-            let midpoint = s.midpoint();
+        interior: {
+            let span = Span::new(min, max);
+            let midpoint = span.midpoint();
             move |value: f64| {
                 if value > midpoint {
-                    ((s.max - value) / s.range).ln()
+                    ((span.max - value) / span.range).ln()
                 } else {
-                    (-((value - s.min) / s.range)).ln_1p()
+                    (-((value - span.min) / span.range)).ln_1p()
                 }
             }
-        }),
+        },
     }
 }
 
@@ -248,36 +248,29 @@ fn derive_ln_sf(min: Option<f64>, max: Option<f64>) -> Regions<impl Fn(f64) -> f
 /// `ascending` is `true` for `ppf`, whose quantile `0` sits at `min`, and `false` for `isf`, whose
 /// sits at `max`. Mirroring rather than `ppf(1 - q)`: below `q ~ 1.1e-16` that complement rounds to
 /// `1.0` and the whole tail collapses onto one bound.
-fn derive_inverse(
-    min: Option<f64>,
-    max: Option<f64>,
-    ascending: bool,
-) -> Domain<impl Fn(f64) -> f64> {
-    Domain {
-        inside: span(min, max).map(move |s| {
-            let (at_zero, at_one, step) = if ascending {
-                (s.min, s.max, s.range)
-            } else {
-                (s.max, s.min, -s.range)
-            };
-            move |quantile: f64| {
-                if quantile <= MEDIAN_QUANTILE {
-                    at_zero + quantile * step
-                } else {
-                    at_one - (1.0 - quantile) * step
-                }
-            }
-        }),
+fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
+    let span = Span::new(min, max);
+    let (at_zero, at_one, step) = if ascending {
+        (span.min, span.max, span.range)
+    } else {
+        (span.max, span.min, -span.range)
+    };
+    move |quantile: f64| {
+        if quantile <= MEDIAN_QUANTILE {
+            at_zero + quantile * step
+        } else {
+            at_one - (1.0 - quantile) * step
+        }
     }
 }
 
 /// `min + quantile * range`, from `max` down above the median; null outside `[0, 1]`.
-fn derive_ppf(min: Option<f64>, max: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
+fn derive_ppf(min: f64, max: f64) -> impl Fn(f64) -> f64 {
     derive_inverse(min, max, true)
 }
 
 /// `max - quantile * range`, from `min` up above the median; null outside `[0, 1]`.
-fn derive_isf(min: Option<f64>, max: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
+fn derive_isf(min: f64, max: f64) -> impl Fn(f64) -> f64 {
     derive_inverse(min, max, false)
 }
 
@@ -321,14 +314,14 @@ fn uniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise ppf (inverse cdf); see [`derive_inverse`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_ppf, Domain::at)
+    value_keyed_derived_pair_per_row(inputs, check_params, derive_ppf, in_unit_domain)
 }
 
 /// Element-wise inverse survival function; see [`derive_inverse`] for why it never forms a
 /// complement.
 #[polars_expr(output_type=Float64)]
 fn uniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_isf, Domain::at)
+    value_keyed_derived_pair_per_row(inputs, check_params, derive_isf, in_unit_domain)
 }
 
 /// Constant-bounds fast path for [`uniform_pdf`].
@@ -370,13 +363,13 @@ fn uniform_ln_sf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> Polar
 /// Constant-bounds fast path for [`uniform_ppf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_ppf, Domain::at)
+    kwargs.value_keyed(&inputs[0], derive_ppf, in_unit_domain)
 }
 
 /// Constant-bounds fast path for [`uniform_isf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_isf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, Domain::at)
+    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
 }
 
 /// One half-open `[lo, hi)` draw: `lo + (hi - lo) * U[0, 1)`, matching scipy's

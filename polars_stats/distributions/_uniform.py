@@ -33,10 +33,9 @@ class Uniform(ContinuousDistribution):
     overflowing ``float64``) is not checked at construction; matching every other distribution, it
     raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
 
-    A null bound propagates to null wherever the result depends on it. Where the *other*, known
-    bound already places the evaluation point outside the support, the bound-free constant survives
-    instead (``pdf`` ``0``, ``log_pdf`` ``-inf``, and the saturated end of ``cdf`` / ``log_cdf`` /
-    ``sf`` / ``log_sf``). Both inverses null at every quantile under either null bound.
+    A null bound nulls every method, on the support and off it, including where the other bound
+    alone would have placed the point outside. Both inverses null at every quantile under either
+    null bound.
     """
 
     _min: pl.Expr

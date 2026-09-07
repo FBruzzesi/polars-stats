@@ -15,9 +15,8 @@ in two places:
   would return a confident `P(X <= 0)` (and a `pmf` of `0.0`).
 
 `Bernoulli`, `Exponential` and `Geometric` take a third driver (`value_keyed_derived_per_row`) and
-`Uniform` its two-parameter sibling, both of which repeat the short-circuit: the shared per-row one
-nulls a row on any null parameter, and their off-support answers are contracted to survive one.
-Covered here so the drivers cannot drift.
+`Uniform` its two-parameter sibling; both repeat the short-circuit rather than share one, so every
+case here runs against all four and the drivers cannot drift apart.
 
 Both plugin shapes are covered: scalar-parameter instances route to the `<method>_scalar` twins,
 column-parameter instances to the per-row plugins.

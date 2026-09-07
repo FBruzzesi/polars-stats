@@ -1,9 +1,13 @@
-"""An invalid present parameter raises, whatever else its row holds.
+"""An invalid present parameter raises, whatever else its row holds; a null one nulls every answer.
 
 `NaN`, `+inf` and `-inf` in any float parameter slot raise `ComputeError` on every method, beside a
 `NaN` or null evaluation point and beside a null sibling parameter alike; so does a finite value
 outside the slot's domain beside a null sibling. Validation runs over the parameter column before any
 row is built, so it cannot depend on what else is null on the row.
+
+A null parameter is answered before the evaluation point is read, so every method nulls at a finite,
+`NaN`, null and off-support point alike. Neither an off-support constant nor the `NaN` short-circuit
+outranks a missing parameter.
 
 Value-keyed methods go through the private `_x` hooks: on polars >= 1.44 the public wrapper
 `propagate_null_and_nan` masks the plugin out of the null and `NaN` rows before it can validate.
@@ -18,7 +22,17 @@ from dataclasses import dataclass
 import polars as pl
 import pytest
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    DiscreteUniform,
+    Exponential,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 from polars_stats.distributions._base import DiscreteDistribution, _UnivariateDistribution
 
 
@@ -28,6 +42,8 @@ class _Dist:
     dist: _UnivariateDistribution
     valid: dict[str, float]
     integer: frozenset[str] = frozenset()
+    off_support: float | None = None
+    """A point off the support, or `None` where the support is the whole line."""
 
     @property
     def float_slots(self) -> tuple[str, ...]:
@@ -41,14 +57,27 @@ class _Dist:
 
 
 _DISTS: tuple[_Dist, ...] = (
-    _Dist("Bernoulli", Bernoulli(p=pl.col("p")), {"p": 0.5}),
-    _Dist("Binomial", Binomial(n=pl.col("n"), p=pl.col("p")), {"n": 10, "p": 0.5}, integer=frozenset({"n"})),
-    _Dist("Beta", Beta(a=pl.col("a"), b=pl.col("b")), {"a": 2.0, "b": 3.0}),
-    _Dist("Exponential", Exponential(rate=pl.col("rate")), {"rate": 1.0}),
-    _Dist("Geometric", Geometric(p=pl.col("p")), {"p": 0.5}),
+    _Dist("Bernoulli", Bernoulli(p=pl.col("p")), {"p": 0.5}, off_support=2.0),
+    _Dist(
+        "Binomial",
+        Binomial(n=pl.col("n"), p=pl.col("p")),
+        {"n": 10, "p": 0.5},
+        integer=frozenset({"n"}),
+        off_support=-1.0,
+    ),
+    _Dist("Beta", Beta(a=pl.col("a"), b=pl.col("b")), {"a": 2.0, "b": 3.0}, off_support=2.0),
+    _Dist("Exponential", Exponential(rate=pl.col("rate")), {"rate": 1.0}, off_support=-1.0),
+    _Dist("Geometric", Geometric(p=pl.col("p")), {"p": 0.5}, off_support=0.0),
     _Dist("Normal", Normal(mu=pl.col("mu"), sigma=pl.col("sigma")), {"mu": 0.0, "sigma": 1.0}),
-    _Dist("LogNormal", LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma")), {"mu": 0.0, "sigma": 1.0}),
-    _Dist("Uniform", Uniform(min=pl.col("min"), max=pl.col("max")), {"min": 0.0, "max": 1.0}),
+    _Dist("LogNormal", LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma")), {"mu": 0.0, "sigma": 1.0}, off_support=-1.0),
+    _Dist("Uniform", Uniform(min=pl.col("min"), max=pl.col("max")), {"min": 0.0, "max": 1.0}, off_support=5.0),
+    _Dist(
+        "DiscreteUniform",
+        DiscreteUniform(min=pl.col("min"), max=pl.col("max")),
+        {"min": 0, "max": 5},
+        integer=frozenset({"min", "max"}),
+        off_support=10.0,
+    ),
 )
 _BY_NAME = {dist.name: dist for dist in _DISTS}
 
@@ -119,3 +148,28 @@ def test_invalid_parameter_beside_a_null_sibling_raises(name: str, slot: str, ba
     (sibling,) = (other for other in dist.valid if other != slot)
     unreported = _unreported(dist, {slot: bad, sibling: None}, slot)
     assert not unreported, f"{name} did not report `{slot} must be` beside a null `{sibling}`: {unreported}"
+
+
+def _answered(dist: _Dist, slot: str) -> list[str]:
+    """Every method that answers something other than null with `slot` null and the rest valid."""
+    overrides: dict[str, float | None] = {slot: None}
+    points = [0.5, math.nan, None] if dist.off_support is None else [0.5, math.nan, None, dist.off_support]
+    probes = [
+        (f"{hook}(x={x})", dist.frame(overrides, x), getattr(dist.dist, hook)(pl.col("x")))
+        for x in points
+        for hook in _value_hooks(dist.dist)
+    ]
+    row = dist.frame(overrides, 0.5)
+    probes += [(method, row, getattr(dist.dist, method)()) for method in _MOMENTS]
+    probes += [("sample", row, dist.dist.sample(seed=0)), ("samples", row, dist.dist.samples(3, seed=0))]
+    return [label for label, frame, expr in probes if frame.select(r=expr)["r"].item() is not None]
+
+
+@pytest.mark.parametrize(
+    ("dist", "slot"),
+    [pytest.param(dist, slot, id=f"{dist.name}.{slot}") for dist in _DISTS for slot in dist.valid],
+)
+def test_null_parameter_nulls_every_method(dist: _Dist, slot: str) -> None:
+    """Off-support constants and the `NaN` short-circuit included."""
+    answered = _answered(dist, slot)
+    assert not answered, f"{dist.name} answered with a null `{slot}`: {answered}"

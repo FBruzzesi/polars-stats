@@ -4,8 +4,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, expm1, ln_abs_expm1, value_keyed_derived_per_row, value_keyed_derived_scalar,
-    Domain, ParamDomain, Sides,
+    align_inputs, expm1, in_unit_domain, ln_abs_expm1, value_keyed_derived_per_row,
+    value_keyed_derived_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row,
@@ -55,7 +55,7 @@ impl GeometricParamsKwargs {
     fn value_keyed<Branches>(
         &self,
         value: &Series,
-        derive: impl Fn(Option<f64>) -> Branches,
+        derive: impl Fn(f64) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         value_keyed_derived_scalar(value, self.p, &P, derive, select)
@@ -84,12 +84,11 @@ const CDF_DIRECT_COMPLEMENT_MAX: f64 = -20.0;
 /// exactly, down through the `cdf ~ 1 - 1e-16` zone where `cdf.ln()` reads the tail mass as `0`.
 const LN_CDF_LN_1P_MAX: f64 = -1.0;
 
-/// `pmf` / `log_pmf`: `off_support` is a plain `f64` because a point below `1` or a non-integral one
-/// carries no mass whatever `p` is, so a null `p` must not null it; `on_support` is `None` exactly
-/// when `p` is null. Pinned by `tests/distributions/geometric/null_param_test.py`.
+/// `pmf` / `log_pmf`: the constant off the support (below `1`, or a non-integral point), and the arm
+/// `p` derives on it.
 struct Mass<Arm> {
     off_support: f64,
-    on_support: Option<Arm>,
+    on_support: Arm,
 }
 
 impl<Arm: Fn(f64) -> f64> Mass<Arm> {
@@ -98,11 +97,11 @@ impl<Arm: Fn(f64) -> f64> Mass<Arm> {
     /// `0` through the arm instead of saturating. A `NaN` point never reaches here: both drivers
     /// short-circuit it.
     fn at(&self, value: f64) -> Option<f64> {
-        if value >= 1.0 && value.floor() == value {
-            self.on_support.as_ref().map(|arm| arm(value))
+        Some(if value >= 1.0 && value.floor() == value {
+            (self.on_support)(value)
         } else {
-            Some(self.off_support)
-        }
+            self.off_support
+        })
     }
 }
 
@@ -115,10 +114,10 @@ type Tail<Arm> = Sides<Arm, 1>;
 ///
 /// `k = 1` short-circuits the power: its exponent `(k - 1) * ln(1 - p)` is `0 * -inf = NaN` at
 /// `p = 1`, where the whole mass sits on `k = 1`.
-fn derive_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
+fn derive_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     Mass {
         off_support: 0.0,
-        on_support: p.map(|p| {
+        on_support: {
             let ln_failure = ln_failure(p);
             move |k: f64| {
                 if k == 1.0 {
@@ -127,7 +126,7 @@ fn derive_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
                     p * ((k - 1.0) * ln_failure).exp()
                 }
             }
-        }),
+        },
     }
 }
 
@@ -135,10 +134,10 @@ fn derive_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
 ///
 /// Not `ln(pmf)`, whose `ln(1 - p)` collapses to `0.0` below `p ~ 1.1e-16`. `k = 1` reads `ln(p)`
 /// alone, for the same `0 * -inf` reason as [`derive_pmf`].
-fn derive_ln_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
+fn derive_ln_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     Mass {
         off_support: f64::NEG_INFINITY,
-        on_support: p.map(|p| {
+        on_support: {
             let (ln_failure, ln_p) = (ln_failure(p), p.ln());
             move |k: f64| {
                 if k == 1.0 {
@@ -147,7 +146,7 @@ fn derive_ln_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
                     (k - 1.0) * ln_failure + ln_p
                 }
             }
-        }),
+        },
     }
 }
 
@@ -155,10 +154,10 @@ fn derive_ln_pmf(p: Option<f64>) -> Mass<impl Fn(f64) -> f64> {
 ///
 /// Below [`CDF_DIRECT_COMPLEMENT_MAX`] it is the direct `1 - exp(ln_sf)` instead. The literal
 /// `1 - (1 - p)^k` would inherit the rounding of both `1 - p` and the subtraction against `1`.
-fn derive_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
+fn derive_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 0.0,
-        on_support: p.map(|p| {
+        on_support: {
             let ln_failure = ln_failure(p);
             move |k: f64| {
                 let ln_sf = k.floor() * ln_failure;
@@ -168,7 +167,7 @@ fn derive_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
                     -expm1(ln_sf)
                 }
             }
-        }),
+        },
     }
 }
 
@@ -177,10 +176,10 @@ fn derive_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
 /// Split at [`LN_CDF_LN_1P_MAX`], where the answer's own magnitude stops dwarfing the absolute
 /// granularity of the pieces: below it `ln_1p` carries the difference from `1` exactly, above it
 /// [`ln_abs_expm1`] assembles the answer on the log scale so the rounding stays relative.
-fn derive_ln_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
+fn derive_ln_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: f64::NEG_INFINITY,
-        on_support: p.map(|p| {
+        on_support: {
             let ln_failure = ln_failure(p);
             move |k: f64| {
                 let ln_sf = k.floor() * ln_failure;
@@ -190,7 +189,7 @@ fn derive_ln_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
                     ln_abs_expm1(ln_sf)
                 }
             }
-        }),
+        },
     }
 }
 
@@ -198,24 +197,24 @@ fn derive_ln_cdf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
 ///
 /// Never `1 - cdf`, which recomputes `p` as `1 - (1 - p)` and so quantises it to the `1.1e-16`
 /// spacing of `1.0`, reaching `0.0` below that.
-fn derive_sf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
+fn derive_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 1.0,
-        on_support: p.map(|p| {
+        on_support: {
             let ln_failure = ln_failure(p);
             move |k: f64| (k.floor() * ln_failure).exp()
-        }),
+        },
     }
 }
 
 /// `ln(sf) = floor(k) * ln(1 - p)` from `1` up, `0` below.
-fn derive_ln_sf(p: Option<f64>) -> Tail<impl Fn(f64) -> f64> {
+fn derive_ln_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 0.0,
-        on_support: p.map(|p| {
+        on_support: {
             let ln_failure = ln_failure(p);
             move |k: f64| k.floor() * ln_failure
-        }),
+        },
     }
 }
 
@@ -243,18 +242,14 @@ fn smallest_support_point(log_target: f64, ln_failure: f64) -> f64 {
 /// `1` is the only correct answer. `q = 1` runs the ratio off to `+inf`, right for an unbounded
 /// support. `p = 1` short-circuits before [`smallest_support_point`], where the ratio would be
 /// `-inf / -inf = NaN`.
-fn derive_ppf(p: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
-    Domain {
-        inside: p.map(|p| {
-            let ln_failure = ln_failure(p);
-            move |quantile: f64| {
-                if p == 1.0 {
-                    1.0
-                } else {
-                    smallest_support_point((-quantile).ln_1p(), ln_failure)
-                }
-            }
-        }),
+fn derive_ppf(p: f64) -> impl Fn(f64) -> f64 {
+    let ln_failure = ln_failure(p);
+    move |quantile: f64| {
+        if p == 1.0 {
+            1.0
+        } else {
+            smallest_support_point((-quantile).ln_1p(), ln_failure)
+        }
     }
 }
 
@@ -264,18 +259,14 @@ fn derive_ppf(p: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
 /// before the inverse runs. `q = 1` degenerates to `-0.0` and `q = 0` flows through as `+inf`. At
 /// `p = 1` every survival quantile inverts to `k = 1`, `q = 0` included, since `sf(1) = 0` already
 /// satisfies the inequality.
-fn derive_isf(p: Option<f64>) -> Domain<impl Fn(f64) -> f64> {
-    Domain {
-        inside: p.map(|p| {
-            let ln_failure = ln_failure(p);
-            move |quantile: f64| {
-                if p == 1.0 {
-                    1.0
-                } else {
-                    smallest_support_point(quantile.ln(), ln_failure)
-                }
-            }
-        }),
+fn derive_isf(p: f64) -> impl Fn(f64) -> f64 {
+    let ln_failure = ln_failure(p);
+    move |quantile: f64| {
+        if p == 1.0 {
+            1.0
+        } else {
+            smallest_support_point(quantile.ln(), ln_failure)
+        }
     }
 }
 
@@ -319,13 +310,13 @@ fn geometric_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise ppf (inverse cdf); see [`derive_ppf`] and [`smallest_support_point`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ppf, Domain::at)
+    value_keyed_derived_per_row(inputs, &P, derive_ppf, in_unit_domain)
 }
 
 /// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn geometric_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_isf, Domain::at)
+    value_keyed_derived_per_row(inputs, &P, derive_isf, in_unit_domain)
 }
 
 /// Constant-`p` fast path for [`geometric_pmf`].
@@ -376,13 +367,13 @@ fn geometric_ln_sf_scalar(
 /// Constant-`p` fast path for [`geometric_ppf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_ppf, Domain::at)
+    kwargs.value_keyed(&inputs[0], derive_ppf, in_unit_domain)
 }
 
 /// Constant-`p` fast path for [`geometric_isf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_isf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], derive_isf, Domain::at)
+    kwargs.value_keyed(&inputs[0], derive_isf, in_unit_domain)
 }
 
 /// One Geometric draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

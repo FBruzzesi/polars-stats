@@ -27,8 +27,7 @@ class Bernoulli(DiscreteDistribution):
     An invalid ``p`` (``p < 0``, ``p > 1`` or ``NaN``) is not checked at construction; matching every other
     distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
 
-    A null ``p`` propagates to null wherever the result depends on ``p``; the off-support constants
-    (``pmf(2) = 0``, ``cdf(-1) = 0``, ``sf(1) = 0``) do not.
+    A null ``p`` nulls every method, on the support and off it.
 
     The value-keyed methods compute in Rust, so an invalid ``p`` is reported whichever branch the
     value selects. The moments stay in Polars, reading ``p`` through the same Rust validator.

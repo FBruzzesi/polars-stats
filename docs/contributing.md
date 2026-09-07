@@ -177,7 +177,8 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           non-generic and `derive` is an associated constructor (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`,
           `uniform.rs`'s `Density::pdf`); where a branch still depends on the evaluation point, the table carries an
           `Arm` type parameter and `derive` is a free function (`exponential.rs`'s and `geometric.rs`'s `derive_cdf`
-          over the shared `Sides<Arm, FLOOR>` in `mod.rs`, `uniform.rs`'s `derive_cdf` / `Regions::at`). The Polars
+          over the shared `Sides<Arm, FLOOR>` in `mod.rs`, `uniform.rs`'s `derive_cdf` / `Regions::at`). An inverse
+          needs no table at all: `derive` returns the arm and `select` is the shared `in_unit_domain`. The Polars
           expression it replaces computed `1 - p` once on a
           length-1 literal and broadcast it; a body that recomputes per row regressed the constant-parameter path by
           up to 195% at 10M rows. `derive` runs once per call on the constant path and once per row when a parameter
@@ -186,10 +187,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           `value_keyed_derived_scalar` in `src/distributions/mod.rs`. A two-parameter one takes
           `value_keyed_derived_pair_per_row` beside them, and keeps its constant-parameter twin local
           (`UniformParamsKwargs::value_keyed`) until a second distribution needs it; both plugin shells are still one
-          line and neither names a driver internal. They are not `value_keyed_per_row`, which nulls a row on **any**
-          null input: a null parameter has to reach `derive` as `None` so the branches whose answer carries no
-          parameter still
-          answer (`Bernoulli.pmf(2) = 0`, `Exponential.cdf(-1) = 0`, `Uniform.pdf` above a known `max`).
+          line and neither names a driver internal. They are not `value_keyed_per_row`, which builds a `statrs`
+          distribution per row: `derive` takes plain `f64`s and hoists the parameter-only terms out of the loop.
+          Every driver nulls a row on any null parameter, before it reads the evaluation point.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
       `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
       constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its
