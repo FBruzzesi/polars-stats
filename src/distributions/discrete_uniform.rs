@@ -4,7 +4,9 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
 use statrs::distribution::DiscreteUniform;
 
-use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, PairDomain};
+use crate::distributions::{
+    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, PairDomain,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_i64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -297,11 +299,9 @@ fn isf_value(s: &Support, q: f64) -> Option<f64> {
     Some(chosen.clamp(lo, hi))
 }
 
-/// The evaluation-point column in the arithmetic its dtype earns: floats (and an all-null `Null`
-/// column) run the `Float64` path, integer dtypes stay exact. `UInt64` keeps its own accessor so a
-/// value above `i64::MAX` reaches [`Point::Int`] via `i128` instead of failing a cast; every other
-/// integer dtype fits `Int64`. A non-numeric column is refused, as polars itself refuses it in the
-/// expression forms.
+/// The evaluation-point column in the arithmetic its dtype earns: integer dtypes stay exact, with
+/// `UInt64` on its own accessor so a value above `i64::MAX` reaches [`Point::Int`] via `i128`;
+/// everything else goes through [`coerce_f64`].
 enum Points {
     Float(Float64Chunked),
     Int(Int64Chunked),
@@ -310,20 +310,13 @@ enum Points {
 
 fn coerce_points(value: &Series) -> PolarsResult<Points> {
     let dtype = value.dtype();
-    if dtype.is_float() || dtype == &DataType::Null {
-        return Ok(Points::Float(
-            value.cast(&DataType::Float64)?.f64()?.clone(),
-        ));
-    }
     if dtype == &DataType::UInt64 {
         return Ok(Points::Wide(value.u64()?.clone()));
     }
     if dtype.is_integer() {
         return Ok(Points::Int(value.cast(&DataType::Int64)?.i64()?.clone()));
     }
-    Err(PolarsError::InvalidOperation(
-        format!("value must be a numeric column, got {dtype}").into(),
-    ))
+    Ok(Points::Float(coerce_f64(value)?))
 }
 
 /// Apply a closed-form `f(support, point)` element-wise over `(value, min, max)`; shared by the
@@ -421,12 +414,12 @@ fn discreteuniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
+    let value = coerce_f64(&inputs[0])?;
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
     BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
-        value.f64()?,
+        &value,
         &min,
         &max,
         inputs[0].name().clone(),
@@ -439,12 +432,12 @@ fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
+    let value = coerce_f64(&inputs[0])?;
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
     BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
-        value.f64()?,
+        &value,
         &min,
         &max,
         inputs[0].name().clone(),

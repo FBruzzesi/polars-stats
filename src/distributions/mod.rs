@@ -60,6 +60,20 @@ pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>>
     ))
 }
 
+/// The dtype gate for every evaluation point and float parameter: `Int*`, `UInt*`, `Float*` and
+/// `Decimal` cast to `Float64`, a `Null`-typed column casts to all-null, and any other dtype raises
+/// `ComputeError` naming the input. Polars' own cast is no gate: it reads `Boolean` as `0` / `1`,
+/// parses `String` non-strictly and takes a temporal dtype's integer representation.
+pub(crate) fn coerce_f64(input: &Series) -> PolarsResult<Float64Chunked> {
+    let dtype = input.dtype();
+    polars_ensure!(
+        dtype.is_numeric() || dtype.is_null(),
+        ComputeError: "'{}' must be a numeric column (Int*, UInt*, Float*, Decimal), got {}",
+        input.name(), dtype
+    );
+    Ok(input.cast(&DataType::Float64)?.f64()?.clone())
+}
+
 /// What one float parameter must satisfy on its own, checked once per call: [`Self::check`] on a
 /// constant, [`Self::check_column`] over the whole column before any row is built.
 ///
@@ -166,11 +180,10 @@ pub(crate) fn value_keyed_scalar<F>(value: &Series, f: F) -> PolarsResult<Series
 where
     F: Fn(f64) -> Option<f64>,
 {
-    let value = value.cast(&DataType::Float64)?;
-    let value_ca = value.f64()?;
-    let name = value_ca.name().clone();
+    let value = coerce_f64(value)?;
+    let name = value.name().clone();
 
-    let ca: Float64Chunked = unary_elementwise(value_ca, |opt| {
+    let ca: Float64Chunked = unary_elementwise(&value, |opt| {
         opt.and_then(|v| if v.is_nan() { Some(f64::NAN) } else { f(v) })
     });
     Ok(ca.with_name(name).into_series())
@@ -279,13 +292,12 @@ where
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let param = inputs[1].cast(&DataType::Float64)?;
-    let param_ca = param.f64()?;
+    let value = coerce_f64(&inputs[0])?;
+    let param = coerce_f64(&inputs[1])?;
     let name = inputs[0].name().clone();
-    domain.check_column(param_ca)?;
+    domain.check_column(&param)?;
 
-    let ca: Float64Chunked = binary_elementwise(value.f64()?, param_ca, |value_opt, param_opt| {
+    let ca: Float64Chunked = binary_elementwise(&value, &param, |value_opt, param_opt| {
         let param = param_opt?;
         let value = value_opt?;
         if value.is_nan() {
@@ -377,15 +389,14 @@ where
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let param_a = inputs[1].cast(&DataType::Float64)?;
-    let param_b = inputs[2].cast(&DataType::Float64)?;
-    let (a_ca, b_ca) = (param_a.f64()?, param_b.f64()?);
+    let value = coerce_f64(&inputs[0])?;
+    let param_a = coerce_f64(&inputs[1])?;
+    let param_b = coerce_f64(&inputs[2])?;
     let name = inputs[0].name().clone();
-    check_params(a_ca, b_ca)?;
+    check_params(&param_a, &param_b)?;
 
     let ca: Float64Chunked =
-        ternary_elementwise(value.f64()?, a_ca, b_ca, |value_opt, a_opt, b_opt| {
+        ternary_elementwise(&value, &param_a, &param_b, |value_opt, a_opt, b_opt| {
             let (a, b) = (a_opt?, b_opt?);
             let value = value_opt?;
             if value.is_nan() {

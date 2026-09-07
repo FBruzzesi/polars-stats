@@ -4,7 +4,7 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, expm1, ln_abs_expm1, on_unit_interval, value_keyed_derived_per_row,
+    align_inputs, coerce_f64, expm1, ln_abs_expm1, on_unit_interval, value_keyed_derived_per_row,
     value_keyed_derived_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
@@ -66,9 +66,9 @@ impl GeometricParamsKwargs {
 /// invalid `p` raises as it does from `geometric_sample`.
 #[polars_expr(output_type=Float64)]
 fn geometric_p(inputs: &[Series]) -> PolarsResult<Series> {
-    let proba = inputs[0].cast(&DataType::Float64)?;
-    P.check_column(proba.f64()?)?;
-    Ok(proba)
+    let proba = coerce_f64(&inputs[0])?;
+    P.check_column(&proba)?;
+    Ok(proba.into_series())
 }
 
 /// Crossover of [`derive_cdf`], in units of `ln(sf)`.
@@ -402,19 +402,12 @@ fn draw(ln_failure: &f64, rng: &mut impl rand::Rng) -> u64 {
 #[polars_expr(output_type=UInt64)]
 fn geometric_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let proba = inputs[0].cast(&DataType::Float64)?;
+    let proba = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(proba.f64()?)?;
+    P.check_column(&proba)?;
 
-    sample_per_row_binary(
-        name,
-        proba.f64()?,
-        index.u64()?,
-        kwargs.seed,
-        build_sampler,
-        draw,
-    )
+    sample_per_row_binary(name, &proba, index.u64()?, kwargs.seed, build_sampler, draw)
 }
 
 /// Constant-parameter fast path for [`geometric_sample`].
@@ -453,12 +446,12 @@ fn geometric_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn geometric_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let proba = inputs[0].cast(&DataType::Float64)?;
+    let proba = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(proba.f64()?)?;
+    P.check_column(&proba)?;
 
-    let rows = binary_param_rows(proba.f64()?, index.u64()?, build_sampler);
+    let rows = binary_param_rows(&proba, index.u64()?, build_sampler);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

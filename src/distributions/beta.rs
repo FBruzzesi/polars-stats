@@ -5,7 +5,9 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, ParamDomain};
+use crate::distributions::{
+    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -61,14 +63,11 @@ impl BetaParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let a = inputs[0].cast(&DataType::Float64)?;
-    let b = inputs[1].cast(&DataType::Float64)?;
-    check_params(a.f64()?, b.f64()?)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
+    check_params(&a, &b)?;
 
-    let ca: Float64Chunked =
-        binary_elementwise(a.f64()?, b.f64()?, |a: Option<f64>, b: Option<f64>| {
-            a.and(b)
-        });
+    let ca: Float64Chunked = binary_elementwise(&a, &b, |a: Option<f64>, b: Option<f64>| a.and(b));
     Ok(ca.into_series())
 }
 
@@ -79,19 +78,12 @@ where
     F: Fn(&Beta, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let a = inputs[1].cast(&DataType::Float64)?;
-    let b = inputs[2].cast(&DataType::Float64)?;
-    check_params(a.f64()?, b.f64()?)?;
+    let value = coerce_f64(&inputs[0])?;
+    let a = coerce_f64(&inputs[1])?;
+    let b = coerce_f64(&inputs[2])?;
+    check_params(&a, &b)?;
 
-    value_keyed_per_row(
-        value.f64()?,
-        a.f64()?,
-        b.f64()?,
-        inputs[0].name().clone(),
-        build_dist,
-        f,
-    )
+    value_keyed_per_row(&value, &a, &b, inputs[0].name().clone(), build_dist, f)
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(a, b)`.
@@ -105,17 +97,16 @@ where
     F: Fn(&Beta) -> f64,
 {
     let inputs = align_inputs(inputs)?;
-    let a = inputs[0].cast(&DataType::Float64)?;
-    let b = inputs[1].cast(&DataType::Float64)?;
-    check_params(a.f64()?, b.f64()?)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
+    check_params(&a, &b)?;
 
-    let ca: Float64Chunked =
-        try_binary_elementwise(a.f64()?, b.f64()?, |a, b| -> PolarsResult<Option<f64>> {
-            match (a, b) {
-                (Some(a), Some(b)) => Ok(Some(f(&build_dist(a, b)?))),
-                _ => Ok(None),
-            }
-        })?;
+    let ca: Float64Chunked = try_binary_elementwise(&a, &b, |a, b| -> PolarsResult<Option<f64>> {
+        match (a, b) {
+            (Some(a), Some(b)) => Ok(Some(f(&build_dist(a, b)?))),
+            _ => Ok(None),
+        }
+    })?;
     Ok(ca.into_series())
 }
 
@@ -139,21 +130,13 @@ fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let a = inputs[0].cast(&DataType::Float64)?;
-    let b = inputs[1].cast(&DataType::Float64)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(a.f64()?, b.f64()?)?;
+    check_params(&a, &b)?;
 
-    sample_per_row_ternary(
-        name,
-        a.f64()?,
-        b.f64()?,
-        index.u64()?,
-        kwargs.seed,
-        build_dist,
-        draw,
-    )
+    sample_per_row_ternary(name, &a, &b, index.u64()?, kwargs.seed, build_dist, draw)
 }
 
 /// Constant-parameter fast path for [`beta_sample`].
@@ -192,13 +175,13 @@ fn beta_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let a = inputs[0].cast(&DataType::Float64)?;
-    let b = inputs[1].cast(&DataType::Float64)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(a.f64()?, b.f64()?)?;
+    check_params(&a, &b)?;
 
-    let rows = ternary_param_rows(a.f64()?, b.f64()?, index.u64()?, build_dist);
+    let rows = ternary_param_rows(&a, &b, index.u64()?, build_dist);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
@@ -274,6 +257,18 @@ fn beta_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
+/// `ppf(1 - q)`, so the endpoints reverse (`isf(0) = 1`, `isf(1) = 0`) and `q` outside `[0, 1]`
+/// yields `null` through [`ppf_value`].
+fn isf_value(dist: &Beta, q: f64) -> Option<f64> {
+    ppf_value(dist, 1.0 - q)
+}
+
+/// Element-wise inverse survival function; see [`isf_value`].
+#[polars_expr(output_type=Float64)]
+fn beta_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, isf_value)
+}
+
 /// Constant-parameter fast path for [`beta_pdf`].
 #[polars_expr(output_type=Float64)]
 fn beta_pdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
@@ -302,6 +297,12 @@ fn beta_sf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<S
 #[polars_expr(output_type=Float64)]
 fn beta_ppf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ppf_value)
+}
+
+/// Constant-parameter fast path for [`beta_isf`].
+#[polars_expr(output_type=Float64)]
+fn beta_isf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], isf_value)
 }
 
 /// Element-wise differential entropy (in nats) via `statrs` `Distribution::entropy`:

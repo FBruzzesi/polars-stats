@@ -4,8 +4,8 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 
 use crate::distributions::{
-    align_inputs, on_unit_interval, value_keyed_derived_pair_per_row, value_keyed_scalar,
-    PairDomain, ParamDomain,
+    align_inputs, coerce_f64, on_unit_interval, value_keyed_derived_pair_per_row,
+    value_keyed_scalar, PairDomain, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
@@ -389,16 +389,16 @@ fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let min = inputs[0].cast(&DataType::Float64)?;
-    let max = inputs[1].cast(&DataType::Float64)?;
+    let min = coerce_f64(&inputs[0])?;
+    let max = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(min.f64()?, max.f64()?)?;
+    check_params(&min, &max)?;
 
     sample_per_row_ternary(
         name,
-        min.f64()?,
-        max.f64()?,
+        &min,
+        &max,
         index.u64()?,
         kwargs.seed,
         checked_bounds,
@@ -445,13 +445,13 @@ fn uniform_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let min = inputs[0].cast(&DataType::Float64)?;
-    let max = inputs[1].cast(&DataType::Float64)?;
+    let min = coerce_f64(&inputs[0])?;
+    let max = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(min.f64()?, max.f64()?)?;
+    check_params(&min, &max)?;
 
-    let rows = ternary_param_rows(min.f64()?, max.f64()?, index.u64()?, checked_bounds);
+    let rows = ternary_param_rows(&min, &max, index.u64()?, checked_bounds);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, |&(lo, hi), rng| {
         draw_half_open(lo, hi, rng)
@@ -469,14 +469,12 @@ fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Ser
 #[polars_expr(output_type=Float64)]
 fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let min = inputs[0].cast(&DataType::Float64)?;
-    let max = inputs[1].cast(&DataType::Float64)?;
-    check_params(min.f64()?, max.f64()?)?;
+    let min = coerce_f64(&inputs[0])?;
+    let max = coerce_f64(&inputs[1])?;
+    check_params(&min, &max)?;
 
-    let ca: Float64Chunked = binary_elementwise(
-        min.f64()?,
-        max.f64()?,
-        |lo: Option<f64>, hi: Option<f64>| Some(hi? - lo?),
-    );
+    let ca: Float64Chunked = binary_elementwise(&min, &max, |lo: Option<f64>, hi: Option<f64>| {
+        Some(hi? - lo?)
+    });
     Ok(ca.into_series())
 }
