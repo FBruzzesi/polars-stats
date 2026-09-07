@@ -1,6 +1,10 @@
+"""A null `rate` nulls every answer on the support, where the answer reads the rate directly.
+
+Off-support, `NaN` and null evaluation points live in `null_nan_contract_test.py`.
+"""
+
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -11,10 +15,7 @@ from polars_stats import Exponential
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Every closed-form method must propagate a null rate to a null result. The value-keyed methods are
-# evaluated at an on-support point (`x >= 0`, `q in [0, 1]`) where the rate enters the formula, so the
-# null flows through; below the support they return the rate-independent support constant instead (see
-# `test_value_keyed_below_support_ignores_null_rate`).
+# The value-keyed methods are evaluated at an on-support point (`x >= 0`, `q in [0, 1]`).
 _METHODS: dict[str, Callable[[Exponential], pl.Expr]] = {
     "pdf": lambda e: e.pdf(pl.lit(0.5)),
     "log_pdf": lambda e: e.log_pdf(pl.lit(0.5)),
@@ -39,35 +40,8 @@ def test_method_propagates_null_in_rate(expr_fn: Callable[[Exponential], pl.Expr
     assert result.is_null().to_list() == [False, True, False]
 
 
-def test_value_keyed_below_support_ignores_null_rate() -> None:
-    # Closed-form trait shared with Uniform: below the support all six value-keyed methods return the
-    # rate-independent support constant, so a null rate does NOT null the row there. statrs-backed
-    # distributions (Binomial) null it instead. Bernoulli keeps the same contract in Rust
-    # (tests/distributions/bernoulli/null_param_test.py).
-    df = pl.DataFrame({"rate": [1.0, None, 2.0]}, schema={"rate": pl.Float64})
-    e = Exponential(rate=pl.col("rate"))
-    assert df.select(r=e.pdf(pl.lit(-1.0)))["r"].to_list() == [0.0, 0.0, 0.0]
-    assert df.select(r=e.cdf(pl.lit(-1.0)))["r"].to_list() == [0.0, 0.0, 0.0]
-    assert df.select(r=e.sf(pl.lit(-1.0)))["r"].to_list() == [1.0, 1.0, 1.0]
-    assert df.select(r=e.log_pdf(pl.lit(-1.0)))["r"].to_list() == [-math.inf] * 3
-    assert df.select(r=e.log_cdf(pl.lit(-1.0)))["r"].to_list() == [-math.inf] * 3
-    assert df.select(r=e.log_sf(pl.lit(-1.0)))["r"].to_list() == [0.0, 0.0, 0.0]
-
-
 @pytest.mark.parametrize("method", ["ppf", "isf"])
 @pytest.mark.parametrize("quantile", [0.0, 0.5, 1.0, 2.0])
 def test_inverse_nulls_under_a_null_rate(method: str, quantile: float) -> None:
-    """Endpoints as well as interior: neither inverse has a rate-free branch anywhere in its domain."""
     df = pl.DataFrame({"rate": [None]}, schema={"rate": pl.Float64})
     assert df.select(r=getattr(Exponential(rate=pl.col("rate")), method)(quantile))["r"].item() is None
-
-
-def test_nan_value_stays_nan_under_a_null_rate() -> None:
-    """A `NaN` evaluation point short-circuits before the branches, so a null rate does not null it.
-
-    Reached through the private hook, since the public wrapper answers `NaN` on its own. Without the
-    short-circuit `NaN` would land on the support (it is not `< 0`) and the null rate would null it.
-    """
-    df = pl.DataFrame({"rate": [None]}, schema={"rate": pl.Float64})
-    result = df.select(r=Exponential(rate=pl.col("rate"))._pdf(pl.lit(math.nan)))["r"].item()
-    assert math.isnan(result)

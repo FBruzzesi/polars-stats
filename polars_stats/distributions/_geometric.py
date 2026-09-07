@@ -30,10 +30,9 @@ class Geometric(DiscreteDistribution):
 
     An invalid ``p`` (``p <= 0``, ``p > 1`` or ``NaN``) is not checked at construction; matching every
     other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is
-    evaluated. A null ``p`` propagates to null wherever the result depends on ``p``; the off-support
-    constants (``pmf(0) = 0``, ``cdf(0) = 0``, ``sf(0) = 1``, and ``pmf`` at any non-integral point)
-    do not, as in ``Bernoulli``. Samples are ``UInt64`` trial counts, so unlike ``Bernoulli`` the
-    degenerate ``p = 0`` point mass is not representable.
+    evaluated. A null ``p`` nulls every method, on the support and off it.
+    Samples are ``UInt64`` trial counts, so unlike ``Bernoulli`` the degenerate ``p = 0`` point mass
+    is not representable.
 
     The value-keyed methods compute in Rust, so an invalid ``p`` is reported whichever branch the
     value selects. The moments stay in Polars, reading ``p`` through the same Rust validator.

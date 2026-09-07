@@ -179,8 +179,7 @@ where
 /// Constant-parameter twin of [`value_keyed_derived_per_row`], over [`value_keyed_scalar`].
 ///
 /// Checks the parameter against `domain` and derives once per call, then maps `select` over the
-/// evaluation-point column. The Python side routes here only once the parameter is a Python scalar,
-/// so `derive` always sees `Some`, and the parameter-only terms it hoists (`Bernoulli`'s `1 - p`,
+/// evaluation-point column, so the parameter-only terms `derive` hoists (`Bernoulli`'s `1 - p`,
 /// `Exponential`'s `ln(rate)`) are computed once instead of per row.
 pub(crate) fn value_keyed_derived_scalar<Branches, Derive, Select>(
     value: &Series,
@@ -190,11 +189,11 @@ pub(crate) fn value_keyed_derived_scalar<Branches, Derive, Select>(
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Derive: Fn(Option<f64>) -> Branches,
+    Derive: Fn(f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     domain.check(param)?;
-    let branches = derive(Some(param));
+    let branches = derive(param);
     value_keyed_scalar(value, |v| select(&branches, v))
 }
 
@@ -261,11 +260,9 @@ where
 /// `domain`'s column pass runs once before any row is built, so nothing inside the row loop
 /// validates.
 ///
-/// Null contract, and the reason this is not [`value_keyed_per_row`]: that driver nulls the row on
-/// **any** null input, which is right for a `statrs`-backed distribution and wrong here. A null
-/// parameter reaches `derive` as `None`, so the branches whose answer is a parameter-free constant
-/// still answer: `Bernoulli`'s `pmf(2) = 0` and `Exponential`'s `cdf(-1) = 0` survive a null
-/// parameter, pinned by each distribution's `null_param(s)_test.py`. A null **value** nulls the row.
+/// Null contract: a null parameter nulls the row before the evaluation point is read; then a null
+/// value nulls it. `select` returning `None` nulls it on the method's own terms (`ppf` outside
+/// `[0, 1]`).
 ///
 /// `NaN` contract: a `NaN` value short-circuits to `NaN`, as in [`value_keyed_scalar`].
 ///
@@ -278,7 +275,7 @@ pub(crate) fn value_keyed_derived_per_row<Branches, Derive, Select>(
     select: Select,
 ) -> PolarsResult<Series>
 where
-    Derive: Fn(Option<f64>) -> Branches,
+    Derive: Fn(f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
@@ -289,11 +286,12 @@ where
     domain.check_column(param_ca)?;
 
     let ca: Float64Chunked = binary_elementwise(value.f64()?, param_ca, |value_opt, param_opt| {
+        let param = param_opt?;
         let value = value_opt?;
         if value.is_nan() {
             Some(f64::NAN)
         } else {
-            select(&derive(param_opt), value)
+            select(&derive(param), value)
         }
     });
 
@@ -328,15 +326,11 @@ pub(crate) fn ln_abs_expm1(t: f64) -> f64 {
 }
 
 /// The two sides of a support whose floor is the integer `FLOOR`, for the value-keyed methods of a
-/// distribution that computes its own closed form.
-///
-/// Below the floor every answer is a parameter-free constant, so a null parameter must not null it:
-/// `below_support` is a plain `f64`, leaving nothing to thread the parameter through by accident.
-/// `on_support` is `None` exactly when the parameter is null. Each distribution's
-/// `null_param(s)_test.py` pins its constants.
+/// distribution that computes its own closed form: a constant below the floor, the parameter's arm
+/// on it.
 pub(crate) struct Sides<Arm, const FLOOR: i8> {
     pub(crate) below_support: f64,
-    pub(crate) on_support: Option<Arm>,
+    pub(crate) on_support: Arm,
 }
 
 impl<Arm: Fn(f64) -> f64, const FLOOR: i8> Sides<Arm, FLOOR> {
@@ -345,47 +339,32 @@ impl<Arm: Fn(f64) -> f64, const FLOOR: i8> Sides<Arm, FLOOR> {
     /// A `NaN` value never reaches here: every driver short-circuits it. That is what lets this be a
     /// bare `<`; the `!(value >= FLOOR)` a negated predicate would spell puts `NaN` below the support.
     pub(crate) fn at(&self, value: f64) -> Option<f64> {
-        if value < f64::from(FLOOR) {
-            Some(self.below_support)
+        Some(if value < f64::from(FLOOR) {
+            self.below_support
         } else {
-            self.on_support.as_ref().map(|arm| arm(value))
-        }
+            (self.on_support)(value)
+        })
     }
 }
 
-/// The closed quantile domain `[0, 1]`, for the inverses of a distribution that computes its own
-/// closed form rather than building a `statrs` one.
+/// The `select` every inverse shares: the arm on the closed quantile interval `[0, 1]`, `None`
+/// (null) outside it. `-0.0` is inside, since `-0.0 == 0.0`.
 ///
-/// One slot rather than the two a support needs, because no part of either inverse survives a
-/// null parameter, at any quantile in range or out; each distribution's `null_param(s)_test.py` pins
-/// it.
-pub(crate) struct Domain<Arm> {
-    pub(crate) inside: Option<Arm>,
-}
-
-impl<Arm: Fn(f64) -> f64> Domain<Arm> {
-    /// `None` (null) outside `[0, 1]`; `-0.0` is inside, since `-0.0 == 0.0`.
-    ///
-    /// A `NaN` quantile never reaches here: every driver short-circuits it, which is what lets this
-    /// be a plain range check.
-    pub(crate) fn at(&self, quantile: f64) -> Option<f64> {
-        if !(0.0..=1.0).contains(&quantile) {
-            return None;
-        }
-        self.inside.as_ref().map(|arm| arm(quantile))
-    }
+/// A `NaN` quantile never reaches here: every driver short-circuits it, which is what lets this be a
+/// plain range check.
+#[inline]
+pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) -> Option<f64> {
+    (0.0..=1.0).contains(&quantile).then(|| arm(quantile))
 }
 
 /// Two-parameter sibling of [`value_keyed_derived_per_row`], over `ternary_elementwise`.
 ///
 /// "Pair" counts the *distribution parameters* (`Uniform`'s two bounds); the driver itself takes
-/// three `Series`. Kept beside the one-parameter version rather than generified over arity, because
-/// `derive` needs both `Option`s in scope to answer from one bound while the other is null.
+/// three `Series`.
 ///
-/// `check_params` is the caller's column pass over the two parameter columns, each bound alone and
-/// the pair together, run once before any row is built. Null and `NaN` contracts as in
-/// [`value_keyed_derived_per_row`], with the parameter half two-sided: the branches a single known
-/// bound already settles still answer.
+/// `check_params` is the caller's column pass over the two parameter columns, each alone and the
+/// pair together, run once before any row is built. Null and `NaN` contracts as in
+/// [`value_keyed_derived_per_row`]: a null in either parameter nulls the row.
 pub(crate) fn value_keyed_derived_pair_per_row<Branches, CheckParams, Derive, Select>(
     inputs: &[Series],
     check_params: CheckParams,
@@ -394,25 +373,27 @@ pub(crate) fn value_keyed_derived_pair_per_row<Branches, CheckParams, Derive, Se
 ) -> PolarsResult<Series>
 where
     CheckParams: Fn(&Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
-    Derive: Fn(Option<f64>, Option<f64>) -> Branches,
+    Derive: Fn(f64, f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
     let value = inputs[0].cast(&DataType::Float64)?;
     let param_a = inputs[1].cast(&DataType::Float64)?;
     let param_b = inputs[2].cast(&DataType::Float64)?;
-    let (a, b) = (param_a.f64()?, param_b.f64()?);
+    let (a_ca, b_ca) = (param_a.f64()?, param_b.f64()?);
     let name = inputs[0].name().clone();
-    check_params(a, b)?;
+    check_params(a_ca, b_ca)?;
 
-    let ca: Float64Chunked = ternary_elementwise(value.f64()?, a, b, |value_opt, a_opt, b_opt| {
-        let value = value_opt?;
-        if value.is_nan() {
-            Some(f64::NAN)
-        } else {
-            select(&derive(a_opt, b_opt), value)
-        }
-    });
+    let ca: Float64Chunked =
+        ternary_elementwise(value.f64()?, a_ca, b_ca, |value_opt, a_opt, b_opt| {
+            let (a, b) = (a_opt?, b_opt?);
+            let value = value_opt?;
+            if value.is_nan() {
+                Some(f64::NAN)
+            } else {
+                select(&derive(a, b), value)
+            }
+        });
 
     Ok(ca.with_name(name).into_series())
 }
