@@ -3,8 +3,8 @@
 Covers every distribution: each has per-method Rust plugins.
 
 `pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
-plugin that validates and builds the `statrs` distribution once (via the shared `build_dist`), instead of rebuilding it
-per row. Two properties of that routing are pinned here, both of which the bit-equality property test
+plugin that validates the parameters and builds the distribution once, instead of per row. Two properties of that
+routing are pinned here, both of which the bit-equality property test
 (`tests/property/value_keyed_test.py`, valid params only) does not exercise:
 
 * **Both paths agree on validation.** For an invalid parameterisation both the fast path and the
@@ -13,11 +13,10 @@ per row. Two properties of that routing are pinned here, both of which the bit-e
   must produce identical output. A non-finite parameter is invalid by the library's own check,
   whether or not `statrs` would accept it. The fast path cannot quietly accept or reject something
   the per-row path does not.
-* **The fast path validates up front.** `build_dist` runs once before any value is touched, so
-  invalid scalar parameters raise even on a zero-row frame; the per-row path validates inside its
-  per-element closure, which never runs on an empty frame, so it returns empty. This divergence is
-  intentional (validate-once, mirroring the sampler fast path) and pinned so it cannot regress
-  silently.
+* **The fast path validates up front.** The scalar check runs once before any value is touched, so
+  invalid scalar parameters raise even on a zero-row frame; the per-row path's column pass sees no
+  value on an empty frame, so it returns empty. This divergence is intentional (validate-once,
+  mirroring the sampler fast path) and pinned so it cannot regress silently.
 
 A Python `None` parameter cannot reach either path: `coerce_param` rejects it as a `TypeError` at construction, covered
 by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here, and none for
@@ -66,6 +65,7 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     "bernoulli p=0 (accepted)": (lambda: Bernoulli(0.0), lambda: Bernoulli(_col(0.0)), False),
     "bernoulli p=1 (accepted)": (lambda: Bernoulli(1.0), lambda: Bernoulli(_col(1.0)), False),
     "normal mu=nan": (lambda: Normal(_NAN, 1.0), lambda: Normal(_col(_NAN), _col(1.0)), True),
+    "normal mu=inf": (lambda: Normal(_INF, 1.0), lambda: Normal(_col(_INF), _col(1.0)), True),
     "normal std=0": (lambda: Normal(0.0, 0.0), lambda: Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (lambda: Normal(0.0, -1.0), lambda: Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (lambda: Normal(0.0, _NAN), lambda: Normal(_col(0.0), _col(_NAN)), True),
@@ -75,6 +75,7 @@ _CASES: dict[str, tuple[Callable[[], _UnivariateDistribution], Callable[[], _Uni
     "lognormal sigma=nan": (lambda: LogNormal(0.0, _NAN), lambda: LogNormal(_col(0.0), _col(_NAN)), True),
     "lognormal sigma=-1": (lambda: LogNormal(0.0, -1.0), lambda: LogNormal(_col(0.0), _col(-1.0)), True),
     "lognormal sigma=inf": (lambda: LogNormal(0.0, _INF), lambda: LogNormal(_col(0.0), _col(_INF)), True),
+    "lognormal mu=inf": (lambda: LogNormal(_INF, 1.0), lambda: LogNormal(_col(_INF), _col(1.0)), True),
     "binomial p=nan": (lambda: Binomial(5, _NAN), lambda: Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
     "binomial p=1.5": (lambda: Binomial(5, 1.5), lambda: Binomial(_col(5, pl.Int64()), _col(1.5)), True),
     "beta a=nan": (lambda: Beta(_NAN, 1.0), lambda: Beta(_col(_NAN), _col(1.0)), True),
@@ -140,10 +141,10 @@ def test_scalar_and_column_paths_agree_on_validation(
 def test_scalar_fast_path_validates_on_empty_input() -> None:
     """The fast path raises on invalid scalar params even with no rows; the per-row path returns empty.
 
-    `build_dist` runs once up front on the fast path, so an invalid scale is caught regardless of
-    input length. The per-row path validates inside the per-element closure, which is never entered
-    on a zero-row frame, so it produces an empty result instead. Pinned because it is the one
-    intended observable difference between the two paths.
+    The scalar check runs once up front on the fast path, so an invalid scale is caught regardless
+    of input length. The per-row path's column pass sees no value on a zero-row frame, so it
+    produces an empty result instead. Pinned because it is the one intended observable difference
+    between the two paths.
     """
     empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
 

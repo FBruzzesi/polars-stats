@@ -19,7 +19,7 @@ def test_construct_scalar_invalid_rate_defers_to_eval(bad_rate: float) -> None:
     # No early Python validation: construction succeeds (matching Uniform / Bernoulli's deferral);
     # the invalid rate surfaces as a ComputeError when a method is evaluated, not a ValueError here.
     Exponential(rate=bad_rate)
-    with pytest.raises(pl.exceptions.ComputeError, match="rate must be strictly positive"):
+    with pytest.raises(pl.exceptions.ComputeError, match="rate must be finite and strictly positive"):
         pl.DataFrame({"x": [0.5]}).select(r=Exponential(rate=bad_rate).pdf(pl.col("x")))
 
 

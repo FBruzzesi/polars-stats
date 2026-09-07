@@ -62,6 +62,7 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 # path applies the library's own finiteness check where `statrs` alone would accept the value.
 _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]] = {
     "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0)), True),
+    "normal mu=inf": (Normal(_INF, 1.0), Normal(_col(_INF), _col(1.0)), True),
     "normal std=0": (Normal(0.0, 0.0), Normal(_col(0.0), _col(0.0)), True),
     "normal std=-1": (Normal(0.0, -1.0), Normal(_col(0.0), _col(-1.0)), True),
     "normal std=nan": (Normal(0.0, _NAN), Normal(_col(0.0), _col(_NAN)), True),
@@ -69,6 +70,7 @@ _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]]
     "lognormal sigma=-1": (LogNormal(0.0, -1.0), LogNormal(_col(0.0), _col(-1.0)), True),
     "lognormal sigma=nan": (LogNormal(0.0, _NAN), LogNormal(_col(0.0), _col(_NAN)), True),
     "lognormal sigma=inf": (LogNormal(0.0, _INF), LogNormal(_col(0.0), _col(_INF)), True),
+    "lognormal mu=inf": (LogNormal(_INF, 1.0), LogNormal(_col(_INF), _col(1.0)), True),
     "uniform max<min": (Uniform(2.0, 1.0), Uniform(_col(2.0), _col(1.0)), True),
     "uniform max=min": (Uniform(1.0, 1.0), Uniform(_col(1.0), _col(1.0)), True),
     "uniform min=nan": (Uniform(_NAN, 1.0), Uniform(_col(_NAN), _col(1.0)), True),
@@ -133,8 +135,8 @@ def test_moment_fast_path_on_empty_frame_is_a_scalar() -> None:
     """On a zero-row frame the scalar moment is still one row, and still validates.
 
     Both follow from the scalar path being built from length-1 literals, exactly as
-    `df.head(0).select(pl.lit(1.0))` is one row. The per-row path validates inside its row closure,
-    which never runs on an empty frame, so it returns empty without raising.
+    `df.head(0).select(pl.lit(1.0))` is one row. The per-row path's column pass sees no value on an
+    empty frame, so it returns empty without raising.
     """
     empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
 

@@ -86,8 +86,8 @@ serves distributions needing a single uniform per draw, so it is deliberately no
 
 `sample` ships a second plugin, `<name>_sample_scalar`, used when every parameter is a Python scalar. The general
 sampler is built for the differentiator (column-valued parameters), but it makes the common constant-parameter case pay
-for machinery it does not use: each scalar is broadcast to a full-length column, marshalled across FFI, and
-re-validated on every row, and the distribution is rebuilt per row. For a cheap draw (uniform is one multiply-add) that
+for machinery it does not use: each scalar is broadcast to a full-length column, marshalled across FFI, checked
+over the whole column, and the distribution is rebuilt per row. For a cheap draw (uniform is one multiply-add) that
 fixed overhead dominates the draw itself.
 
 The fast path passes the constant parameters in `kwargs`, validates and builds the distribution once, and sends only the
@@ -105,8 +105,8 @@ The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; 
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`) so an invalid parameterisation
 raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment
-(see "Invalid parameters raise"). With column parameters that plugin runs over the parameter columns, validating each
-row.
+(see "Invalid parameters raise"). With column parameters that plugin checks each parameter column once, over the
+whole column, before any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
@@ -143,13 +143,15 @@ does not go through `statrs`; every value-keyed method (`pmf`, `cdf`, `ppf`, ...
 
 ### Invalid parameters raise, they never silently null
 
-An invalid parameter value, scalar or one bad column row (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, a
-non-finite bound), maps the `statrs` constructor error through a `ComputeError` and fails the whole evaluation.
+An invalid parameter value, scalar or one bad column row (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, any
+non-finite parameter), raises `ComputeError` from the library's own domain check and fails the whole evaluation. The
+check runs over each parameter column before any row is built, so a null sibling parameter on the same row does not
+hide it.
 
 This reverses an earlier "produce null, keep the pipeline running" decision. Silently nulling hides a modelling error: a
 user who does not check for nulls gets wrong answers downstream, and an invalid-parameter null is indistinguishable from
 a legitimately-null input. Raising is loud, uniform across distributions, and uniform across scalar vs column inputs,
-because scalars are coerced to columns and validated per row exactly like columns. Construction rejects only wrong
+because a scalar and a column pass through the same domain check. Construction rejects only wrong
 *types*. A closed-form distribution cannot raise from a bare `pl.Expr`, so it routes parameters through one small
 validating plugin (see [Architecture / Plugin granularity](architecture.md#plugin-granularity)).
 

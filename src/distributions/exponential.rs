@@ -4,8 +4,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
 use crate::distributions::{
-    align_inputs, expm1, validate_params_unary, value_keyed_derived_per_row,
-    value_keyed_derived_scalar, Domain, ParamDomain, Sides,
+    align_inputs, expm1, value_keyed_derived_per_row, value_keyed_derived_scalar, Domain,
+    ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
@@ -13,23 +13,12 @@ use crate::rng::{
     SamplesScalarKwargs,
 };
 
-/// `rate` alone: strictly positive and finite.
-const RATE: ParamDomain = ParamDomain {
-    name: "rate",
-    domain: "strictly positive and finite",
-    accepts: |rate| rate.is_finite() && rate > 0.0,
-};
+const RATE: ParamDomain = ParamDomain::positive("rate");
 
-/// Construct a `statrs::Exp` behind [`RATE`], as the row loops' backstop.
-///
-/// `statrs::Exp::new` rejects a `NaN` rate or `rate <= 0` and accepts a positive-infinite one (a
-/// degenerate point mass at 0), so [`RATE`] is what refuses `inf`, not the constructor.
+/// `statrs::Exp::new` accepts a positive-infinite rate (a degenerate point mass at 0), so [`RATE`]
+/// is what refuses it; behind its pass this cannot fail.
 fn build_dist(rate: f64) -> PolarsResult<Exp> {
-    Exp::new(rate).map_err(|e| {
-        PolarsError::InvalidOperation(
-            format!("rate must be strictly positive, got rate={rate}: {e}").into(),
-        )
-    })
+    Exp::new(rate).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// Exponential's constant rate, deserialised once per call.
@@ -56,21 +45,13 @@ impl ExponentialParamsKwargs {
     }
 }
 
-/// Element-wise validation of the rate (λ): returns `rate` unchanged, raising `ComputeError` if
-/// `rate` is not finite or `rate <= 0`. `null` propagates.
-///
-/// The moments derive from this so they report an invalid rate consistently with
-/// `exponential_sample`, instead of silently computing with a non-positive rate. The value-keyed
-/// methods validate inside their own plugin instead.
+/// `rate` unchanged after [`RATE`]'s column pass, `null` included. The moments derive from this so
+/// an invalid rate raises as it does from `exponential_sample`.
 #[polars_expr(output_type=Float64)]
 fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
     let rate = inputs[0].cast(&DataType::Float64)?;
     RATE.check_column(rate.f64()?)?;
-
-    validate_params_unary(rate.f64()?, |rate| {
-        build_dist(rate)?;
-        Ok(rate)
-    })
+    Ok(rate)
 }
 
 /// Crossover of [`derive_cdf`], in units of `t = rate * x`.
@@ -331,8 +312,8 @@ fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
 
 /// Element-wise Exponential sampler over `(rate, row_index)`, returning `Float64`.
 ///
-/// Per row, `null` propagates and an invalid rate raises via [`build_dist`]. Seeding and
-/// chunk-invariance follow [`sample_per_row_binary`].
+/// Per row, `null` propagates; an invalid rate raises from [`RATE`]'s column pass first. Seeding
+/// and chunk-invariance follow [`sample_per_row_binary`].
 ///
 /// The draw keeps `statrs` (`O(1)` ziggurat: `sample_exp_1(rng) / rate`); routing it through
 /// `rand_distr` would buy nothing, since that is already the algorithm class `statrs` uses (unlike

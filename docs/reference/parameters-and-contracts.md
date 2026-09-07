@@ -104,7 +104,8 @@ may hold any count its dtype can, up to `UInt64`.
 | `DiscreteUniform(min, max)` | `min <= max`, both inclusive | `max - min + 1` fits `Int64` |
 | `Geometric(p)` | `0 < p <= 1` | `p = 0` rejected, unlike `Bernoulli` |
 
-A violation raises `ComputeError` and fails the whole evaluation. See
+A violation raises `ComputeError` and fails the whole evaluation. The check runs over each parameter column before
+any row computes, so an invalid value raises even on a row whose other parameter is null. See
 [nulls, NaNs and errors](#nulls-nans-and-errors) below.
 
 ## Sampling

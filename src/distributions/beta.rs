@@ -1,45 +1,27 @@
+use polars::prelude::arity::{binary_elementwise, try_binary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, ParamDomain,
-};
+use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, ParamDomain};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// Construct a `statrs::Beta` behind [`A`] and [`B`], as the row loops' backstop; `statrs` rejects
-/// the same set (a `NaN`, infinite or non-positive shape).
-fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
-    Beta::new(a, b).map_err(|e| {
-        PolarsError::InvalidOperation(
-            format!("a and b must be finite and strictly positive, got a={a}, b={b}: {e}").into(),
-        )
-    })
-}
+const A: ParamDomain = ParamDomain::positive("a");
+const B: ParamDomain = ParamDomain::positive("b");
 
-/// `a` alone: finite, strictly positive.
-const A: ParamDomain = ParamDomain {
-    name: "a",
-    domain: "finite and strictly positive",
-    accepts: |a| a.is_finite() && a > 0.0,
-};
-
-/// `b` alone: finite, strictly positive.
-const B: ParamDomain = ParamDomain {
-    name: "b",
-    domain: "finite and strictly positive",
-    accepts: |b| b.is_finite() && b > 0.0,
-};
-
-/// The column pass every column-parameter funnel runs before its row loop.
-fn validate(a: &Float64Chunked, b: &Float64Chunked) -> PolarsResult<()> {
+fn check_params(a: &Float64Chunked, b: &Float64Chunked) -> PolarsResult<()> {
     A.check_column(a)?;
     B.check_column(b)
+}
+
+/// Cannot fail behind [`A`] and [`B`]'s pass; the `statrs` error is kept as the backstop.
+fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
+    Beta::new(a, b).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// Beta's constant shapes, deserialised once per call.
@@ -75,18 +57,19 @@ impl BetaParamsKwargs {
 /// `inputs[0]` is `a`, `inputs[1]` is `b`. The Python closed-form moments (`mean = a / (a + b)`,
 /// `variance = a * b / ((a + b)^2 * (a + b + 1))`) are gated on this single FFI round-trip, so
 /// they raise on an invalid parameterisation exactly like the value-keyed methods. `null` in
-/// either input propagates; invalid raises via [`build_dist`].
+/// either input propagates.
 #[polars_expr(output_type=Float64)]
 fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
-    validate(a.f64()?, b.f64()?)?;
+    check_params(a.f64()?, b.f64()?)?;
 
-    validate_params_binary(a.f64()?, b.f64()?, |a, b| {
-        build_dist(a, b)?;
-        Ok(b)
-    })
+    let ca: Float64Chunked =
+        binary_elementwise(a.f64()?, b.f64()?, |a: Option<f64>, b: Option<f64>| {
+            a.and(b)
+        });
+    Ok(ca.into_series())
 }
 
 /// Apply a value-keyed `f(dist, value)` element-wise over `(value, a, b)`; shared by `pdf`,
@@ -99,7 +82,7 @@ where
     let value = inputs[0].cast(&DataType::Float64)?;
     let a = inputs[1].cast(&DataType::Float64)?;
     let b = inputs[2].cast(&DataType::Float64)?;
-    validate(a.f64()?, b.f64()?)?;
+    check_params(a.f64()?, b.f64()?)?;
 
     value_keyed_per_row(
         value.f64()?,
@@ -114,7 +97,7 @@ where
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(a, b)`.
 ///
 /// `inputs[0]` is `a`, `inputs[1]` is `b`. `null` in either propagates; an invalid shape raises
-/// via [`build_dist`]. Only `entropy` routes through here (the one moment without an elementary
+/// from [`check_params`]. Only `entropy` routes through here (the one moment without an elementary
 /// closed form); `mean` and `variance` are closed forms computed in Polars and gated on
 /// [`beta_params`].
 fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
@@ -124,9 +107,16 @@ where
     let inputs = align_inputs(inputs)?;
     let a = inputs[0].cast(&DataType::Float64)?;
     let b = inputs[1].cast(&DataType::Float64)?;
-    validate(a.f64()?, b.f64()?)?;
+    check_params(a.f64()?, b.f64()?)?;
 
-    validate_params_binary(a.f64()?, b.f64()?, |a, b| Ok(f(&build_dist(a, b)?)))
+    let ca: Float64Chunked =
+        try_binary_elementwise(a.f64()?, b.f64()?, |a, b| -> PolarsResult<Option<f64>> {
+            match (a, b) {
+                (Some(a), Some(b)) => Ok(Some(f(&build_dist(a, b)?))),
+                _ => Ok(None),
+            }
+        })?;
+    Ok(ca.into_series())
 }
 
 /// One Beta draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -140,7 +130,7 @@ fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
 
 /// Element-wise Beta sampler over `(a, b, row_index)`, returning `Float64`.
 ///
-/// Per row, `null` propagates and an invalid shape raises via [`build_dist`]. Seeding and
+/// Per row, `null` propagates; an invalid shape raises from [`check_params`] first. Seeding and
 /// chunk-invariance follow [`sample_per_row_ternary`].
 ///
 /// The draw keeps `statrs` (two `O(1)`-amortised Gamma draws, normalised); routing it through
@@ -153,7 +143,7 @@ fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> 
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    validate(a.f64()?, b.f64()?)?;
+    check_params(a.f64()?, b.f64()?)?;
 
     sample_per_row_ternary(
         name,
@@ -206,7 +196,7 @@ fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series
     let b = inputs[1].cast(&DataType::Float64)?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    validate(a.f64()?, b.f64()?)?;
+    check_params(a.f64()?, b.f64()?)?;
 
     let rows = ternary_param_rows(a.f64()?, b.f64()?, index.u64()?, build_dist);
 

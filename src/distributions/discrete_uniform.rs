@@ -1,37 +1,30 @@
-use polars::prelude::arity::{try_ternary_elementwise, unary_elementwise};
+use polars::prelude::arity::{binary_elementwise, try_ternary_elementwise, unary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution;
 use statrs::distribution::DiscreteUniform;
 
-use crate::distributions::{
-    align_inputs, validate_params_binary, value_keyed_per_row, value_keyed_scalar, PairDomain,
-};
+use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, PairDomain};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_i64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// The pair: `min <= max` (`min == max` is the legitimate one-point mass), and a support count
-/// `max - min + 1` that fits in `i64`, since every closed form divides by that count. The width is
-/// computed in `i128` so the check itself cannot wrap. The bounds have no domain of their own: an
-/// integer column is one by dtype, through [`coerce_bound`].
+/// `min == max` is the legitimate one-point mass. Every closed form divides by the count
+/// `max - min + 1`, so it must fit `i64`; the width is computed in `i128` so the check itself
+/// cannot wrap. The bounds have no rule of their own: an integer column is one by dtype, through
+/// [`coerce_bound`].
 const BOUNDS: PairDomain<i64> = PairDomain {
     names: ("min", "max"),
-    domain: "greater than or equal to min, with a support width max - min + 1 that fits in i64",
+    rule: "greater than or equal to min, with a support width max - min + 1 that fits in i64",
     accepts: |min, max| min <= max && i64::try_from(i128::from(max) - i128::from(min) + 1).is_ok(),
 };
 
-/// Construct a `statrs::DiscreteUniform` behind [`BOUNDS`]: the constant regime's once-per-call
-/// check, and the row loops' backstop. `statrs` itself only rejects `max < min`.
+/// The constant regime's once-per-call check, and the row loops' backstop. `statrs` itself only
+/// rejects `max < min`, so behind [`BOUNDS`] its error is unreachable and kept as is.
 fn build_dist(min: i64, max: i64) -> PolarsResult<DiscreteUniform> {
     BOUNDS.check(min, max)?;
-    DiscreteUniform::new(min, max).map_err(|e| {
-        PolarsError::InvalidOperation(
-            format!("max must be greater than or equal to min, got min={min}, max={max}: {e}")
-                .into(),
-        )
-    })
+    DiscreteUniform::new(min, max).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// Widen a bound column to the `Int64` both distribution types take.
@@ -114,7 +107,7 @@ struct Support {
     n: f64,
 }
 
-/// Validate `(min, max)` via [`build_dist`] and size the support once.
+/// Size the support once, behind [`build_dist`].
 fn build_support(min: i64, max: i64) -> PolarsResult<Support> {
     build_dist(min, max)?;
     let n = (max as i128 - min as i128 + 1) as f64;
@@ -336,7 +329,7 @@ fn coerce_points(value: &Series) -> PolarsResult<Points> {
 /// Apply a closed-form `f(support, point)` element-wise over `(value, min, max)`; shared by the
 /// six value-keyed plugins with an integer-exact path. Null and `NaN` contracts follow
 /// [`value_keyed_per_row`]: a null bound nulls the row without building, and an invalid
-/// parameterisation raises via [`build_support`] whatever the row's point is.
+/// parameterisation raises from [`BOUNDS`]'s column pass whatever the row's point is.
 fn du_value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Support, Point) -> Option<f64>,
@@ -555,10 +548,10 @@ fn discreteuniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     let max = coerce_bound(&inputs[1])?;
     BOUNDS.check_columns(&min, &max)?;
 
-    validate_params_binary(&min, &max, |lo, hi| {
-        build_dist(lo, hi)?;
-        Ok((hi as i128 - lo as i128 + 1) as f64)
-    })
+    let ca: Float64Chunked = binary_elementwise(&min, &max, |lo: Option<i64>, hi: Option<i64>| {
+        Some((i128::from(hi?) - i128::from(lo?) + 1) as f64)
+    });
+    Ok(ca.into_series())
 }
 
 /// One DiscreteUniform draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -572,8 +565,8 @@ fn draw(dist: &DiscreteUniform, rng: &mut impl rand::Rng) -> i64 {
 
 /// Element-wise DiscreteUniform sampler over `(min, max, row_index)`, returning `Int64`.
 ///
-/// Per row, `null` propagates and an invalid parameterisation raises via [`build_dist`]. Seeding
-/// and chunk-invariance follow [`sample_per_row_ternary`].
+/// Per row, `null` propagates; an invalid parameterisation raises from [`BOUNDS`]'s column pass.
+/// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Int64)]
 fn discreteuniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;

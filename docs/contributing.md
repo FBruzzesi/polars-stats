@@ -137,7 +137,7 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       invalid-parameter error contract in one place. The per-row `<name>_sample` / `<name>_samples` (multi-draw,
       backing `samples`) take the parameter columns plus a row index as the last input: `<name>_sample` calls
       `sample_per_row_binary` (one parameter column) or `sample_per_row_ternary` (two), passing a `build` that
-      validates and constructs the row's draw state; `<name>_samples` feeds `binary_param_rows` /
+      constructs the row's draw state; `<name>_samples` feeds `binary_param_rows` /
       `ternary_param_rows` into `samples_per_row`. The constant-parameter fast paths `<name>_sample_scalar` /
       `<name>_samples_scalar` are shells over `sample_by_index` / `samples_by_index`, taking
       `SampleScalarKwargs<<Name>ParamsKwargs>` / `SamplesScalarKwargs<<Name>ParamsKwargs>` so the parameters are
@@ -190,8 +190,13 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           null input: a null parameter has to reach `derive` as `None` so the branches whose answer carries no
           parameter still
           answer (`Bernoulli.pmf(2) = 0`, `Exponential.cdf(-1) = 0`, `Uniform.pdf` above a known `max`).
-    * Factor the validating constructor into a `build_dist(...) -> PolarsResult<Dist>` helper so an invalid parameter
-      maps through a `ComputeError` consistently.
+    * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
+      `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
+      constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its
+      parameter columns before its row loop, and every `<Name>ParamsKwargs::build` runs `check` once, so an invalid
+      parameter raises the same `ComputeError` in both regimes whatever else its row holds. Keep a
+      `build_dist(...) -> PolarsResult<Dist>` around the `statrs` constructor for the row loops; behind the pass it
+      cannot fail.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
    `DiscreteDistribution`. In `__init__`, coerce each parameter with `coerce_param` / `coerce_n` (types only, **never
    validate values** at construction, let invalid values raise in Rust) and store the fast-path bundle
@@ -206,11 +211,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       statrs-backed method, return `self._value_plugin("<name>_<method>", value)`: the base routes constant parameters
       to the `_scalar` fast path and column parameters to the per-row plugin.
     * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
-      `uniform_range` returns `max - min`). Write it as a `#[polars_expr]` shell over the generic
-      `validate_params_binary` / `validate_params_unary` drivers in `src/distributions/mod.rs`: cast each input,
-      take its accessor (`.f64()` / `.u64()`, so the two parameter dtypes may differ as Binomial's `(n, p)` does),
-      and pass a closure that calls `build_dist` and returns the quantity to emit. Keep that closure a generic
-      `F: Fn` so it monomorphises into the row loop. These drivers take no output name: polars resolves an
+      `uniform_range` returns `max - min`). Cast each input, run the domain pass, then return the quantity: the
+      checked column itself for one parameter (`bernoulli_proba`), or a `binary_elementwise` over both columns that
+      nulls where either is null (`normal_sigma`, `uniform_range`). It takes no output name: polars resolves an
       expression's output name from its first input, so the column follows `inputs[0]` whatever the plugin calls
       its `Series`. For a statrs-backed
       distribution whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate

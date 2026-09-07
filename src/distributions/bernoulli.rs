@@ -4,8 +4,7 @@ use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
 use crate::distributions::{
-    align_inputs, validate_params_unary, value_keyed_derived_per_row, value_keyed_derived_scalar,
-    ParamDomain,
+    align_inputs, value_keyed_derived_per_row, value_keyed_derived_scalar, ParamDomain,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
@@ -13,18 +12,11 @@ use crate::rng::{
     SamplesScalarKwargs,
 };
 
-/// `p` alone: finite, in `[0, 1]`.
-const P: ParamDomain = ParamDomain {
-    name: "p",
-    domain: "in [0, 1]",
-    accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
-};
+const P: ParamDomain = ParamDomain::probability("p");
 
-/// Construct a `statrs::Bernoulli` behind [`P`], as the row loops' backstop.
+/// Cannot fail behind [`P`]'s pass; the `statrs` error is kept as the backstop.
 fn build_dist(proba: f64) -> PolarsResult<Bernoulli> {
-    Bernoulli::new(proba).map_err(|e| {
-        PolarsError::InvalidOperation(format!("p must be in [0, 1], got {proba}: {e}").into())
-    })
+    Bernoulli::new(proba).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// Bernoulli's constant success probability, deserialised once per call.
@@ -51,21 +43,13 @@ impl BernoulliParamsKwargs {
     }
 }
 
-/// Element-wise validation of the success probability: returns `p` unchanged, raising
-/// `ComputeError` if `p` is outside `[0, 1]`. `null` propagates.
-///
-/// The moments derive from this so they report an invalid `p` consistently with `bernoulli_sample`,
-/// instead of silently computing a negative variance. The value-keyed methods validate inside their
-/// own plugin instead.
+/// `p` unchanged after [`P`]'s column pass, `null` included. The moments derive from this so an
+/// invalid `p` raises as it does from `bernoulli_sample`, instead of computing a negative variance.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
     P.check_column(proba.f64()?)?;
-
-    validate_params_unary(proba.f64()?, |proba| {
-        build_dist(proba)?;
-        Ok(proba)
-    })
+    Ok(proba)
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins. Each method pairs a
@@ -352,7 +336,7 @@ fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
 
 /// Element-wise Bernoulli sampler over `(p, row_index)`, returning `Boolean`.
 ///
-/// Per row, `null` propagates and an invalid `p` raises via [`build_dist`]. Seeding and
+/// Per row, `null` propagates; an invalid `p` raises from [`P`]'s column pass first. Seeding and
 /// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {

@@ -4,28 +4,24 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, expm1, ln_abs_expm1, validate_params_unary, value_keyed_derived_per_row,
-    value_keyed_derived_scalar, Domain, ParamDomain, Sides,
+    align_inputs, expm1, ln_abs_expm1, value_keyed_derived_per_row, value_keyed_derived_scalar,
+    Domain, ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row,
     samples_u64_output, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
-/// `p` alone: finite, in `(0, 1]`. Unlike `Bernoulli` the degenerate `p = 0` point mass is not
-/// representable.
+/// Unlike `Bernoulli`, the degenerate `p = 0` point mass is not representable.
 const P: ParamDomain = ParamDomain {
     name: "p",
-    domain: "in (0, 1]",
+    rule: "in (0, 1]",
     accepts: |p| p.is_finite() && p > 0.0 && p <= 1.0,
 };
 
-/// Construct a `statrs::Geometric` behind [`P`], as the row loops' backstop; `statrs` rejects the
-/// same set.
+/// Cannot fail behind [`P`]'s pass; the `statrs` error is kept as the backstop.
 fn build_dist(proba: f64) -> PolarsResult<Geometric> {
-    Geometric::new(proba).map_err(|e| {
-        PolarsError::InvalidOperation(format!("p must be in (0, 1], got {proba}: {e}").into())
-    })
+    Geometric::new(proba).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 /// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` (a few
@@ -35,9 +31,8 @@ fn ln_failure(proba: f64) -> f64 {
     (-proba).ln_1p()
 }
 
-/// The samplers' per-row state: [`ln_failure`], validated through [`build_dist`] so an invalid `p`
-/// raises identically either way. Built once per row, not once per draw: the multi-draw and
-/// constant-parameter paths take many draws per state.
+/// The samplers' per-row state: [`ln_failure`], behind [`build_dist`]'s backstop. Built once per
+/// row, not once per draw: the multi-draw and constant-parameter paths take many draws per state.
 fn build_sampler(proba: f64) -> PolarsResult<f64> {
     build_dist(proba)?;
     Ok(ln_failure(proba))
@@ -67,21 +62,13 @@ impl GeometricParamsKwargs {
     }
 }
 
-/// Element-wise validation of the success probability: returns `p` unchanged, raising
-/// `ComputeError` if `p` is outside `(0, 1]`. `null` propagates.
-///
-/// The moments derive from this so they report an invalid `p` consistently with `geometric_sample`,
-/// instead of silently computing with a non-positive probability. The value-keyed methods validate
-/// inside their own plugin instead.
+/// `p` unchanged after [`P`]'s column pass, `null` included. The moments derive from this so an
+/// invalid `p` raises as it does from `geometric_sample`.
 #[polars_expr(output_type=Float64)]
 fn geometric_p(inputs: &[Series]) -> PolarsResult<Series> {
     let proba = inputs[0].cast(&DataType::Float64)?;
     P.check_column(proba.f64()?)?;
-
-    validate_params_unary(proba.f64()?, |proba| {
-        build_dist(proba)?;
-        Ok(proba)
-    })
+    Ok(proba)
 }
 
 /// Crossover of [`derive_cdf`], in units of `ln(sf)`.
@@ -419,7 +406,7 @@ fn draw(ln_failure: &f64, rng: &mut impl rand::Rng) -> u64 {
 
 /// Element-wise Geometric sampler over `(p, row_index)`, returning `UInt64`.
 ///
-/// Per row, `null` propagates and an invalid `p` raises via [`build_sampler`]. Seeding and
+/// Per row, `null` propagates; an invalid `p` raises from [`P`]'s column pass first. Seeding and
 /// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=UInt64)]
 fn geometric_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
