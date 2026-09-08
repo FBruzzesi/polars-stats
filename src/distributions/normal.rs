@@ -266,10 +266,10 @@ fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
 /// Inverse survival function, `mu + sigma * sqrt(2) * erfc_inv(2q)`, solved on `q` rather than on
 /// its complement.
 ///
-/// Deliberately not `ppf(1 - q)`, the base-class default: that composes `statrs`' `inverse_cdf`
-/// into `erfc_inv(2 - 2q)`, whose argument resolves to `2.2e-16` absolute, so the tail mass is
-/// quantised before the inverse runs. The symmetry `z_(1-q) = -z_q` puts the sign on the scale
-/// instead, leaving the exact power-of-two `2q` as the only thing the inverse sees.
+/// Not `ppf(1 - q)`: that composes `statrs`' `inverse_cdf` into `erfc_inv(2 - 2q)`, whose argument
+/// resolves to `2.2e-16` absolute, so the tail mass is quantised before the inverse runs. The
+/// symmetry `z_(1-q) = -z_q` puts the sign on the scale instead, leaving the exact power-of-two `2q`
+/// as the only thing the inverse sees.
 ///
 /// Contract mirrors [`ppf_value`]: `null` outside `[0, 1]`, closed endpoints to the infinite tails
 /// (`isf(0) = +inf`, `isf(1) = -inf`, the reverse of `ppf`). `pub(crate)` so `LogNormal` composes it.

@@ -60,10 +60,10 @@ pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>>
     ))
 }
 
-/// The dtype gate for every evaluation point and float parameter: `Int*`, `UInt*`, `Float*` and
-/// `Decimal` cast to `Float64`, a `Null`-typed column casts to all-null, and any other dtype raises
-/// `ComputeError` naming the input. Polars' own cast is no gate: it reads `Boolean` as `0` / `1`,
-/// parses `String` non-strictly and takes a temporal dtype's integer representation.
+/// The dtype gate every evaluation point and float parameter passes: `Int*`, `UInt*`, `Float*` and
+/// `Decimal` cast to `Float64`, a `Null`-typed column to all-null, anything else raises `ComputeError`
+/// naming the input. Polars' own cast would read `Boolean` as `0` / `1`, parse `String` and take a
+/// temporal dtype's integer representation.
 pub(crate) fn coerce_f64(input: &Series) -> PolarsResult<Float64Chunked> {
     let dtype = input.dtype();
     polars_ensure!(
@@ -217,8 +217,9 @@ where
 /// per-method body the fast path applies (`cdf_value`, `ppf_value`, ...), so the two paths cannot
 /// drift and agree bit for bit.
 ///
-/// The caller does the cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`, so a
-/// mixed `(u64, f64)` parameterisation (Binomial's `UInt64` `n` beside its `Float64` `p`) fits, as in
+/// The caller passes each parameter through its own coercer (`coerce_f64`, `coerce_n`,
+/// `coerce_bound`), which fixes `A` and `B`, so a mixed `(u64, f64)` parameterisation (Binomial's
+/// `UInt64` `n` beside its `Float64` `p`) fits, as in
 /// [`ternary_param_rows`](crate::rng::ternary_param_rows). `S` needs no trait bound: it is whatever
 /// `build` returns.
 ///

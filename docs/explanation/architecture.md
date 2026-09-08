@@ -32,12 +32,13 @@ returns the formula with no null or NaN handling; the base guarantees the input 
 Composing defaults live in the base and call the other hooks:
 
 * `_sf` defaults to `1 - _cdf(x)`
-* `_isf` defaults to `_ppf(1 - q)`
 * `_log_pdf` / `_log_pmf` / `_log_cdf` / `_log_sf` default to `.log()` of the underlying hook
 * `median` defaults to `ppf(0.5)`, `std` to `variance().sqrt()`
 
 A subclass overrides one of these only when `statrs` (or a closed form) is more numerically accurate, for instance
-binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails.
+binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails. `_isf` has no default: `_ppf(1 - q)`
+quantises a small quantile before the inverse runs, and polars would form `1 - q` ahead of the Rust dtype gate, so
+every distribution solves against `q` itself, in Rust.
 
 ## Column-valued parameters
 
@@ -54,8 +55,9 @@ An expression whose inputs are *all* constant is therefore a scalar column, so `
 is one row; any column-valued input sets the length instead. See
 [Reference / Parameters and contracts](../reference/parameters-and-contracts.md#accepted-inputs).
 
-On the Rust side, a plugin function receives `inputs: &[Series]` of `(value, param_1, ..., param_k)`, casts each to
-`Float64Chunked`, iterates per chunk, propagates nulls, and constructs the `statrs` distribution per row. `kwargs`
+On the Rust side, a plugin function receives `inputs: &[Series]` of `(value, param_1, ..., param_k)`, passes each
+through the numeric dtype gate (`coerce_f64`: a numeric or `Null`-typed column casts to `Float64Chunked`, anything
+else raises), iterates per chunk, propagates nulls, and constructs the `statrs` distribution per row. `kwargs`
 carries only static config that cannot be column-valued: the sampler `seed`, plus the constant parameters in the
 sampler fast path below (the one place a parameter rides in `kwargs`, valid precisely because there it is known to be a
 scalar).

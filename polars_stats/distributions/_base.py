@@ -607,23 +607,13 @@ class _UnivariateDistribution(ABC):
         q = as_expr(quantile)
         return propagate_null_and_nan(q, self._isf(q))
 
+    @abstractmethod
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """Fallback `ppf(1 - quantile)`, correct only where `quantile` is not tiny.
+        """Core inverse-survival formula on a coerced expr; null handling is applied by `isf`.
 
-        `1 - quantile` resolves to `1.1e-16` absolute, so the tail mass a subclass is asked to invert
-        is quantised to `1.1e-16 / quantile` relative before the inverse ever runs. Like `_cdf().log()`
-        for `_log_cdf`, this is convenience rather than an implementation: inheriting it is a decision
-        to justify. The forms that worked here are a closed form (`Uniform`, `Bernoulli`, `Exponential`),
-        a symmetry (`Normal`, and `LogNormal` by composing it), and entering an existing two-sided
-        solve from the other tail.
-
-        Being integer-valued or piecewise-linear does *not* make a distribution safe here, which was
-        the tempting wrong conclusion: `Bernoulli(1e-17).isf(1e-20)` answered `0.0` where the answer
-        is `1.0`, and `Uniform(-1, 0).isf(1e-17)` answered `0.0` against a true `-1e-17`. Prove the
-        override unnecessary against `make audit`, with the parameter regime that would expose it,
-        before skipping it. See docs/contributing.md, "Numerical stability".
+        No `ppf(1 - quantile)` default: the complement quantises a small quantile before the inverse
+        runs, and polars would form it ahead of the Rust dtype gate. Solve against `quantile` itself.
         """
-        return self._ppf(1 - quantile)
 
     @property
     def _checked_params(self) -> pl.Expr:

@@ -63,11 +63,13 @@ A length-1 *expression* is accepted wherever a column is and broadcasts rather t
 A column in either position must be numeric: any `Int*` or `UInt*` width up to `Int128` / `UInt128`, `Float16` /
 `Float32` / `Float64`, or `Decimal`. A `Null`-typed column counts as numeric and propagates nulls. Numeric columns
 are cast to `Float64` at evaluation, so an integer column works wherever a float is expected.
-`Decimal` is the one numeric dtype the two positions treat differently. As a *parameter* it computes on every
-value-keyed method and sampler; the closed-form moments are polars arithmetic on the parameter itself and raise
-`InvalidOperationError` where polars has no `Decimal` kernel (`pow`, so `variance` on most distributions). As an
-evaluation point it raises `InvalidOperationError`, because the null/`NaN` guard applied to the value column has no
-`NaN` to test for on a decimal.
+
+That cast is the plugin's. The closed-form moments are polars arithmetic on the parameter itself, so there polars
+decides: a moment that is the parameter (`Normal(mu="mu").mean()`) keeps the column's dtype, and a `Decimal` or
+`Null`-typed `sigma` raises `InvalidOperationError` where polars has no kernel for it on the bare column (`pow`,
+`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`). `Decimal`
+is also the one numeric dtype refused as an *evaluation point*: the null/`NaN` guard applied to the value column has
+no `NaN` to test for on a decimal and raises `InvalidOperationError`.
 
 The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
@@ -81,10 +83,11 @@ dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls. (On 
 column in either position raises `PanicException` from polars' own arrow export instead.)
 
 In **parameter** position the Rust plugin enforces the same rule on every method: a `Boolean`, `String`,
-`Categorical`, `Enum`, `Struct`, `Object` or temporal column raises `ComputeError` naming the column and its dtype,
-and no row computes. Nothing is parsed and nothing is read as `0` / `1`. The one variation is the exception type:
-where a closed-form moment's own polars arithmetic meets the column before the plugin does (`n * p` on a `String`
-`p`), polars raises `InvalidOperationError` instead. Cast a parameter to `Float64` when you mean a number.
+`Categorical`, `Enum`, `Struct`, `Object` or temporal column raises `ComputeError` naming the column and the dtype
+the plugin received (`Object` arrives as `binary`), and no row computes. Nothing is parsed and nothing is read as
+`0` / `1`. The one variation is the exception type: where a closed-form moment's own polars arithmetic meets the
+column before the plugin does (`n * p` on a `String` `p`), polars raises `InvalidOperationError` instead. Cast a
+parameter to `Float64` when you mean a number.
 
 ## Parameter validity
 

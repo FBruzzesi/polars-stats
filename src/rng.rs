@@ -218,10 +218,10 @@ where
 /// contracts throughout.
 ///
 /// The two parameter dtypes are independent, so a mixed `(u64, f64)` parameterisation (Binomial's
-/// `UInt64` `n` beside its `Float64` `p`) fits, as in [`ternary_param_rows`]: the caller does the
-/// cast and the accessor (`.f64()` / `.u64()`), which fixes `A` and `B`. `S` is whatever `build`
-/// returns, the built distribution for most callers but Uniform's raw `(f64, f64)` bounds for the
-/// one that validates then discards.
+/// `UInt64` `n` beside its `Float64` `p`) fits, as in [`ternary_param_rows`]: each parameter arrives
+/// through its own coercer, which fixes `A` and `B`. `S` is whatever `build` returns, the built
+/// distribution for most callers but Uniform's raw `(f64, f64)` bounds for the one that validates
+/// then discards.
 #[inline]
 pub(crate) fn sample_per_row_ternary<V, A, B, S, Build, Draw>(
     name: PlSmallStr,

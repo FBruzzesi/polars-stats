@@ -100,9 +100,7 @@ class Normal(ContinuousDistribution):
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
         """Inverse survival function via the symmetry form ``mu + sigma * sqrt(2) * erfc_inv(2q)``.
 
-        Overrides the base-class default ``ppf(1 - quantile)``, which quantises a small quantile to
-        the ``1.1e-16`` resolution of its complement before the inverse runs. Same domain contract
-        as ``ppf``, with the endpoints reversed (``isf(0) = +inf``, ``isf(1) = -inf``).
+        Same domain contract as ``ppf``, with the endpoints reversed (``isf(0) = +inf``, ``isf(1) = -inf``).
         """
         return self._value_plugin("normal_isf", quantile)
 

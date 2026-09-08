@@ -141,9 +141,8 @@ class DiscreteUniform(DiscreteDistribution):
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
         """The smallest support point whose survival mass is at most ``quantile``.
 
-        Entered against ``quantile`` itself rather than the base ``ppf(1 - quantile)``: the
-        complement rounds before the inverse runs, and the survival steps sit at multiples of
-        ``1 / N``, exactly where ``1 - q`` has spent its precision.
+        Entered against ``quantile`` itself: the survival steps sit at multiples of ``1 / N``, exactly
+        where ``1 - q`` has spent its precision.
         """
         return self._value_plugin("discreteuniform_isf", quantile)
 

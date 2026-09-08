@@ -84,7 +84,7 @@ def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType,
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
     values = pl.Series("x", _int_grid(lo, hi, dtype)).cast(dtype).to_frame()
-    q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.25, 0.5, 0.75, 1.0, None]
+    q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, None]
     quantiles = pl.Series("q", q_grid).cast(dtype).to_frame()
 
     x, q = pl.col("x"), pl.col("q")
@@ -149,18 +149,18 @@ def test_non_numeric_value_column_raises(dist: _UnivariateDistribution, series: 
         series.to_frame().select(dist.cdf(pl.col("x")))
 
 
-_REFUSED_PARAMETERS = tuple(series.rename("mu") for series in _REFUSED_VALUES if not series.dtype.is_decimal())
-"""Every non-numeric dtype; Rust refuses each as a parameter where polars' own cast would compute."""
+_NON_NUMERIC = tuple(series for series in _REFUSED_VALUES if not series.dtype.is_decimal())
+"""Every dtype the Rust gate refuses, in either position, where polars' own cast would compute."""
 
 
-@pytest.mark.parametrize("series", _REFUSED_PARAMETERS, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
 @pytest.mark.parametrize("method", ["mean", "sample"], ids=str)
-def test_refused_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
-    """A refused *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
+def test_non_numeric_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
+    """A non-numeric *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
     dist = Normal(mu="mu", sigma=1.0)
     expr = dist.mean() if method == "mean" else dist.sample(seed=0)
     with pytest.raises(pl.exceptions.ComputeError, match="'mu' must be a numeric column"):
-        series.to_frame().select(r=expr)
+        series.rename("mu").to_frame().select(r=expr)
 
 
 @pytest.mark.parametrize(
@@ -168,11 +168,11 @@ def test_refused_parameter_column_raises_from_the_plugin(series: pl.Series, meth
     [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
     ids=["normal", "uniform"],
 )
-@pytest.mark.parametrize("series", _REFUSED_PARAMETERS, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
 def test_non_numeric_value_column_raises_from_the_plugin(dist: _UnivariateDistribution, series: pl.Series) -> None:
     """Below the public guard, the funnel refuses a non-numeric evaluation point: nothing parses, nothing computes."""
     with pytest.raises(pl.exceptions.ComputeError, match="'x' must be a numeric column"):
-        series.rename("x").to_frame().select(dist._cdf(pl.col("x")))
+        series.to_frame().select(dist._cdf(pl.col("x")))
 
 
 @pytest.mark.parametrize(

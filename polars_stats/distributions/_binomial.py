@@ -92,10 +92,7 @@ class Binomial(DiscreteDistribution):
         return self._value_plugin("binomial_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``ppf(1 - quantile)`` with the complement formed in Rust, so the quantile passes the plugin's dtype gate.
-
-        Keeps the composition's ``1.1e-16`` quantisation of a tiny quantile (see ``docs/explanation/accuracy.md``).
-        """
+        """``ppf(1 - quantile)``, the complement formed in Rust so the quantile passes the plugin's dtype gate."""
         return self._value_plugin("binomial_isf", quantile)
 
     def mean(self) -> pl.Expr:

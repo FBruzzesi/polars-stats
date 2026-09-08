@@ -99,13 +99,7 @@ class Uniform(ContinuousDistribution):
         return self._value_plugin("uniform_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``max - quantile * (max - min)``; null for ``quantile`` outside ``[0, 1]``.
-
-        The mirror of ``_ppf``, not the base-class ``ppf(1 - quantile)``: below
-        ``quantile ~ 1.1e-16`` that complement rounds to exactly ``1.0`` and the whole tail
-        collapses onto ``min + range``, which is total wherever ``max`` is near zero
-        (``Uniform(-1, 0).isf(1e-17)`` returned ``0.0`` against a true ``-1e-17``).
-        """
+        """``max - quantile * (max - min)``, the mirror of ``_ppf``; null for ``quantile`` outside ``[0, 1]``."""
         return self._value_plugin("uniform_isf", quantile)
 
     def mean(self) -> pl.Expr:
