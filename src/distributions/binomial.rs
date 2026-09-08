@@ -137,13 +137,14 @@ fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Binomial, f64) -> Option<f64>,
 {
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let n = coerce_n(&inputs[1])?;
-    let p = coerce_f64(&inputs[2])?;
-    P.check_column(&p)?;
-
-    value_keyed_per_row(&value, &n, &p, inputs[0].name().clone(), build_dist, f)
+    value_keyed_per_row(
+        inputs,
+        coerce_n,
+        coerce_f64,
+        |_, p| P.check_column(p),
+        build_dist,
+        f,
+    )
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(n, p)`.

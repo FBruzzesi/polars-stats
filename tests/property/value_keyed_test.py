@@ -1,11 +1,12 @@
-"""Bit-equality of the constant-parameter value-keyed fast path against the per-row path.
+"""Bit-equality of the three parameter spellings on every value-keyed method.
 
 Constant scalar parameters route the value-keyed methods (density, log-density, cdf, log-cdf, sf,
 log-sf, ppf, isf) through a dedicated ``<name>_<method>_scalar`` plugin: parameters are validated once and
-passed as kwargs, with only the value column crossing FFI. Column parameters take the general per-row plugin.
-In Rust both plugins call the same named per-method body, so for any parameterisation the two paths
-must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]`` contract. A
-divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
+passed as kwargs, with only the value column crossing FFI. Expression parameters take the general per-row
+plugin, which validates and builds once per call when every parameter is length 1 (a `pl.lit`, an aggregate)
+and once per row otherwise. In Rust all three spellings call the same named per-method body, so for any
+parameterisation they must agree bit for bit, including null propagation and ppf's null-outside-``[0, 1]``
+contract. A divergence (e.g. a parameter-order swap in a scalar kwargs struct) must fail here.
 
 The comparison is bit-exact for every spec.
 """
@@ -24,6 +25,8 @@ from tests._polars_compat import assert_series_equal, linear_space
 from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from polars_stats.distributions._base import _UnivariateDistribution
     from tests.property._specs import DistSpec
 
@@ -49,10 +52,11 @@ def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataObject) -> None:
-    """Constant scalar parameters and the equivalent per-row columns evaluate identically."""
+    """Constant scalar parameters, length-1 literals and the equivalent per-row columns evaluate identically."""
     params = data.draw(spec.params)
     scalar = spec.make(params)
     per_row = spec.make_columns(params)
+    literal = spec.make_literals(params)
 
     lo, hi = spec.eval_range(params)
     values = pl.DataFrame({"x": [*linear_space(lo, hi, _GRID_SIZE), None, float("nan")]}, schema={"x": pl.Float64})
@@ -62,17 +66,17 @@ def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.D
     )
 
     x, q = pl.col("x"), pl.col("q")
-    cases = [
-        (values, spec.density(scalar, x), spec.density(per_row, x)),
-        (values, _log_density(scalar, x), _log_density(per_row, x)),
-        (values, scalar.cdf(x), per_row.cdf(x)),
-        (values, scalar.log_cdf(x), per_row.log_cdf(x)),
-        (values, scalar.sf(x), per_row.sf(x)),
-        (values, scalar.log_sf(x), per_row.log_sf(x)),
-        (quantiles, scalar.ppf(q), per_row.ppf(q)),
-        (quantiles, scalar.isf(q), per_row.isf(q)),
+    cases: list[tuple[pl.DataFrame, Callable[[_UnivariateDistribution], pl.Expr]]] = [
+        (values, lambda d: spec.density(d, x)),
+        (values, lambda d: _log_density(d, x)),
+        (values, lambda d: d.cdf(x)),
+        (values, lambda d: d.log_cdf(x)),
+        (values, lambda d: d.sf(x)),
+        (values, lambda d: d.log_sf(x)),
+        (quantiles, lambda d: d.ppf(q)),
+        (quantiles, lambda d: d.isf(q)),
     ]
-    for frame, fast_expr, per_row_expr in cases:
-        fast = frame.select(r=fast_expr)["r"]
-        slow = frame.select(r=per_row_expr)["r"]
-        assert_series_equal(fast, slow, check_exact=True)
+    for frame, method in cases:
+        fast = frame.select(r=method(scalar))["r"]
+        for spelling in (per_row, literal):
+            assert_series_equal(fast, frame.select(r=method(spelling))["r"], check_exact=True)

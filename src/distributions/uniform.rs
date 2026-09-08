@@ -5,7 +5,7 @@ use rand::distr::{Distribution, StandardUniform};
 
 use crate::distributions::{
     align_inputs, coerce_f64, on_unit_interval, value_keyed_derived_pair_per_row,
-    value_keyed_scalar, PairDomain, ParamDomain,
+    value_keyed_derived_pair_scalar, PairDomain, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
@@ -45,9 +45,7 @@ struct UniformParamsKwargs {
 }
 
 impl UniformParamsKwargs {
-    /// Constant-bounds twin of [`value_keyed_derived_pair_per_row`]: validates and derives once per
-    /// call, then maps `select` over the evaluation-point column, so the bound-only terms `derive`
-    /// hoists (`1 / range`, `-ln(range)`) are computed once instead of per row.
+    /// Validates once per call, then derives and maps through [`value_keyed_derived_pair_scalar`].
     fn value_keyed<Branches>(
         &self,
         value: &Series,
@@ -55,8 +53,7 @@ impl UniformParamsKwargs {
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         checked_bounds(self.min, self.max)?;
-        let branches = derive(self.min, self.max);
-        value_keyed_scalar(value, |v| select(&branches, v))
+        value_keyed_derived_pair_scalar(value, self.min, self.max, derive, select)
     }
 }
 

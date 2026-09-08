@@ -5,7 +5,8 @@ use rand::distr::Distribution;
 use statrs::distribution::DiscreteUniform;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, PairDomain,
+    align_inputs, coerce_f64, params_are_constant, value_keyed_per_row, value_keyed_scalar,
+    PairDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_i64_output, samples_per_row,
@@ -27,6 +28,10 @@ const BOUNDS: PairDomain<i64> = PairDomain {
 fn build_dist(min: i64, max: i64) -> PolarsResult<DiscreteUniform> {
     BOUNDS.check(min, max)?;
     DiscreteUniform::new(min, max).map_err(|e| polars_err!(ComputeError: "{e}"))
+}
+
+fn check_params(min: &Int64Chunked, max: &Int64Chunked) -> PolarsResult<()> {
+    BOUNDS.check_columns(min, max)
 }
 
 /// Widen a bound column to the `Int64` both distribution types take.
@@ -69,34 +74,41 @@ impl DiscreteUniformParamsKwargs {
         build_dist(self.min, self.max)
     }
 
-    /// Constant-parameter twin of the per-row [`du_value_keyed`], sharing its `<method>_point`
-    /// bodies: validate and size the support once per call, then map `f` over the evaluation-point
-    /// column in its own arithmetic (see [`coerce_points`]).
     fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
     where
         F: Fn(&Support, Point) -> Option<f64>,
     {
-        let support = build_support(self.min, self.max)?;
-        let name = value.name().clone();
-        let ca: Float64Chunked = match coerce_points(value)? {
-            Points::Float(v) => unary_elementwise(&v, |opt| {
-                opt.and_then(|v| {
-                    if v.is_nan() {
-                        Some(f64::NAN)
-                    } else {
-                        f(&support, Point::Float(v))
-                    }
-                })
-            }),
-            Points::Int(v) => unary_elementwise(&v, |opt| {
-                opt.and_then(|v| f(&support, Point::Int(v.into())))
-            }),
-            Points::Wide(v) => unary_elementwise(&v, |opt| {
-                opt.and_then(|v| f(&support, Point::Int(v.into())))
-            }),
-        };
-        Ok(ca.with_name(name).into_series())
+        du_value_keyed_scalar(value, self.min, self.max, f)
     }
+}
+
+/// Constant-bounds twin of the per-row [`du_value_keyed`], sharing its `<method>_point` bodies:
+/// validate and size the support once per call, then map `f` over the evaluation-point column in
+/// its own arithmetic (see [`coerce_points`]).
+fn du_value_keyed_scalar<F>(value: &Series, min: i64, max: i64, f: F) -> PolarsResult<Series>
+where
+    F: Fn(&Support, Point) -> Option<f64>,
+{
+    let support = build_support(min, max)?;
+    let name = value.name().clone();
+    let ca: Float64Chunked = match coerce_points(value)? {
+        Points::Float(v) => unary_elementwise(&v, |opt| {
+            opt.and_then(|v| {
+                if v.is_nan() {
+                    Some(f64::NAN)
+                } else {
+                    f(&support, Point::Float(v))
+                }
+            })
+        }),
+        Points::Int(v) => unary_elementwise(&v, |opt| {
+            opt.and_then(|v| f(&support, Point::Int(v.into())))
+        }),
+        Points::Wide(v) => unary_elementwise(&v, |opt| {
+            opt.and_then(|v| f(&support, Point::Int(v.into())))
+        }),
+    };
+    Ok(ca.with_name(name).into_series())
 }
 
 /// The validated support, with the count precomputed: the state every closed-form body reads.
@@ -320,18 +332,27 @@ fn coerce_points(value: &Series) -> PolarsResult<Points> {
 }
 
 /// Apply a closed-form `f(support, point)` element-wise over `(value, min, max)`; shared by the
-/// six value-keyed plugins with an integer-exact path. Null and `NaN` contracts follow
-/// [`value_keyed_per_row`]: a null bound nulls the row without building, and an invalid
-/// parameterisation raises from [`BOUNDS`]'s column pass whatever the row's point is.
+/// six value-keyed plugins with an integer-exact path. Null, `NaN` and constant-parameter contracts
+/// follow [`value_keyed_per_row`]: a null bound nulls the row without building, an invalid
+/// parameterisation raises from [`BOUNDS`]'s column pass whatever the row's point is, and constant
+/// bounds take [`du_value_keyed_scalar`] after the same pass.
 fn du_value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Support, Point) -> Option<f64>,
 {
+    if params_are_constant(inputs) {
+        let (min, max) = (coerce_bound(&inputs[1])?, coerce_bound(&inputs[2])?);
+        check_params(&min, &max)?;
+        if let Some((min, max)) = min.get(0).zip(max.get(0)) {
+            return du_value_keyed_scalar(&inputs[0], min, max, f);
+        }
+    }
+
     let inputs = align_inputs(inputs)?;
     let name = inputs[0].name().clone();
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
-    BOUNDS.check_columns(&min, &max)?;
+    check_params(&min, &max)?;
 
     let ca: Float64Chunked = match coerce_points(&inputs[0])? {
         Points::Float(v) => try_ternary_elementwise(&v, &min, &max, |v, lo, hi| {
@@ -413,16 +434,11 @@ fn discreteuniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
 /// See [`ppf_value`] for the correction and endpoint contract.
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let min = coerce_bound(&inputs[1])?;
-    let max = coerce_bound(&inputs[2])?;
-    BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
-        &value,
-        &min,
-        &max,
-        inputs[0].name().clone(),
+        inputs,
+        coerce_bound,
+        coerce_bound,
+        check_params,
         build_support,
         ppf_value,
     )
@@ -431,16 +447,11 @@ fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
 /// Element-wise inverse survival function; see [`isf_value`] for the two-sided correction.
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let min = coerce_bound(&inputs[1])?;
-    let max = coerce_bound(&inputs[2])?;
-    BOUNDS.check_columns(&min, &max)?;
     value_keyed_per_row(
-        &value,
-        &min,
-        &max,
-        inputs[0].name().clone(),
+        inputs,
+        coerce_bound,
+        coerce_bound,
+        check_params,
         build_support,
         isf_value,
     )

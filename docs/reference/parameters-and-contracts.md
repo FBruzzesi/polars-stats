@@ -148,6 +148,7 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 | Wrong parameter *type* (a `list`, an `int` for a float parameter, a `bool`) | Python `__init__` | `TypeError`, no query runs |
 | Non-numeric column in either position (`Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object`, temporal) | Rust evaluation | `ComputeError` naming the column and its dtype, no row computes; polars' `InvalidOperationError` where a closed-form moment's arithmetic meets a parameter column first (see [Accepted inputs](#accepted-inputs)) |
 | Invalid *present* parameter value: outside its domain, `NaN`, `+inf` or `-inf`, as a scalar or on any column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls, whatever else is on the row: a null sibling parameter, a null or `NaN` evaluation point |
+| The same, on a **0-row** frame | Rust evaluation | A *constant* parameterisation still raises; a parameter *column* returns an empty result (see below) |
 | `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |
@@ -162,6 +163,14 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 per bound for `Uniform`, whose two bounds might otherwise have settled the answer between them: on a row whose `min`
 is null and whose `max` is `1.0`, `pdf(5.0)` and `cdf(5.0)` are both `null`, as is every method at `0.5`. Both
 inverses null at every quantile under either null bound, in range and out.
+
+**On a 0-row frame, a constant parameterisation is still checked and a parameter column is not.** A Python scalar and
+a length-1 expression (`pl.lit(5.0)`, `pl.col("x").min()`) are one parameterisation, validated once per call before
+any row is read, so `Uniform(5.0, 2.0)` and `Uniform(pl.lit(5.0), pl.lit(2.0))` both raise on an empty frame. A
+parameter column is validated over its values, and an empty column has none, so `Uniform(pl.col("lo"), pl.col("hi"))`
+returns an empty result instead. This applies to a value the strict cast refuses (`Binomial(n=pl.lit(-5))`) as much as
+to one outside its domain. The same once-per-call check runs before the value column's dtype gate, so when both are
+invalid a constant parameterisation reports the parameter and a parameter column reports the value column.
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in

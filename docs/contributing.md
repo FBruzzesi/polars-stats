@@ -126,7 +126,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 
     * **`align_inputs(inputs)?` first, before any cast**, for any plugin with more than one input. Polars broadcasts
       nothing into a plugin and `try_*_elementwise` truncates to its shortest input, so skipping it silently drops
-      every row past the first. `tests/distributions/broadcast_test.py` catches a missed one.
+      every row past the first. `tests/distributions/broadcast_test.py` catches a missed one. The value-keyed drivers
+      in `mod.rs` skip it when *every* parameter is length 1: they check the constant once and never expand it. Route
+      through them rather than writing that branch yourself.
     * **`is_elementwise=True`**, which the shared `register_plugin` shim fixes for you. An aggregating plugin would
       break `over` and `group_by`, so it is a guard rather than a default.
     * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
@@ -184,12 +186,14 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           up to 195% at 10M rows. `derive` runs once per call on the constant path and once per row when a parameter
           is a column.
         * A one-parameter distribution pairs those two through `value_keyed_derived_per_row` and
-          `value_keyed_derived_scalar` in `src/distributions/mod.rs`. A two-parameter one takes
-          `value_keyed_derived_pair_per_row` beside them, and keeps its constant-parameter twin local
-          (`UniformParamsKwargs::value_keyed`) until a second distribution needs it; both plugin shells are still one
-          line and neither names a driver internal. They are not `value_keyed_per_row`, which builds a `statrs`
-          distribution per row: `derive` takes plain `f64`s and hoists the parameter-only terms out of the loop.
-          Every driver nulls a row on any null parameter, before it reads the evaluation point.
+          `value_keyed_derived_scalar` in `src/distributions/mod.rs`; a two-parameter one takes
+          `value_keyed_derived_pair_per_row` and `value_keyed_derived_pair_scalar`. Both plugin shells are still one
+          line and neither names a driver internal. The `_scalar` twins derive and map only; their caller owns the
+          check (`<Name>ParamsKwargs::value_keyed` for kwargs, the driver's column pass for a length-1
+          parameterisation), and both call the twin rather than spelling its two lines, so the two spellings run one
+          instantiation and cannot drift in output or in machine code. They are not `value_keyed_per_row`, which
+          builds a `statrs` distribution per row: `derive` takes plain `f64`s and hoists the parameter-only terms out
+          of the loop. Every driver nulls a row on any null parameter, before it reads the evaluation point.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
       `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
       constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its

@@ -33,15 +33,15 @@ impl ExponentialParamsKwargs {
         build_dist(self.rate)
     }
 
-    /// Binds the constant rate and its domain into [`value_keyed_derived_scalar`], which
-    /// validates and derives once per call rather than per row.
+    /// Validates once per call, then derives and maps through [`value_keyed_derived_scalar`].
     fn value_keyed<Branches>(
         &self,
         value: &Series,
         derive: impl Fn(f64) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
-        value_keyed_derived_scalar(value, self.rate, &RATE, derive, select)
+        RATE.check(self.rate)?;
+        value_keyed_derived_scalar(value, self.rate, derive, select)
     }
 }
 

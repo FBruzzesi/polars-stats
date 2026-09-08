@@ -50,7 +50,8 @@ parameters like Binomial's `n`). The accepted inputs and their coercions are tab
 A scalar becomes `pl.lit(value)`, a length-1 scalar column, and Rust owns row-alignment: polars broadcasts nothing
 into a plugin, so `align_inputs` broadcasts every length-1 input up to the call's row count before any cast. It
 aligns by *length*, not by expression kind, so a user-written `.first()` or `.max()` parameter is handled like a
-literal.
+literal. The value-keyed drivers take one shortcut ahead of that. When *every* parameter is length 1 they validate and
+build it once and never expand it, so a `pl.lit` or an aggregate parameter costs what a Python scalar does.
 
 An expression whose inputs are *all* constant is therefore a scalar column, so `df.select(Normal(0.0, 1.0).mean())`
 is one row; any column-valued input sets the length instead. See
