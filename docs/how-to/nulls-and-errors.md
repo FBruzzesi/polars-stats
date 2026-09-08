@@ -62,9 +62,9 @@ print(quarantined)
 If you would rather keep every row, replace the invalid parameters with `null` and let the result null out:
 
 ```python exec="yes" source="above" session="nulls-and-errors" result="python"
-guarded = frame.with_columns(
-    sigma=pl.when(pl.col("sigma") > 0).then("sigma").otherwise(None)
-).with_columns(upper_tail=dist.sf("reading"))
+guarded = frame.with_columns(sigma=pl.when(pl.col("sigma") > 0).then("sigma").otherwise(None)).with_columns(
+    upper_tail=dist.sf("reading")
+)
 print(guarded)
 ```
 

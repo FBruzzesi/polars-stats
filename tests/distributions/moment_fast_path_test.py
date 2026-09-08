@@ -56,61 +56,54 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
     return pl.repeat(value, n=pl.len(), dtype=dtype)
 
 
-# id -> (scalar instance, equivalent per-row instance, should_raise). `variance` is the representative
+# id -> (scalar instance, equivalent per-row instance). `variance` is the representative
 # moment: it routes through the parameter validator for every distribution (Normal/LogNormal/Binomial
 # via `_moment`, Uniform via `range`, Bernoulli via `_checked_p`). The `inf` cases guard that the fast
 # path applies the library's own finiteness check where `statrs` alone would accept the value.
-_CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution, bool]] = {
-    "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0)), True),
-    "normal mu=inf": (Normal(_INF, 1.0), Normal(_col(_INF), _col(1.0)), True),
-    "normal std=0": (Normal(0.0, 0.0), Normal(_col(0.0), _col(0.0)), True),
-    "normal std=-1": (Normal(0.0, -1.0), Normal(_col(0.0), _col(-1.0)), True),
-    "normal std=nan": (Normal(0.0, _NAN), Normal(_col(0.0), _col(_NAN)), True),
-    "normal std=inf": (Normal(0.0, _INF), Normal(_col(0.0), _col(_INF)), True),
-    "lognormal sigma=-1": (LogNormal(0.0, -1.0), LogNormal(_col(0.0), _col(-1.0)), True),
-    "lognormal sigma=nan": (LogNormal(0.0, _NAN), LogNormal(_col(0.0), _col(_NAN)), True),
-    "lognormal sigma=inf": (LogNormal(0.0, _INF), LogNormal(_col(0.0), _col(_INF)), True),
-    "lognormal mu=inf": (LogNormal(_INF, 1.0), LogNormal(_col(_INF), _col(1.0)), True),
-    "uniform max<min": (Uniform(2.0, 1.0), Uniform(_col(2.0), _col(1.0)), True),
-    "uniform max=min": (Uniform(1.0, 1.0), Uniform(_col(1.0), _col(1.0)), True),
-    "uniform min=nan": (Uniform(_NAN, 1.0), Uniform(_col(_NAN), _col(1.0)), True),
-    "bernoulli p=1.5": (Bernoulli(1.5), Bernoulli(_col(1.5)), True),
-    "bernoulli p=-0.1": (Bernoulli(-0.1), Bernoulli(_col(-0.1)), True),
-    "bernoulli p=nan": (Bernoulli(_NAN), Bernoulli(_col(_NAN)), True),
+_CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution]] = {
+    "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0))),
+    "normal mu=inf": (Normal(_INF, 1.0), Normal(_col(_INF), _col(1.0))),
+    "normal std=0": (Normal(0.0, 0.0), Normal(_col(0.0), _col(0.0))),
+    "normal std=-1": (Normal(0.0, -1.0), Normal(_col(0.0), _col(-1.0))),
+    "normal std=nan": (Normal(0.0, _NAN), Normal(_col(0.0), _col(_NAN))),
+    "normal std=inf": (Normal(0.0, _INF), Normal(_col(0.0), _col(_INF))),
+    "lognormal sigma=-1": (LogNormal(0.0, -1.0), LogNormal(_col(0.0), _col(-1.0))),
+    "lognormal sigma=nan": (LogNormal(0.0, _NAN), LogNormal(_col(0.0), _col(_NAN))),
+    "lognormal sigma=inf": (LogNormal(0.0, _INF), LogNormal(_col(0.0), _col(_INF))),
+    "lognormal mu=inf": (LogNormal(_INF, 1.0), LogNormal(_col(_INF), _col(1.0))),
+    "uniform max<min": (Uniform(2.0, 1.0), Uniform(_col(2.0), _col(1.0))),
+    "uniform max=min": (Uniform(1.0, 1.0), Uniform(_col(1.0), _col(1.0))),
+    "uniform min=nan": (Uniform(_NAN, 1.0), Uniform(_col(_NAN), _col(1.0))),
+    "bernoulli p=1.5": (Bernoulli(1.5), Bernoulli(_col(1.5))),
+    "bernoulli p=-0.1": (Bernoulli(-0.1), Bernoulli(_col(-0.1))),
+    "bernoulli p=nan": (Bernoulli(_NAN), Bernoulli(_col(_NAN))),
     # The geometric support excludes the `p = 0` point mass its Bernoulli counterpart accepts.
-    "geometric p=0": (Geometric(0.0), Geometric(_col(0.0)), True),
-    "geometric p=-0.1": (Geometric(-0.1), Geometric(_col(-0.1)), True),
-    "geometric p=1.5": (Geometric(1.5), Geometric(_col(1.5)), True),
-    "geometric p=nan": (Geometric(_NAN), Geometric(_col(_NAN)), True),
+    "geometric p=0": (Geometric(0.0), Geometric(_col(0.0))),
+    "geometric p=-0.1": (Geometric(-0.1), Geometric(_col(-0.1))),
+    "geometric p=1.5": (Geometric(1.5), Geometric(_col(1.5))),
+    "geometric p=nan": (Geometric(_NAN), Geometric(_col(_NAN))),
     # Inverted bounds: the one invalid parameterisation the discrete uniform has.
-    "discreteuniform min>max": (DiscreteUniform(6, 1), DiscreteUniform(_col(6), _col(1)), True),
-    "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5)), True),
-    "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN)), True),
-    "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0)), True),
-    "beta b=-1": (Beta(2.0, -1.0), Beta(_col(2.0), _col(-1.0)), True),
-    "beta a=nan": (Beta(_NAN, 1.0), Beta(_col(_NAN), _col(1.0)), True),
-    "beta a=inf": (Beta(_INF, 1.0), Beta(_col(_INF), _col(1.0)), True),
+    "discreteuniform min>max": (DiscreteUniform(6, 1), DiscreteUniform(_col(6), _col(1))),
+    "binomial p=1.5": (Binomial(5, 1.5), Binomial(_col(5, pl.Int64()), _col(1.5))),
+    "binomial p=nan": (Binomial(5, _NAN), Binomial(_col(5, pl.Int64()), _col(_NAN))),
+    "beta a=0": (Beta(0.0, 1.0), Beta(_col(0.0), _col(1.0))),
+    "beta b=-1": (Beta(2.0, -1.0), Beta(_col(2.0), _col(-1.0))),
+    "beta a=nan": (Beta(_NAN, 1.0), Beta(_col(_NAN), _col(1.0))),
+    "beta a=inf": (Beta(_INF, 1.0), Beta(_col(_INF), _col(1.0))),
 }
 
 
-@pytest.mark.parametrize(("scalar", "per_row", "should_raise"), _CASES.values(), ids=list(_CASES))
+@pytest.mark.parametrize(("scalar", "per_row"), _CASES.values(), ids=list(_CASES))
 def test_scalar_and_column_paths_agree_on_validation(
-    scalar: _UnivariateDistribution, per_row: _UnivariateDistribution, *, should_raise: bool
+    scalar: _UnivariateDistribution, per_row: _UnivariateDistribution
 ) -> None:
     """The moment fast path and the per-row path agree on what is a valid parameterisation."""
     frame = pl.DataFrame({"_": range(4)})
 
-    if should_raise:
-        with pytest.raises(pl.exceptions.ComputeError):
-            frame.select(r=scalar.variance())
-        with pytest.raises(pl.exceptions.ComputeError):
-            frame.select(r=per_row.variance())
-    else:
-        # A scalar column beside the per-row column: polars broadcasts it, and every row must agree.
-        both = frame.select(fast=scalar.variance(), slow=per_row.variance())
-        assert frame.select(r=scalar.variance()).height == 1
-        assert both.height == frame.height
-        assert_series_equal(both["fast"], both["slow"], check_names=False, check_exact=True)
+    with pytest.raises(pl.exceptions.ComputeError):
+        frame.select(r=scalar.variance())
+    with pytest.raises(pl.exceptions.ComputeError):
+        frame.select(r=per_row.variance())
 
 
 @pytest.mark.parametrize(
