@@ -67,7 +67,7 @@ _needs_partitioned_broadcast = pytest.mark.skipif(
 """Gate for the two partition suites below. The plain-`select` suites run on every supported version."""
 
 
-def _call(spec: DistSpec, dist: _UnivariateDistribution, method: str, value: pl.Expr | None) -> pl.Expr:
+def _call(spec: DistSpec, dist: _UnivariateDistribution, method: str, value: pl.Expr | float | None) -> pl.Expr:
     """One public method by name: a value-keyed call on `value`, or a seeded draw when `value` is `None`."""
     if value is None:
         return dist.sample(seed=0) if method == "sample" else dist.samples(size=3, seed=0)
@@ -80,7 +80,7 @@ def _call(spec: DistSpec, dist: _UnivariateDistribution, method: str, value: pl.
             return dist.log_pmf(value)
         msg = f"unsupported distribution family: {type(dist)}"  # pragma: no cover
         raise TypeError(msg)  # pragma: no cover
-    call: Callable[[pl.Expr], pl.Expr] = getattr(dist, method)
+    call: Callable[[pl.Expr | float], pl.Expr] = getattr(dist, method)
     return call(value)
 
 
@@ -138,6 +138,25 @@ def test_length_one_value_broadcasts(spec: DistSpec, method: str, column: str) -
         _call(spec, dist, method, pl.repeat(scalar, n=pl.len())),
         height=_ROWS,
     )
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
+@pytest.mark.parametrize(("method", "column"), _VALUE_METHODS)
+def test_a_scalar_point_broadcasts_to_the_frame_height(spec: DistSpec, method: str, column: str) -> None:
+    """A Python scalar point with all-scalar parameters is full height under `with_columns`, as `Float64`.
+
+    Nothing else in this file reaches that shape: every other case keeps one full-length input, so the
+    height comes from that input rather than from polars broadcasting a wholly length-1 expression.
+    Under `select` the same expression is one row, which is `pl.lit`'s own semantics.
+    """
+    frame = _FRAMES[spec.name]
+    dist = spec.make_literals(spec.example)
+    point = float(frame[column][0])
+
+    widened = frame.with_columns(r=_call(spec, dist, method, point))["r"]
+    assert widened.len() == _ROWS, f"{method} collapsed a scalar point to {widened.len()} rows"
+    assert widened.dtype == pl.Float64, f"{method} returned {widened.dtype}"
+    assert frame.select(r=_call(spec, dist, method, point)).height == 1
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
