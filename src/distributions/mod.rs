@@ -60,44 +60,11 @@ pub(crate) fn align_inputs(inputs: &[Series]) -> PolarsResult<Cow<'_, [Series]>>
     ))
 }
 
-/// Whether every parameter (every input after the evaluation point) arrived as a length-1 Series: a
-/// `pl.lit`, or an aggregate whose length polars only knows once it has run.
-///
-/// One length-1 parameter beside a column is *not* constant. It still aligns, so a column that fits
-/// neither the frame nor its sibling is still reported by [`align_inputs`].
-fn constant_params(inputs: &[Series]) -> bool {
+/// Every parameter (every input after the evaluation point) is a length-1 Series: a `pl.lit`, or an
+/// aggregate whose length polars only knows once it has run. One length-1 parameter beside a column
+/// is not constant; it still aligns, so a mismatched column is still reported by [`align_inputs`].
+pub(crate) fn params_are_constant(inputs: &[Series]) -> bool {
     inputs[1..].iter().all(|param| param.len() == 1)
-}
-
-/// The one parameterisation a two-parameter call carries, or `None` when the row loop must run.
-///
-/// `None` means either that a parameter is a column, or that a length-1 parameter is null and has no
-/// value to build from; both fall through to the caller's row loop, which nulls every row and keeps
-/// the evaluation point's own dtype gate.
-///
-/// Coercing and checking here rather than after [`align_inputs`] is what makes a constant
-/// parameterisation raise once per call, before any row is read and even on a zero-row frame. The
-/// check runs *before* the null test so the four drivers cannot drift on that ordering again.
-pub(crate) fn constant_pair<A, B, CoerceP1, CoerceP2, Check>(
-    inputs: &[Series],
-    coerce_p1: CoerceP1,
-    coerce_p2: CoerceP2,
-    check: Check,
-) -> PolarsResult<Option<(A::Native, B::Native)>>
-where
-    A: PolarsNumericType,
-    B: PolarsNumericType,
-    CoerceP1: Fn(&Series) -> PolarsResult<ChunkedArray<A>>,
-    CoerceP2: Fn(&Series) -> PolarsResult<ChunkedArray<B>>,
-    Check: Fn(&ChunkedArray<A>, &ChunkedArray<B>) -> PolarsResult<()>,
-{
-    if !constant_params(inputs) {
-        return Ok(None);
-    }
-    let p1 = coerce_p1(&inputs[1])?;
-    let p2 = coerce_p2(&inputs[2])?;
-    check(&p1, &p2)?;
-    Ok(p1.get(0).zip(p2.get(0)))
 }
 
 /// The dtype gate every evaluation point and float parameter passes: `Int*`, `UInt*`, `Float*` and
@@ -201,13 +168,11 @@ impl<N: Copy + std::fmt::Display> PairDomain<N> {
 
 /// Shared driver for the constant-parameter value-keyed fast paths.
 ///
-/// The constant-parameter counterpart of each distribution's `value_keyed` helper: when every
-/// distribution parameter is a Python scalar, the caller validates them and builds the
-/// distribution **once**, and only the evaluation-point column crosses FFI. This maps `f` over
-/// that single column, where `f` is the same per-method body the per-row path uses, so the two
-/// paths cannot drift and output is bit-identical. The per-row drivers hand off here as well when
-/// every parameter arrives as a length-1 Series, so a `pl.lit` or an aggregate parameter costs what
-/// a Python scalar does.
+/// The constant-parameter counterpart of each distribution's `value_keyed` helper: the parameters are
+/// Python scalars in kwargs, or every one is a length-1 Series ([`params_are_constant`]), so the
+/// caller validates them and builds the distribution **once** and this maps `f` over the
+/// evaluation-point column. `f` is the same per-method body the per-row path uses, so the two paths
+/// cannot drift and output is bit-identical.
 ///
 /// Null contract: `value` is the only nullable input this driver sees; a null `value` propagates,
 /// and `f` returning `None` nulls the row on the method's own terms (`ppf` outside `[0, 1]`).
@@ -231,15 +196,16 @@ where
     Ok(ca.with_name(name).into_series())
 }
 
-/// Constant-parameter twin of [`value_keyed_derived_per_row`], over [`value_keyed_scalar`].
+/// Constant-parameter twin of [`value_keyed_derived_per_row`], over [`value_keyed_scalar`]: derives
+/// once per call, so the parameter-only terms `derive` hoists (`Bernoulli`'s `1 - p`, `Exponential`'s
+/// `ln(rate)`) are computed once instead of per row. The caller has already checked `param`.
 ///
-/// Checks the parameter against `domain` and derives once per call, then maps `select` over the
-/// evaluation-point column, so the parameter-only terms `derive` hoists (`Bernoulli`'s `1 - p`,
-/// `Exponential`'s `ln(rate)`) are computed once instead of per row.
+/// The kwargs plugins and the driver's length-1 branch both call this rather than spelling the two
+/// lines themselves, so the two spellings share one instantiation: same output bit for bit, and the
+/// same machine code (separate copies of the closure measured 7% apart on one method, 28% on another).
 pub(crate) fn value_keyed_derived_scalar<Branches, Derive, Select>(
     value: &Series,
     param: f64,
-    domain: &ParamDomain,
     derive: Derive,
     select: Select,
 ) -> PolarsResult<Series>
@@ -247,17 +213,12 @@ where
     Derive: Fn(f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
-    domain.check(param)?;
     let branches = derive(param);
     value_keyed_scalar(value, |v| select(&branches, v))
 }
 
-/// Constant-parameter twin of [`value_keyed_derived_pair_per_row`], over [`value_keyed_scalar`].
-///
-/// Derives once per call, so the parameter-only terms `derive` hoists (`Uniform`'s `1 / range`,
-/// `-ln(range)`) are computed once instead of per row. Unlike [`value_keyed_derived_scalar`] it
-/// validates nothing: a pair's rule is the distribution's own `check_params`, not a [`ParamDomain`],
-/// so `(a, b)` must already have passed it (via [`constant_pair`] or a kwargs struct's own check).
+/// Two-parameter sibling of [`value_keyed_derived_scalar`], shared by the same two spellings for the
+/// same reason. The caller has already checked `(a, b)`.
 pub(crate) fn value_keyed_derived_pair_scalar<Branches, Derive, Select>(
     value: &Series,
     a: f64,
@@ -289,8 +250,9 @@ where
 /// `check_params` is the caller's pass over the two parameter columns, run once before any row is
 /// built, so `build` cannot fail here; it stays `PolarsResult` because the `statrs` constructors are.
 ///
-/// A constant parameterisation ([`constant_pair`]) builds once and hands the value column to
-/// [`value_keyed_scalar`], expanding nothing.
+/// Constant parameters ([`params_are_constant`]) are checked and built once, before any row is read
+/// and even on a 0-row frame, and the value column takes [`value_keyed_scalar`]. A null constant
+/// falls through to the row loop, which nulls every row and keeps the value column's dtype gate.
 ///
 /// Null contract: any null among `(value, p1, p2)` nulls the row without calling `build`, matching
 /// the samplers. `NaN` contract: as in [`value_keyed_scalar`].
@@ -314,9 +276,13 @@ where
     Build: Fn(A::Native, B::Native) -> PolarsResult<S>,
     F: Fn(&S, f64) -> Option<f64>,
 {
-    if let Some((p1, p2)) = constant_pair(inputs, &coerce_p1, &coerce_p2, &check_params)? {
-        let dist = build(p1, p2)?;
-        return value_keyed_scalar(&inputs[0], |v| f(&dist, v));
+    if params_are_constant(inputs) {
+        let (p1, p2) = (coerce_p1(&inputs[1])?, coerce_p2(&inputs[2])?);
+        check_params(&p1, &p2)?;
+        if let Some((p1, p2)) = p1.get(0).zip(p2.get(0)) {
+            let dist = build(p1, p2)?;
+            return value_keyed_scalar(&inputs[0], |v| f(&dist, v));
+        }
     }
 
     let inputs = align_inputs(inputs)?;
@@ -355,8 +321,8 @@ where
 /// `domain`'s column pass runs once before any row is built, so nothing inside the row loop
 /// validates.
 ///
-/// A length-1 parameter takes [`value_keyed_derived_scalar`] instead, checked and derived once and
-/// never expanded. A null one falls through to the row loop, which nulls every row.
+/// A constant parameter ([`params_are_constant`]) is checked and derived once, as in
+/// [`value_keyed_per_row`]; a null one falls through to the row loop, which nulls every row.
 ///
 /// Null contract: a null parameter nulls the row before the evaluation point is read; then a null
 /// value nulls it. `select` returning `None` nulls it on the method's own terms (`ppf` outside
@@ -376,9 +342,11 @@ where
     Derive: Fn(f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
-    if constant_params(inputs) {
-        if let Some(param) = coerce_f64(&inputs[1])?.get(0) {
-            return value_keyed_derived_scalar(&inputs[0], param, domain, derive, select);
+    if params_are_constant(inputs) {
+        let param = coerce_f64(&inputs[1])?;
+        domain.check_column(&param)?;
+        if let Some(param) = param.get(0) {
+            return value_keyed_derived_scalar(&inputs[0], param, derive, select);
         }
     }
 
@@ -466,9 +434,8 @@ pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) ->
 /// three `Series`.
 ///
 /// `check_params` is the caller's column pass over the two parameter columns, each alone and the
-/// pair together, run once before any row is built. Null and `NaN` contracts as in
-/// [`value_keyed_derived_per_row`]: a null in either parameter nulls the row, and a constant
-/// parameterisation ([`constant_pair`]) takes [`value_keyed_derived_pair_scalar`] after the same check.
+/// pair together, run once before any row is built. Null, `NaN` and constant-parameter contracts as
+/// in [`value_keyed_derived_per_row`]; a null in either parameter nulls the row.
 pub(crate) fn value_keyed_derived_pair_per_row<Branches, CheckParams, Derive, Select>(
     inputs: &[Series],
     check_params: CheckParams,
@@ -480,8 +447,12 @@ where
     Derive: Fn(f64, f64) -> Branches,
     Select: Fn(&Branches, f64) -> Option<f64>,
 {
-    if let Some((a, b)) = constant_pair(inputs, coerce_f64, coerce_f64, &check_params)? {
-        return value_keyed_derived_pair_scalar(&inputs[0], a, b, derive, select);
+    if params_are_constant(inputs) {
+        let (a, b) = (coerce_f64(&inputs[1])?, coerce_f64(&inputs[2])?);
+        check_params(&a, &b)?;
+        if let Some((a, b)) = a.get(0).zip(b.get(0)) {
+            return value_keyed_derived_pair_scalar(&inputs[0], a, b, derive, select);
+        }
     }
 
     let inputs = align_inputs(inputs)?;

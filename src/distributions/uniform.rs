@@ -45,8 +45,7 @@ struct UniformParamsKwargs {
 }
 
 impl UniformParamsKwargs {
-    /// Binds the kwargs bounds into [`value_keyed_derived_pair_scalar`] behind [`checked_bounds`],
-    /// which is that driver's required check.
+    /// Validates once per call, then derives and maps through [`value_keyed_derived_pair_scalar`].
     fn value_keyed<Branches>(
         &self,
         value: &Series,

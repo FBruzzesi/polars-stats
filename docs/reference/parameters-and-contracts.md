@@ -169,7 +169,8 @@ a length-1 expression (`pl.lit(5.0)`, `pl.col("x").min()`) are one parameterisat
 any row is read, so `Uniform(5.0, 2.0)` and `Uniform(pl.lit(5.0), pl.lit(2.0))` both raise on an empty frame. A
 parameter column is validated over its values, and an empty column has none, so `Uniform(pl.col("lo"), pl.col("hi"))`
 returns an empty result instead. This applies to a value the strict cast refuses (`Binomial(n=pl.lit(-5))`) as much as
-to one outside its domain.
+to one outside its domain. The same once-per-call check runs before the value column's dtype gate, so when both are
+invalid a constant parameterisation reports the parameter and a parameter column reports the value column.
 
 Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
 them. The policy for distributions whose moments can be undefined is in

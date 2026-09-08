@@ -32,15 +32,15 @@ impl BernoulliParamsKwargs {
         build_dist(self.p)
     }
 
-    /// Binds the constant parameter and its domain into [`value_keyed_derived_scalar`], which
-    /// validates and derives once per call rather than per row.
+    /// Validates once per call, then derives and maps through [`value_keyed_derived_scalar`].
     fn value_keyed<Branches>(
         &self,
         value: &Series,
         derive: impl Fn(f64) -> Branches,
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
-        value_keyed_derived_scalar(value, self.p, &P, derive, select)
+        P.check(self.p)?;
+        value_keyed_derived_scalar(value, self.p, derive, select)
     }
 }
 

@@ -5,7 +5,8 @@ use rand::distr::Distribution;
 use statrs::distribution::DiscreteUniform;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, constant_pair, value_keyed_per_row, value_keyed_scalar, PairDomain,
+    align_inputs, coerce_f64, params_are_constant, value_keyed_per_row, value_keyed_scalar,
+    PairDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_i64_output, samples_per_row,
@@ -29,9 +30,7 @@ fn build_dist(min: i64, max: i64) -> PolarsResult<DiscreteUniform> {
     DiscreteUniform::new(min, max).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
-/// [`BOUNDS`]'s column pass as a `fn` item, which is what the drivers take. A method cannot be
-/// passed as one.
-fn check_bounds(min: &Int64Chunked, max: &Int64Chunked) -> PolarsResult<()> {
+fn check_params(min: &Int64Chunked, max: &Int64Chunked) -> PolarsResult<()> {
     BOUNDS.check_columns(min, max)
 }
 
@@ -75,7 +74,6 @@ impl DiscreteUniformParamsKwargs {
         build_dist(self.min, self.max)
     }
 
-    /// Binds the constant bounds into [`du_value_keyed_scalar`].
     fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
     where
         F: Fn(&Support, Point) -> Option<f64>,
@@ -334,23 +332,27 @@ fn coerce_points(value: &Series) -> PolarsResult<Points> {
 }
 
 /// Apply a closed-form `f(support, point)` element-wise over `(value, min, max)`; shared by the
-/// six value-keyed plugins with an integer-exact path. Null and `NaN` contracts follow
-/// [`value_keyed_per_row`]: a null bound nulls the row without building, an invalid
+/// six value-keyed plugins with an integer-exact path. Null, `NaN` and constant-parameter contracts
+/// follow [`value_keyed_per_row`]: a null bound nulls the row without building, an invalid
 /// parameterisation raises from [`BOUNDS`]'s column pass whatever the row's point is, and constant
-/// bounds ([`constant_pair`]) take [`du_value_keyed_scalar`] after the same pass.
+/// bounds take [`du_value_keyed_scalar`] after the same pass.
 fn du_value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Support, Point) -> Option<f64>,
 {
-    if let Some((min, max)) = constant_pair(inputs, coerce_bound, coerce_bound, check_bounds)? {
-        return du_value_keyed_scalar(&inputs[0], min, max, f);
+    if params_are_constant(inputs) {
+        let (min, max) = (coerce_bound(&inputs[1])?, coerce_bound(&inputs[2])?);
+        check_params(&min, &max)?;
+        if let Some((min, max)) = min.get(0).zip(max.get(0)) {
+            return du_value_keyed_scalar(&inputs[0], min, max, f);
+        }
     }
 
     let inputs = align_inputs(inputs)?;
     let name = inputs[0].name().clone();
     let min = coerce_bound(&inputs[1])?;
     let max = coerce_bound(&inputs[2])?;
-    check_bounds(&min, &max)?;
+    check_params(&min, &max)?;
 
     let ca: Float64Chunked = match coerce_points(&inputs[0])? {
         Points::Float(v) => try_ternary_elementwise(&v, &min, &max, |v, lo, hi| {
@@ -436,7 +438,7 @@ fn discreteuniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
         inputs,
         coerce_bound,
         coerce_bound,
-        check_bounds,
+        check_params,
         build_support,
         ppf_value,
     )
@@ -449,7 +451,7 @@ fn discreteuniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
         inputs,
         coerce_bound,
         coerce_bound,
-        check_bounds,
+        check_params,
         build_support,
         isf_value,
     )

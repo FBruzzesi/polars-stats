@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Binomial, Normal
+from polars_stats import Binomial, DiscreteUniform, Exponential, Normal, Uniform
 from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import (
     PARTITIONED_BROADCAST_AVAILABLE,
@@ -222,6 +222,47 @@ def test_reduced_value_expressions_broadcast(reducer: str) -> None:
     )
 
 
+_REDUCED_PARAMETERS: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution]] = {
+    "normal": (
+        Normal(mu=pl.col("lo").first(), sigma=pl.col("hi").max()),
+        Normal(mu=pl.repeat(1.0, n=pl.len()), sigma=pl.repeat(6.0, n=pl.len())),
+    ),
+    "exponential": (Exponential(rate=pl.col("hi").max()), Exponential(rate=pl.repeat(6.0, n=pl.len()))),
+    "uniform": (
+        Uniform(min=pl.col("lo").first(), max=pl.col("hi").max()),
+        Uniform(min=pl.repeat(1.0, n=pl.len()), max=pl.repeat(6.0, n=pl.len())),
+    ),
+    "discreteuniform": (
+        DiscreteUniform(min=pl.col("n_lo").min(), max=pl.col("n_hi").max()),
+        DiscreteUniform(min=pl.repeat(0, n=pl.len(), dtype=pl.Int64), max=pl.repeat(7, n=pl.len(), dtype=pl.Int64)),
+    ),
+}
+"""One distribution per Rust driver: parameters reduced from a column, beside the same constants at full length."""
+
+
+@pytest.mark.parametrize(("reduced", "full_length"), _REDUCED_PARAMETERS.values(), ids=list(_REDUCED_PARAMETERS))
+def test_reduced_parameter_expressions_broadcast(
+    reduced: _UnivariateDistribution, full_length: _UnivariateDistribution
+) -> None:
+    """A parameter reduced from a column is length 1 only once it has run, and is handled like a literal.
+
+    On a 0-row frame the reduction is null, so the call is a null constant and the result stays empty.
+    """
+    frame = pl.DataFrame(
+        {
+            "x": [0.5, 1.0, 2.0, 3.0],
+            "lo": [1.0, 2.0, 0.5, 1.5],
+            "hi": [4.0, 6.0, 5.0, 4.5],
+            "n_lo": [1, 2, 0, 1],
+            "n_hi": [6, 7, 5, 6],
+        }
+    )
+    x = pl.col("x")
+
+    _assert_same_rows(frame, reduced.cdf(x), full_length.cdf(x), height=frame.height, exact=True)
+    assert frame.head(0).select(r=reduced.cdf(x)).height == 0
+
+
 @pytest.mark.parametrize("moment", ["mean", "variance", "std", "median", "entropy"])
 def test_length_one_parameter_beside_a_column_moment(moment: str) -> None:
     """A length-1 parameter beside a full-length one gives a full-length moment.
@@ -327,12 +368,9 @@ def test_multi_chunk_frame_broadcasts() -> None:
     ],
 )
 def test_broadcast_n_still_rejects_a_bad_dtype(n: pl.Expr, message: str) -> None:
-    """A length-1 `n` beside a column `p` is the mixed shape, so alignment runs *before* the cast and
-    `coerce_n` judges the expanded column, still rejecting it.
+    """A length-1 `n` beside a column `p` aligns before the cast, so `coerce_n` judges the expanded column.
 
-    `n` is the one parameter whose cast can reject, so it is the one place the order is observable. An
-    *all*-length-1 call casts first instead, pinned by
-    `value_keyed_fast_path_test.py::test_a_constant_the_cast_rejects_also_raises_on_an_empty_frame`.
+    `n` is the one parameter whose cast can reject, so it is the one place the order is observable.
     """
     frame = pl.DataFrame({"x": [0.0, 1.0, 2.0, 3.0], "p": [0.5] * 4})
 

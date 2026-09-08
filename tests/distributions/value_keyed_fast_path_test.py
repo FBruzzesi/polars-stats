@@ -13,12 +13,11 @@ routing are pinned here, both of which the bit-equality property test
   must produce identical output. A non-finite parameter is invalid by the library's own check,
   whether or not `statrs` would accept it. The fast path cannot quietly accept or reject something
   the per-row path does not.
-* **Constants validate up front, columns validate value by value.** A Python scalar rides in kwargs
-  and a length-1 expression (`pl.lit`, an aggregate) arrives as a length-1 input. Both are one
-  parameterisation, checked once before any value is read, so an invalid one raises even on a
-  zero-row frame, whether a domain or the strict cast rejects it. A parameter *column* is checked
-  over its values, and an empty column has none, so it returns empty. Only an all-length-1 call takes
-  that branch; one constant beside a column still aligns, and a mismatched column is still reported.
+* **Constants validate up front, columns validate value by value.** A Python scalar in kwargs and a
+  length-1 expression (`pl.lit`, an aggregate) are one parameterisation, checked once before any value
+  is read, so an invalid one raises even on a zero-row frame. A parameter *column* is checked over its
+  values, and an empty column has none, so it returns empty. One constant beside a column still
+  aligns, and a mismatched column is still reported.
 
 A Python `None` parameter cannot reach either path: `coerce_param` rejects it as a `TypeError` at construction, covered
 by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here, and none for
@@ -175,11 +174,7 @@ _INVALID_PER_DRIVER: dict[
 def test_constant_parameters_validate_on_empty_input(
     scalar: _UnivariateDistribution, literal: _UnivariateDistribution, column: _UnivariateDistribution, fragment: str
 ) -> None:
-    """A constant parameterisation raises when invalid even with no rows to observe it; an empty column returns empty.
-
-    Python scalars and length-1 literals are both constants, checked once per call before any value is
-    read. A parameter column is checked value by value, and a zero-row column has none.
-    """
+    """An invalid constant raises with no rows to observe it; an invalid empty column returns empty."""
     empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
 
     for constant in (scalar, literal):
@@ -190,11 +185,9 @@ def test_constant_parameters_validate_on_empty_input(
 
 
 def test_a_constant_the_cast_rejects_also_raises_on_an_empty_frame() -> None:
-    """The zero-row change reaches cast rejections, not only parameter domains.
+    """`n = -5` is refused by the strict `Int64 -> UInt64` cast, not a domain check, and still before any row.
 
-    `n = -5` never gets as far as a domain check: `coerce_n`'s strict `Int64 -> UInt64` cast refuses it,
-    and on the length-1 path that cast now runs before any row. A negative Python-scalar `n` has no
-    spelling here, `coerce_n` rejects it as a `ValueError` at construction.
+    A negative Python-scalar `n` has no spelling here: `coerce_n` rejects it at construction.
     """
     empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
 
@@ -204,22 +197,19 @@ def test_a_constant_the_cast_rejects_also_raises_on_an_empty_frame() -> None:
     assert empty.select(r=Binomial(n=_col(-5, _INT), p=_col(0.5)).pmf(pl.col("x"))).height == 0
 
 
-@pytest.mark.parametrize(
-    "dist",
-    [
-        Exponential(pl.lit(None, dtype=pl.Float64)),
-        Uniform(pl.lit(None, dtype=pl.Float64), pl.lit(1.0)),
-        Normal(pl.lit(0.0), pl.lit(None, dtype=pl.Float64)),
-        DiscreteUniform(pl.lit(None, dtype=_INT), pl.lit(6, dtype=_INT)),
-    ],
-    ids=["exponential", "uniform", "normal", "discreteuniform"],
-)
-def test_a_null_constant_parameter_nulls_every_row(dist: _UnivariateDistribution) -> None:
-    """A null length-1 parameter is one parameterisation with nothing to build from.
+# One null length-1 parameterisation per Rust driver, plus Binomial, whose `n` has its own coercer.
+_NULL_CONSTANT_PER_DRIVER: dict[str, _UnivariateDistribution] = {
+    "exponential": Exponential(pl.lit(None, dtype=pl.Float64)),
+    "uniform": Uniform(pl.lit(None, dtype=pl.Float64), pl.lit(1.0)),
+    "normal": Normal(pl.lit(0.0), pl.lit(None, dtype=pl.Float64)),
+    "binomial": Binomial(n=pl.lit(None, dtype=_INT), p=pl.lit(0.5)),
+    "discreteuniform": DiscreteUniform(pl.lit(None, dtype=_INT), pl.lit(6, dtype=_INT)),
+}
 
-    Each driver declines it and falls back to the row loop rather than raising, so every row is null,
-    as it is for a null parameter column. One case per driver.
-    """
+
+@pytest.mark.parametrize("dist", _NULL_CONSTANT_PER_DRIVER.values(), ids=list(_NULL_CONSTANT_PER_DRIVER))
+def test_a_null_constant_parameter_nulls_every_row(dist: _UnivariateDistribution) -> None:
+    """A null length-1 parameter nulls every row, as a null parameter column does."""
     frame = pl.DataFrame({"x": [0.5, 1.0, 2.0]})
 
     result = frame.select(r=_density(dist, pl.col("x")))["r"]
@@ -228,25 +218,18 @@ def test_a_null_constant_parameter_nulls_every_row(dist: _UnivariateDistribution
     assert result.null_count() == frame.height
 
 
-def test_a_null_constant_parameter_still_gates_the_value_dtype() -> None:
-    """Declining the fast path must not skip the evaluation point's dtype gate.
-
-    The row loop the null falls back to coerces the value column, so a `String` one is still refused.
-    Short-circuiting a null parameterisation straight to all-nulls would lose that.
-    """
+@pytest.mark.parametrize("dist", _NULL_CONSTANT_PER_DRIVER.values(), ids=list(_NULL_CONSTANT_PER_DRIVER))
+def test_a_null_constant_parameter_still_gates_the_value_dtype(dist: _UnivariateDistribution) -> None:
+    """A null length-1 parameter does not skip the value column's dtype gate: a `String` column is still refused."""
     strings = pl.DataFrame({"x": ["a", "b"]})
 
     with pytest.raises(pl.exceptions.ComputeError, match="must be a numeric column"):
-        strings.select(r=Normal(pl.lit(0.0), pl.lit(None, dtype=pl.Float64)).pdf(pl.col("x")))
+        strings.select(r=_density(dist, pl.col("x")))
 
 
 @pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt64, pl.Int32])
 def test_discreteuniform_integer_points_agree_across_bound_spellings(dtype: pl.DataType) -> None:
-    """The fast path keeps DiscreteUniform's integer-exact point dispatch.
-
-    `du_value_keyed_scalar` re-dispatches on the value dtype, so its `Int` and `Wide` arms are reached
-    only from an integer value column. `UInt64` is the only dtype that reaches the `Wide` arm.
-    """
+    """Integer points stay exact under every bound spelling; `UInt64` is the one dtype with its own arm."""
     frame = pl.DataFrame({"x": [0, 1, 3, 6, 7]}, schema={"x": dtype})
     expected = frame.select(r=DiscreteUniform(1, 6).pmf(pl.col("x")))["r"]
 

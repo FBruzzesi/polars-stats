@@ -124,9 +124,8 @@ The value-keyed methods do the same, and they reach it by *length* rather than b
 rides in `kwargs`, but `pl.lit(0.3)` and `pl.col("x").min()` arrive as ordinary length-1 inputs whose length polars
 only knows once the aggregate has run. When every parameter is length 1 the driver casts and checks those length-1
 columns, builds once, and maps the method body over the value column, so the parameters are never expanded to full
-height and never re-validated per row. The one observable consequence is on a 0-row frame, where the check now runs
-with no row to observe it; see
-[Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors).
+height and never re-validated per row. What that changes for the caller (a 0-row frame, and which of two simultaneous
+errors is reported) is in [Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors).
 
 ### `samples` draws each row's array in one native call
 
