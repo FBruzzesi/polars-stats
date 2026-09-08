@@ -1,10 +1,8 @@
-"""Every value-keyed method reports an invalid parameterisation, whichever branch the value selects.
+"""Every value-keyed method reports an invalid parameterisation, whatever the evaluation point holds.
 
-Two axes, one contract. The first test sweeps the *evaluation value* across every branch of every
-method, which holds because every value-keyed method validates inside the Rust plugin that computes
-it. The second holds the value at `NaN` and targets `propagate_null_and_nan` instead, a
-`when/then/otherwise` wrapped around every public value-keyed method: a second place the validator
-can sit inside an arm, one level above the distribution.
+The first test sweeps the *evaluation value* across every branch of every method, which holds because
+every value-keyed method validates inside the Rust plugin that computes it. The other two hold the
+value at `NaN` and at null, the rows a validator inside a `when` arm would never see.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from polars_stats import (
     Normal,
     Uniform,
 )
-from tests._polars_compat import ARM_MASKING_HIDES_VALIDATION
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,7 +66,7 @@ _CASES: tuple[_Case, ...] = (
     _Case("Uniform", Uniform(min=pl.col("lo"), max=pl.col("hi")), {"lo": [0.0, 5.0], "hi": [1.0, 2.0]}, "max must be"),
 )
 
-_VALUE_METHODS = ("pdf", "log_pdf", "pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf")
+_SUPPORT_POINT_METHODS = ("pdf", "log_pdf", "pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf")
 """Support-point methods. `pdf` / `pmf` are family-specific, so a missing one is skipped, not failed."""
 
 _QUANTILE_METHODS = ("ppf", "isf")
@@ -81,12 +78,12 @@ _QUANTILES = (-0.5, 0.001, 0.5, 0.999, 1.5)
 """In-range quantiles plus the two out-of-range values, which take the guard branch instead of computing.
 
 A `None` quantile is not probed here. It is not a statement about which branch the value selects, so
-it gets its own test below, alongside the `NaN` point that leaks through the same wrapper.
+it gets its own test below, alongside the `NaN` point.
 """
 
 
 _METHOD_VALUES: tuple[tuple[str, tuple[float, ...]], ...] = (
-    *((method, _SUPPORT_POINTS) for method in _VALUE_METHODS),
+    *((method, _SUPPORT_POINTS) for method in _SUPPORT_POINT_METHODS),
     *((method, _QUANTILES) for method in _QUANTILE_METHODS),
 )
 """Each method paired with the whole value sweep it is contracted to raise on."""
@@ -129,39 +126,32 @@ def test_invalid_parameter_raises_whichever_branch_the_value_selects(
     assert not misnamed, f"{case.name}.{method} raised without naming `{case.fragment}` at {misnamed}"
 
 
-_NAN_METHODS = (*_VALUE_METHODS, *_QUANTILE_METHODS)
-"""Every value-keyed method, since the wrapper below sits on all of them identically."""
+_VALUE_KEYED_METHODS = (*_SUPPORT_POINT_METHODS, *_QUANTILE_METHODS)
+"""All ten; the `NaN` and null points below are probed on every one."""
+
+
+def _unreported_at(case: _Case, point: float | None) -> list[str]:
+    """Every method that computes at `point`, or raises without naming `case.fragment`."""
+    probed = [(method, fn) for method in _VALUE_KEYED_METHODS if (fn := getattr(case.dist, method, None)) is not None]
+    # Eight of the ten always resolve; the other two are the wrong-family `pdf` / `pmf` pair. Asserted
+    # so a renamed method shrinks the sweep loudly instead of silently.
+    assert len(probed) == len(_VALUE_KEYED_METHODS) - 2
+    reports = [(method, _report(case, fn, point)) for method, fn in probed]
+    # Silence and a misnamed message both mean the invalid row went unreported.
+    return [method for method, report in reports if report is None or case.fragment not in report]
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_ids)
-def test_invalid_parameter_raises_at_a_nan_evaluation_point(case: _Case, request: pytest.FixtureRequest) -> None:
+def test_invalid_parameter_raises_at_a_nan_evaluation_point(case: _Case) -> None:
     """One assertion per distribution, over every value-keyed method, at a `NaN` evaluation point.
 
-    The methods are looped inside rather than parametrised over, unlike the test above: leakage there
-    varies by method, so its gate needs method precision, while here all 72 (distribution, method)
-    pairs leak on polars 1.44.1 and all 72 raise on 1.43.2. One item per distribution matches that
-    shape and keeps the gate to one marker instead of seventy-two.
+    Looped, not parametrised: the point is the same for every method, so one item per distribution is
+    the claim.
 
-    The leak is in `propagate_null_and_nan` (`_base.py`), not in any distribution: it spells the
-    null/`NaN` overlay as `when(...).then(...).otherwise(result)`, so from polars 1.44 the plugin in
-    `result` is masked out on exactly the `NaN` rows and never validates. Bypassing the wrapper makes
-    the same call raise, which is why `Bernoulli` and `DiscreteUniform` leak here despite computing
-    entirely in Rust. Porting a distribution does not fix this one; deleting the wrapper does.
+    From polars 1.44 a `when` arm is masked to null on the rows it does not select, so a validator
+    reachable only from inside an arm never sees a `NaN` row; the plugin has to answer that row itself.
     """
-    # Passed as the marker's own condition rather than an `if`, since it is true for every item here:
-    # a Python-level branch would leave its false side unexecuted on polars >= 1.44.
-    reason = "pola-rs/polars#29005, at the wrapper rather than the hook"
-    request.applymarker(pytest.mark.xfail(ARM_MASKING_HIDES_VALIDATION, reason=reason))
-
-    probed = [(method, fn) for method in _NAN_METHODS if (fn := getattr(case.dist, method, None)) is not None]
-    # Eight of the ten always resolve; the other two are the wrong-family `pdf` / `pmf` pair. Asserted
-    # so a renamed method shrinks the sweep loudly instead of silently.
-    assert len(probed) == len(_NAN_METHODS) - 2
-    reports = [(method, _report(case, fn, float("nan"))) for method, fn in probed]
-    # Silence and a misnamed message are merged into one predicate, where the test above keeps them
-    # apart. Every probe here leaks on the gated version, so a second assertion would be a line no
-    # supported polars ever reaches.
-    unreported = [method for method, report in reports if report is None or case.fragment not in report]
+    unreported = _unreported_at(case, float("nan"))
     assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a NaN point in {unreported}"
 
 
@@ -171,15 +161,7 @@ def test_invalid_parameter_raises_at_a_null_evaluation_point(case: _Case) -> Non
 
     A null *value* propagates to null, but it never downgrades an invalid parameterisation to one.
     That is what separates it from a null *parameter*, where there is nothing to reject and the row
-    nulls. Every per-row driver validates before it reads the value, so this holds on every supported
-    polars, which is why it needs no gate where the two tests above do.
-
-    Probed through the private hooks: `propagate_null_and_nan` spells the null overlay as the same
-    `when(...).then(...).otherwise(result)` the `NaN` test above indicts, so the public wrappers still
-    mask this from polars 1.44. Deleting the wrapper is what closes that half.
+    nulls. Every per-row driver validates before it reads the value.
     """
-    probed = [(method, fn) for method in _NAN_METHODS if (fn := getattr(case.dist, f"_{method}", None)) is not None]
-    assert len(probed) == len(_NAN_METHODS) - 2
-    reports = [(method, _report(case, fn, None)) for method, fn in probed]
-    unreported = [method for method, report in reports if report is None or case.fragment not in report]
+    unreported = _unreported_at(case, None)
     assert not unreported, f"{case.name} did not report the invalid `{case.fragment}` at a null point in {unreported}"

@@ -58,7 +58,7 @@ polars-stats/
 │   ├── __init__.py           # public exports
 │   ├── _lib.py               # plugin path resolution
 │   └── distributions/
-│       ├── _base.py          # ABCs + coercion / null helpers
+│       ├── _base.py          # ABCs + coercion helpers
 │       └── _<name>.py        # one Python class per distribution
 ├── tests/
 │   ├── distributions/<name>/ # one folder per distribution, one file per method

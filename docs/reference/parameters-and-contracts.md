@@ -67,9 +67,7 @@ are cast to `Float64` at evaluation, so an integer column works wherever a float
 That cast is the plugin's. The closed-form moments are polars arithmetic on the parameter itself, so there polars
 decides: a moment that is the parameter (`Normal(mu="mu").mean()`) keeps the column's dtype, and a `Decimal` or
 `Null`-typed `sigma` raises `InvalidOperationError` where polars has no kernel for it on the bare column (`pow`,
-`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`). `Decimal`
-is also the one numeric dtype refused as an *evaluation point*: the null/`NaN` guard applied to the value column has
-no `NaN` to test for on a decimal and raises `InvalidOperationError`.
+`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`).
 
 The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
@@ -77,17 +75,13 @@ bounds to `Int64`, so a `UInt64` bound *value* above `i64::MAX` raises rather th
 dtype, so a float column raises even when every value in it is null; a `Null`-dtype column
 propagates nulls like any other parameter.
 
-In **evaluation-point** position every non-numeric dtype is rejected: Polars fails the query with
-`InvalidOperationError`. That covers `Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object` and the temporal
-dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls. (On polars older than 1.25, an `Object`
-column in either position raises `PanicException` from polars' own arrow export instead.)
-
-In **parameter** position the Rust plugin enforces the same rule on every method: a `Boolean`, `String`,
-`Categorical`, `Enum`, `Struct`, `Object` or temporal column raises `ComputeError` naming the column and the dtype
-the plugin received (`Object` arrives as `binary`), and no row computes. Nothing is parsed and nothing is read as
-`0` / `1`. The one variation is the exception type: where a closed-form moment's own polars arithmetic meets the
+In **either position** the Rust plugin enforces that rule on every method: a `Boolean`, `String`, `Categorical`,
+`Enum`, `Struct`, `Object` or temporal column raises `ComputeError` naming the column and the dtype the plugin
+received (`Object` arrives as `binary`), and no row computes. Nothing is parsed and nothing is read as `0` / `1`.
+The one variation is the exception type: where a closed-form moment's own polars arithmetic meets a parameter
 column before the plugin does (`n * p` on a `String` `p`), polars raises `InvalidOperationError` instead. Cast a
-parameter to `Float64` when you mean a number.
+column to `Float64` when you mean a number. (On polars older than 1.25, an `Object` column in either position raises
+`PanicException` from polars' own arrow export instead.)
 
 ## Parameter validity
 
@@ -109,8 +103,8 @@ may hold any count its dtype can, up to `UInt64`.
 | `Geometric(p)` | `0 < p <= 1` | `p = 0` rejected, unlike `Bernoulli` |
 
 A violation raises `ComputeError` and fails the whole evaluation. The check runs over each parameter column before
-any row computes, so an invalid value raises even on a row whose other parameter is null. See
-[nulls, NaNs and errors](#nulls-nans-and-errors) below.
+any row computes, so an invalid value raises even on a row whose other parameter is null or whose evaluation point
+is null or `NaN`. See [nulls, NaNs and errors](#nulls-nans-and-errors) below.
 
 ## Sampling
 
@@ -146,15 +140,17 @@ Element dtype is per distribution and is not normalised to `Float64`:
 **`null` is reserved for missing inputs; an invalid parameter raises.** A silent null from a bad parameter would be
 indistinguishable from a legitimately missing input, and would propagate wrong answers downstream.
 
+The rows are in precedence order: per row, the first that applies decides, so a raise outranks a null and a null
+parameter outranks a `NaN` evaluation point. "Present" means non-null.
+
 | Situation | When detected | Behaviour |
 |---|---|---|
 | Wrong parameter *type* (a `list`, an `int` for a float parameter, a `bool`) | Python `__init__` | `TypeError`, no query runs |
-| Invalid parameter *value*, scalar or one column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls (one exception on polars >= 1.44, see [Known limitation](index.md#compatibility)) |
+| Non-numeric column in either position (`Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object`, temporal) | Rust evaluation | `ComputeError` naming the column and its dtype, no row computes; polars' `InvalidOperationError` where a closed-form moment's arithmetic meets a parameter column first (see [Accepted inputs](#accepted-inputs)) |
+| Invalid *present* parameter value: outside its domain, `NaN`, `+inf` or `-inf`, as a scalar or on any column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls, whatever else is on the row: a null sibling parameter, a null or `NaN` evaluation point |
+| `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
-| `null` parameter on a row | per row | `null` on that row, on every method and off the support too, no error (see below) |
-| `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
-| Non-numeric column as an *argument* | evaluation | Polars raises `InvalidOperationError` |
-| Non-numeric column as a *parameter* | Rust evaluation | `ComputeError` naming the column and its dtype; polars' `InvalidOperationError` where a closed-form moment's arithmetic meets the column first. Nothing computes either way (see [Accepted inputs](#accepted-inputs)) |
+| `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |

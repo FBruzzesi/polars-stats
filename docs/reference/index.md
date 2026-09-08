@@ -65,23 +65,3 @@ mean of a different distribution on every row.
 | Polars | `>=1.15` (the `pyo3-polars` ABI floor) |
 | OS | wheels for Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64 |
 | Runtime dependencies | `polars` only |
-
-!!! warning "Known limitation on polars >= 1.44"
-
-    On polars 1.44.0 and newer, an invalid parameter goes unreported on a row whose **evaluation point
-    is null or `NaN`**, for every distribution and both parameter spellings, scalar included.
-
-    Polars 1.44.0 ([pola-rs/polars#28498](https://github.com/pola-rs/polars/pull/28498)) masks the arms
-    of a `when/then/otherwise` to null on the rows an arm does not select. Every value-keyed method
-    validates inside the Rust plugin that computes it, but the wrapper that gives you `null -> null` and
-    `NaN -> NaN` sits one level above, and it masks those rows out of the plugin's input before it can
-    validate. With a column parameter that is per row; with a scalar one it takes the whole batch, so
-    `Bernoulli(p=1.5).pmf(col)` returns `[nan, nan]` over an all-`NaN` column but still raises as soon
-    as one evaluation point is finite.
-
-    **Not affected:** every finite evaluation point, on every method of every distribution, and every
-    *valid* computation, whose results are unchanged.
-
-    **Workarounds:** pin `polars<1.44` yourself, or validate column parameters before passing them.
-
-    Tracked as [pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005).

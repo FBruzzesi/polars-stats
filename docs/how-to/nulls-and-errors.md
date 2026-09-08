@@ -29,8 +29,9 @@ null parameter nulls the row even where the evaluation point alone would have se
 
 ## Find the rows that would raise
 
-An invalid parameter *value* (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`) fails the whole evaluation with a
-`ComputeError`. Locate the offending rows with an ordinary filter before scoring:
+An invalid parameter *value* (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, a `NaN` or an infinity) fails the
+whole evaluation with a `ComputeError`, whatever else is on the row. Locate the offending rows with an ordinary filter
+before scoring:
 
 ```python exec="yes" source="above" session="nulls-and-errors" result="python"
 frame = pl.DataFrame(

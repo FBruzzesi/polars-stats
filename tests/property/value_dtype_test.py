@@ -1,30 +1,22 @@
-"""Value-keyed methods accept narrow numeric evaluation points; non-numeric dtypes fail fast.
+"""Value-keyed methods accept every numeric evaluation-point dtype; non-numeric dtypes fail fast.
 
-`propagate_null_and_nan` in `_base.py` applies `is_nan` to the coerced value expression as-is,
-with no `Float64` cast. That relies on two polars behaviours, both verified on every supported
-version (1.15.0 through current) and pinned here so a regression in either direction surfaces:
+The public methods hand the coerced value expression to the Rust plugin as-is, with no `Float64` cast
+in Python. The plugin's dtype gate casts every numeric dtype (`Int*`, `UInt*`, `Float*`, `Decimal`) to
+`Float64` and refuses everything else with a `ComputeError`, in both positions. Pinned here so a
+regression in either direction surfaces:
 
-* `is_nan` returns `False` for integer dtypes (an integer can never hold a `NaN`), so an
-  integer-typed value column, or the integer literal a scalar like `cdf(0)` coerces to,
-  flows through the guard and must evaluate exactly as its `Float64`-cast equivalent. The Rust
-  plugins cast the evaluation point to `Float64` internally; the closed-form hooks combine it
-  under polars supertype rules; both are exact for the grids used here.
-* `is_nan` raises `InvalidOperationError` for non-numeric dtypes (`Boolean`, `String`, temporal),
-  so an invalid value column is rejected up front, before any hook or plugin sees it. This is the
-  strict half of the contract: a numeric `String` column must not silently parse through the
-  statrs-backed paths (both a Python-side `cast` and the plugin's internal Rust cast would
-  otherwise accept it).
+* a narrow value column, or the integer literal a scalar like `cdf(0)` coerces to, must evaluate
+  exactly as its `Float64`-cast equivalent; every grid here is exact in every dtype it is cast to.
+* a non-numeric value column (`Boolean`, `String`, temporal, nested) is rejected before any row
+  computes: a numeric `String` column must not silently parse, and a `Boolean` one must not compute
+  as `0` / `1`, which is what polars' own cast would do with both.
 
-Below the guard, Rust refuses every non-numeric dtype with a `ComputeError` in both positions; parameters
-have no Python guard, so that is their whole contract. `Decimal` is numeric to Rust and computes in both.
-
-Whether a dtype reaches either half at all is `tests/plugin_boundary_dtype_test.py`'s question.
+Whether a dtype reaches the plugin at all is `tests/plugin_boundary_dtype_test.py`'s question.
 """
 
 from __future__ import annotations
 
 import math
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -41,8 +33,15 @@ if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
     from tests.property._specs import DistSpec
 
-_VALUE_DTYPES = (pl.Int64(), pl.UInt32(), pl.Float32(), *available_dtypes("Int128", "UInt128", "Float16"))
-"""`Int64` and `UInt32` cover the contract; `Int128`, `UInt128` and `Float16` each need a polars build feature."""
+_VALUE_DTYPES = (
+    pl.Int64(),
+    pl.UInt32(),
+    pl.Float32(),
+    pl.Decimal(10, 2),
+    *available_dtypes("Int128", "UInt128", "Float16"),
+)
+"""`Int64` and `UInt32` cover the integer contract and `Decimal` is the one numeric dtype that is neither integer nor
+float; `Int128`, `UInt128` and `Float16` each need a polars build feature."""
 
 _MAX_GRID = 16
 
@@ -107,8 +106,8 @@ def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType,
 def test_integer_scalar_value_matches_float_scalar(spec: DistSpec, data: st.DataObject) -> None:
     """`cdf(1)` (coerced by `as_expr` to a length-1 integer literal) equals `cdf(1.0)`.
 
-    One method suffices: the `as_expr` coercion and the `propagate_null_and_nan` guard this scalar
-    routes through are shared by every value-keyed method.
+    One method suffices: the `as_expr` coercion this scalar routes through, and the plugin gate that
+    casts it, are shared by every value-keyed method.
     """
     params = data.draw(spec.params)
     dist = spec.make(params)
@@ -116,10 +115,9 @@ def test_integer_scalar_value_matches_float_scalar(spec: DistSpec, data: st.Data
     assert_series_equal(frame.select(r=dist.cdf(1))["r"], frame.select(r=dist.cdf(1.0))["r"], check_exact=True)
 
 
-_REFUSED_VALUES = (
+_NON_NUMERIC_COLUMNS = (
     pl.Series("x", [True, False]),
     pl.Series("x", ["0.5", "1.0"]),
-    pl.Series("x", [Decimal("0.50"), Decimal("1.00")], dtype=pl.Decimal(10, 2)),
     pl.Series("x", ["a", "b"], dtype=pl.Categorical),
     pl.Series("x", ["a", "b"], dtype=pl.Enum(["a", "b"])),
     pl.Series("x", [{"a": 1}, {"a": 2}], dtype=pl.Struct({"a": pl.Int64})),
@@ -128,7 +126,7 @@ _REFUSED_VALUES = (
     pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Duration("us")),
     pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Time),
 )
-"""Every dtype the public guard refuses in the value position. `Decimal` is numeric, but `is_nan` has no `NaN` on it."""
+"""Every dtype the Rust gate refuses, in either position, where polars' own cast would compute."""
 
 
 @pytest.mark.parametrize(
@@ -136,56 +134,21 @@ _REFUSED_VALUES = (
     [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
     ids=["normal", "uniform"],
 )
-@pytest.mark.parametrize("series", _REFUSED_VALUES, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("series", _NON_NUMERIC_COLUMNS, ids=lambda s: str(s.dtype))
 def test_non_numeric_value_column_raises(dist: _UnivariateDistribution, series: pl.Series) -> None:
-    """A non-numeric value column is rejected up front, plugin-backed or closed-form alike.
-
-    Only the exception type is pinned, not the message: whether the guard's `is_nan` or a hook
-    operation (e.g. `Uniform`'s division on a `String`) resolves first is a polars
-    schema-resolution ordering detail. The contract is that the query errors instead of silently
-    computing (`InvalidOperationError` on every supported polars for both operators).
-    """
-    with pytest.raises(pl.exceptions.InvalidOperationError):
+    """A non-numeric evaluation point is refused before any row computes."""
+    with pytest.raises(pl.exceptions.ComputeError, match="'x' must be a numeric column"):
         series.to_frame().select(dist.cdf(pl.col("x")))
 
 
-_NON_NUMERIC = tuple(series for series in _REFUSED_VALUES if not series.dtype.is_decimal())
-"""Every dtype the Rust gate refuses, in either position, where polars' own cast would compute."""
-
-
-@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("series", _NON_NUMERIC_COLUMNS, ids=lambda s: str(s.dtype))
 @pytest.mark.parametrize("method", ["mean", "sample"], ids=str)
 def test_non_numeric_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
-    """A non-numeric *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
+    """A non-numeric *parameter* raises `ComputeError` from Rust, on a moment and on a sampler alike."""
     dist = Normal(mu="mu", sigma=1.0)
     expr = dist.mean() if method == "mean" else dist.sample(seed=0)
     with pytest.raises(pl.exceptions.ComputeError, match="'mu' must be a numeric column"):
         series.rename("mu").to_frame().select(r=expr)
-
-
-@pytest.mark.parametrize(
-    "dist",
-    [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
-    ids=["normal", "uniform"],
-)
-@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
-def test_non_numeric_value_column_raises_from_the_plugin(dist: _UnivariateDistribution, series: pl.Series) -> None:
-    """Below the public guard, the funnel refuses a non-numeric evaluation point: nothing parses, nothing computes."""
-    with pytest.raises(pl.exceptions.ComputeError, match="'x' must be a numeric column"):
-        series.to_frame().select(dist._cdf(pl.col("x")))
-
-
-@pytest.mark.parametrize(
-    "dist",
-    [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
-    ids=["normal", "uniform"],
-)
-def test_decimal_value_column_computes_through_the_hook(dist: _UnivariateDistribution) -> None:
-    """A `Decimal` evaluation point is numeric to the funnel and evaluates as its `Float64` cast."""
-    frame = pl.Series("x", [Decimal("0.50"), Decimal("0.25"), None], dtype=pl.Decimal(10, 2)).to_frame()
-    narrow = frame.select(r=dist._cdf(pl.col("x")))["r"]
-    wide = frame.select(r=dist._cdf(pl.col("x").cast(pl.Float64())))["r"]
-    assert_series_equal(narrow, wide, check_exact=True)
 
 
 @pytest.mark.parametrize("dtype", [*available_dtypes("Int128", "UInt128", "Float16"), pl.Decimal(10, 2)], ids=str)
