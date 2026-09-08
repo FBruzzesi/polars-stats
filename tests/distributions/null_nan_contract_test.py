@@ -11,10 +11,6 @@ A null parameter is answered before the evaluation point is read, so every metho
 A column that is not numeric (`Int*`, `UInt*`, `Float*`, `Decimal`, or `Null`-typed) is refused in either
 position before any row is built, with a `ComputeError` naming the column and its dtype; `Decimal` computes
 as its `Float64` cast and a `Null`-typed column as all-null.
-
-Value-keyed methods go through the private `_x` hooks: on polars >= 1.44 the public wrapper
-`propagate_null_and_nan` masks the plugin out of the null and `NaN` rows before it can validate.
-Moments and samplers have no wrapper and go through the public API.
 """
 
 from __future__ import annotations
@@ -100,9 +96,9 @@ _OUT_OF_DOMAIN: tuple[tuple[str, str, float], ...] = (
 )
 
 
-def _value_hooks(dist: _UnivariateDistribution) -> tuple[str, ...]:
-    density = ("_pmf", "_log_pmf") if isinstance(dist, DiscreteDistribution) else ("_pdf", "_log_pdf")
-    return (*density, "_cdf", "_log_cdf", "_sf", "_log_sf", "_ppf", "_isf")
+def _value_keyed_methods(dist: _UnivariateDistribution) -> tuple[str, ...]:
+    density = ("pmf", "log_pmf") if isinstance(dist, DiscreteDistribution) else ("pdf", "log_pdf")
+    return (*density, "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf")
 
 
 def _refusal(frame: pl.DataFrame, expr: pl.Expr) -> str | None:
@@ -118,12 +114,12 @@ _Probes = list[tuple[str, pl.DataFrame, pl.Expr]]
 _Overrides = dict[str, float | None]
 
 
-def _hook_probes(dist: _Dist, overrides: _Overrides, points: tuple[float | None, ...]) -> _Probes:
-    """Every value-keyed hook at every point, as `(label, frame, expr)`."""
+def _value_keyed_probes(dist: _Dist, overrides: _Overrides, points: tuple[float | None, ...]) -> _Probes:
+    """Every value-keyed method at every point, as `(label, frame, expr)`."""
     return [
-        (f"{hook}(x={x})", dist.frame(overrides, x), getattr(dist.dist, hook)(pl.col("x")))
+        (f"{method}(x={x})", dist.frame(overrides, x), getattr(dist.dist, method)(pl.col("x")))
         for x in points
-        for hook in _value_hooks(dist.dist)
+        for method in _value_keyed_methods(dist.dist)
     ]
 
 
@@ -133,10 +129,10 @@ def _sampler_probes(dist: _Dist, overrides: _Overrides) -> _Probes:
 
 
 def _probes(dist: _Dist, overrides: _Overrides, points: tuple[float | None, ...]) -> _Probes:
-    """The hooks at every point, then the moments and both samplers."""
+    """The value-keyed methods at every point, then the moments and both samplers."""
     row = dist.frame(overrides, 0.5)
     moments = [(method, row, getattr(dist.dist, method)()) for method in _MOMENTS]
-    return _hook_probes(dist, overrides, points) + moments + _sampler_probes(dist, overrides)
+    return _value_keyed_probes(dist, overrides, points) + moments + _sampler_probes(dist, overrides)
 
 
 def _unreported(dist: _Dist, overrides: _Overrides, slot: str) -> list[tuple[str, str | None]]:
@@ -197,7 +193,8 @@ def _accepted(column: str, dtype: pl.DataType, probes: _Probes) -> list[tuple[st
     """Every probe that computes, or raises without naming `column`, with `column` recast to `dtype`.
 
     A moment may refuse with polars' own `InvalidOperationError` instead: its closed-form arithmetic (`n * p`
-    on a `String` `p`) meets the column before the plugin does. Hooks and samplers reach the plugin first.
+    on a `String` `p`) meets the column before the plugin does. Value-keyed methods and samplers reach the plugin
+    first.
     """
     fragment = f"'{column}' must be a numeric column"
     refusals = [
@@ -214,8 +211,8 @@ def _accepted(column: str, dtype: pl.DataType, probes: _Probes) -> list[tuple[st
 
 @pytest.mark.parametrize("dtype", _REFUSED_DTYPES, ids=str)
 @pytest.mark.parametrize("dist", _DISTS, ids=lambda dist: dist.name)
-def test_non_numeric_evaluation_point_raises_on_every_hook(dist: _Dist, dtype: pl.DataType) -> None:
-    accepted = _accepted("x", dtype, _hook_probes(dist, {}, (0.5,)))
+def test_non_numeric_evaluation_point_raises_on_every_method(dist: _Dist, dtype: pl.DataType) -> None:
+    accepted = _accepted("x", dtype, _value_keyed_probes(dist, {}, (0.5,)))
     assert not accepted, f"{dist.name} took a {dtype} evaluation point: {accepted}"
 
 
@@ -237,11 +234,12 @@ _COLUMNS = [
 
 
 def _gate_probes(dist: _Dist, column: str) -> _Probes:
-    """The probes where the gate alone stands between `column` and the answer: the hooks, and for a parameter
-    the samplers too. The closed-form moments are polars arithmetic on the parameter itself, so their dtype
+    """The probes where only the gate stands between `column` and the answer.
+
+    The closed-form moments are left out: they are polars arithmetic on the parameter itself, so their dtype
     behaviour is polars' (a missing kernel raises, a bare parameter keeps its dtype), not the gate's.
     """
-    return _hook_probes(dist, {}, (0.5,)) + ([] if column == "x" else _sampler_probes(dist, {}))
+    return _value_keyed_probes(dist, {}, (0.5,)) + ([] if column == "x" else _sampler_probes(dist, {}))
 
 
 @pytest.mark.parametrize(("dist", "column"), _COLUMNS)

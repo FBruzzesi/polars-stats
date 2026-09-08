@@ -1,16 +1,10 @@
-"""The raw value-keyed plugins propagate a `NaN` evaluation point as `NaN`, `ppf` / `isf` included.
+"""Every value-keyed method propagates a `NaN` evaluation point as `NaN`, `ppf` / `isf` included.
 
-The public wrappers overlay `propagate_null_and_nan` (`_base.py`), which rewrites `NaN` rows
-regardless of what the plugins return, so this Rust-level contract is invisible through the public
-API; it is exercised here through the private `_x` hooks, which for the statrs-backed
-distributions are bare plugin calls. The `NaN` short-circuit lives centrally in the shared drivers
-(`value_keyed_scalar` / `value_keyed_per_row` in `src/distributions/mod.rs`) and is load-bearing
-in two places:
+The `NaN` short-circuit lives in the shared drivers (`value_keyed_scalar` / `value_keyed_per_row` in
+`src/distributions/mod.rs`) and is load-bearing in two places:
 
-* `Beta` `cdf` / `sf`: statrs' regularized incomplete beta panics on a `NaN` evaluation point, and
-  polars evaluates every `when`/`then`/`otherwise` branch over the full column, so the plugin runs
-  on `NaN` rows even though the Python guard discards their output there; without the
-  short-circuit the whole query aborts.
+* `Beta` `cdf` / `sf`: statrs' regularized incomplete beta panics on a `NaN` evaluation point, so
+  without the short-circuit the whole query aborts.
 * `Binomial`: `NaN < 0.0` is false and `NaN.floor() as u64` saturates to `0`, so unguarded bodies
   would return a confident `P(X <= 0)` (and a `pmf` of `0.0`).
 
@@ -65,17 +59,17 @@ _CASES = [
 ]
 
 
-def _value_hooks(dist: _UnivariateDistribution) -> tuple[str, ...]:
-    """Every value-keyed `_x` hook of `dist`, density methods named by family."""
-    density = ("_pmf", "_log_pmf") if isinstance(dist, DiscreteDistribution) else ("_pdf", "_log_pdf")
-    return (*density, "_cdf", "_log_cdf", "_sf", "_log_sf", "_ppf", "_isf")
+def _value_keyed_methods(dist: _UnivariateDistribution) -> tuple[str, ...]:
+    """Every value-keyed method of `dist`, density methods named by family."""
+    density = ("pmf", "log_pmf") if isinstance(dist, DiscreteDistribution) else ("pdf", "log_pdf")
+    return (*density, "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf")
 
 
 @pytest.mark.parametrize(("label", "dist"), _CASES, ids=[label for label, _ in _CASES])
-def test_raw_plugin_propagates_nan(label: str, dist: _UnivariateDistribution) -> None:
-    """Each hook yields `NaN` (not null, not a confident constant) for a `NaN` evaluation point."""
+def test_value_keyed_method_propagates_nan(label: str, dist: _UnivariateDistribution) -> None:
+    """Each method yields `NaN` (not null, not a confident constant) for a `NaN` evaluation point."""
     frame = pl.DataFrame({"x": [float("nan")]})
-    for hook in _value_hooks(dist):
-        out = frame.select(r=getattr(dist, hook)(pl.col("x")))["r"]
-        assert out.null_count() == 0, f"{label}.{hook} nulled a NaN evaluation point"
-        assert math.isnan(out.item()), f"{label}.{hook} did not propagate NaN"
+    for method in _value_keyed_methods(dist):
+        out = frame.select(r=getattr(dist, method)(pl.col("x")))["r"]
+        assert out.null_count() == 0, f"{label}.{method} nulled a NaN evaluation point"
+        assert math.isnan(out.item()), f"{label}.{method} did not propagate NaN"

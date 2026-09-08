@@ -59,8 +59,9 @@ Run `prek` through `make lint`, and do not pass `--no-verify` unless asked.
   [Contributing > Adding a distribution](./docs/contributing.md#adding-a-distribution), step 3.
 * **Write the scipy-parity test first**, then the implementation, then iterate until it passes within a tolerance you
   can justify.
-* **Override the private `_x` hook, never the public method.** The public methods add the null and `NaN` contract, and
-  the composing defaults call the hooks, so a public override is bypassed by everything built on it.
+* **Override the private `_x` hook, never the public method.** The public methods only coerce the argument, and the
+  composing defaults (`_sf`, the `_log_*` family, `median`) call the hooks, so a public override is bypassed by
+  everything built on it.
 * **Priorities, in order: correctness, ergonomics, maintainability, performance.** Performance is last on purpose:
   the polars engine carries large frames, so a clear formula beats a fast one. Reject a choice on performance grounds
   only when it is clearly suboptimal (an `O(n)` draw per row, a per-draw rebuild), never to shave constants.

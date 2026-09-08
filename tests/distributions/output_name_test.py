@@ -6,9 +6,7 @@ name). With column-valued parameters the output keeps polars root-name semantics
 the first parameter expression, which is what lets multi-column parameters (`pl.col("p1", "p2")`)
 and `.name.*` modifiers work.
 
-Value-keyed methods are named after the evaluation column: `propagate_null_and_nan` re-aliases its
-output to `value`'s resolved name, since its leading `pl.lit(None)` branch would otherwise name
-every value-keyed output `"literal"`.
+Value-keyed methods are named after the evaluation column, the plugin's first input.
 
 The parameter validators follow the same first-parameter rule. Polars resolves a plugin
 expression's output name from its first input, which is why the validator drivers set no name of
@@ -87,15 +85,19 @@ def test_samples_with_column_params_keeps_root_name(dist: _UnivariateDistributio
     assert _FRAME.select(dist.samples(size=3, seed=0)).columns == [root]
 
 
+# The methods every family has; `pdf` / `pmf` are the same plugin shape as `cdf`.
+_VALUE_KEYED_METHODS = ("cdf", "log_cdf", "sf", "log_sf", "ppf", "isf")
+
+
+@pytest.mark.parametrize("method", _VALUE_KEYED_METHODS)
 @pytest.mark.parametrize("dist", _SCALAR_PARAMS.values(), ids=list(_SCALAR_PARAMS))
-def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution) -> None:
-    """`cdf(pl.col("p"))` is named `"p"` via the guard's alias.
+def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution, method: str) -> None:
+    """`cdf(pl.col("p"))` is named `"p"`.
 
     Only the output name is pinned: how a downstream `.name.*` modifier resolves it is polars'
-    call and differs across supported versions (old polars resolves the *root* name, which for the
-    closed-form hooks is a scalar parameter's `pl.lit`).
+    call and differs across supported versions.
     """
-    assert _FRAME.select(dist.cdf(pl.col("p"))).columns == ["p"]
+    assert _FRAME.select(getattr(dist, method)(pl.col("p"))).columns == ["p"]
 
 
 # Every second parameter carries a different column name from its first, which is what makes these

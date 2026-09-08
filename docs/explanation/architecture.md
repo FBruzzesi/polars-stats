@@ -23,11 +23,12 @@ The method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, `isf`, the `log_*` family, 
 `entropy`, `sample`, `samples`) is defined on the abstract base classes `ContinuousDistribution` and
 `DiscreteDistribution`. The catalogue and the full table live in the [API reference](../reference/index.md#method-surface).
 
-**Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`,
-applies `propagate_null_and_nan`, then delegates the maths to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses
-implement and override the `_x` hooks, never the public methods.** The hook receives an already-coerced `pl.Expr` and
-returns the formula with no null or NaN handling; the base guarantees the input contract uniformly (null in, null out;
-`NaN` in, `NaN` out, matching scipy) along with input coercion.
+**Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`
+and delegates everything else to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses implement and override the
+`_x` hooks, never the public methods.** The hook receives an already-coerced `pl.Expr` and owns the whole per-row
+contract, the null and `NaN` rows included (null in, null out; `NaN` in, `NaN` out, matching scipy). Nothing sits
+between the hook and the caller; [Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)
+explain why a `when` / `then` / `otherwise` above it could not be trusted with those rows.
 
 Composing defaults live in the base and call the other hooks:
 

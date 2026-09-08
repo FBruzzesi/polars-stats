@@ -32,7 +32,7 @@ class _UnitUniform(ContinuousDistribution):
         return ()
 
     def _pdf(self, value: pl.Expr) -> pl.Expr:
-        return pl.when(value.is_between(0.0, 1.0)).then(1.0).otherwise(0.0)
+        return value.is_between(0.0, 1.0).cast(pl.Float64)
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
         return value.clip(0.0, 1.0)
@@ -66,10 +66,20 @@ class _FairCoin(DiscreteDistribution):
         return ()
 
     def _pmf(self, value: pl.Expr) -> pl.Expr:
-        return pl.when(value.is_in([0.0, 1.0])).then(0.5).otherwise(0.0)
+        return value.is_in([0.0, 1.0]).cast(pl.Float64) * 0.5
 
     def _cdf(self, value: pl.Expr) -> pl.Expr:
-        return pl.when(value < 0).then(0.0).when(value < 1).then(0.5).otherwise(1.0)
+        # A null or `NaN` point answers itself, first so the output keeps the value's name; the bare
+        # chain would answer `1.0` on both.
+        return (
+            pl.when(value.is_null() | value.is_nan())
+            .then(value)
+            .when(value < 0)
+            .then(0.0)
+            .when(value < 1)
+            .then(0.5)
+            .otherwise(1.0)
+        )
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         return (quantile > _MEDIAN_QUANTILE).cast(pl.Float64)
@@ -150,8 +160,7 @@ def test_the_default_sf_is_the_complement_of_cdf(toy: _Toy) -> None:
 
 
 def test_the_default_sf_keeps_the_null_and_nan_contract(toy: _Toy) -> None:
-    # `sf` wraps the hook in `propagate_null_and_nan`, so the default inherits the contract. Only the
-    # null and `NaN` rows are asserted here; the value is the test above.
+    # `1 - _cdf` passes the hook's null and `NaN` rows through; the value is the test above.
     frame = pl.DataFrame({"x": [toy.quantile, None, float("nan")]}, schema={"x": pl.Float64})
 
     got = frame.select(r=toy.dist.sf(pl.col("x")))["r"].to_list()
@@ -159,6 +168,14 @@ def test_the_default_sf_keeps_the_null_and_nan_contract(toy: _Toy) -> None:
     assert got[0] is not None
     assert got[1] is None
     assert math.isnan(got[2])
+
+
+def test_the_defaults_keep_the_hook_output_name(toy: _Toy) -> None:
+    # Polars names arithmetic after its left operand, so a default spelled `1 - hook` would be `"literal"`.
+    # Both toys name their hooks after the value, as the Rust plugins do.
+    frame = pl.DataFrame({"x": toy.grid})
+    for method in ("sf", f"log_{toy.density}", "log_cdf", "log_sf"):
+        assert frame.select(getattr(toy.dist, method)(pl.col("x"))).columns == ["x"], method
 
 
 def test_the_default_log_density_is_the_log_of_the_density(toy: _Toy) -> None:
