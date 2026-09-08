@@ -86,8 +86,8 @@ class DistSpec:
         make_series: Like `make_columns`, but every parameter is a `SERIES_ROWS`-long `pl.Series` literal, so
             the parameters outrun the frame and set the call's row count.
         example: One valid parameterisation, for tests that need a fixed frame rather than a sweep.
-        density: `pdf` or `pmf` as `(dist, expr) -> expr`. Typed loosely because the method differs by family;
-            the concrete distribution is fixed per spec.
+        density: `pdf` or `pmf` as `(dist, value) -> expr`, `value` an expression or a scalar. Typed
+            loosely because the method differs by family; the concrete distribution is fixed per spec.
         eval_range: `(lo, hi)` finite window for evaluating cdf / density on a grid.
         integration_bounds: `(lo, hi)` over which the pdf integrates to ~1 (continuous only);
             the normal is truncated to a wide multiple of `std`. `None` for discrete.
@@ -103,7 +103,7 @@ class DistSpec:
     make_literals: Callable[[tuple[float, ...]], _UnivariateDistribution]
     make_series: Callable[[tuple[float, ...]], _UnivariateDistribution]
     example: tuple[float, ...]
-    density: Callable[[Any, pl.Expr], pl.Expr]
+    density: Callable[[Any, pl.Expr | float], pl.Expr]
     eval_range: Callable[[tuple[float, ...]], tuple[float, float]]
     integration_bounds: Callable[[tuple[float, ...]], tuple[float, float]] | None = None
     support: Callable[[tuple[float, ...]], list[float]] | None = None

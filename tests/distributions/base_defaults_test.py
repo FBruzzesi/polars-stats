@@ -1,3 +1,18 @@
+"""The composing defaults a subclass gets for free, and the two toys that exercise them.
+
+Every shipped distribution overrides `_sf`, `_log_pdf` and `_log_pmf` with a form that keeps precision
+in a tail, so the defaults have no caller in the library. They are still what a new distribution
+inherits until it needs the accurate form.
+
+The toys pin the output-name contract only. Their hooks name their output after the value as a Rust
+plugin does, but of the eight only `_FairCoin._cdf` answers a null or `NaN` point the way a real hook
+must, which is what the `sf`-default test needs. Polars propagates a null through comparison and cast,
+so every hook is right there; it orders `NaN` above every float, so `_UnitUniform._pdf` and
+`_FairCoin._pmf` answer `0.0` on a `NaN` point, `_FairCoin._ppf` / `_isf` answer `1.0` / `0.0`. That
+contract is pinned on all nine real distributions in `null_nan_contract_test.py` and
+`plugin_nan_test.py`.
+"""
+
 from __future__ import annotations
 
 import math
@@ -11,10 +26,6 @@ from polars_stats.distributions._base import ContinuousDistribution, DiscreteDis
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
-
-# Every shipped distribution overrides `_sf`, `_log_pdf` and `_log_pmf` with a form that keeps
-# precision in a tail, so the composing defaults have no caller in the library. They are still what a
-# new distribution inherits until it needs the accurate form.
 
 _MEDIAN_QUANTILE = 0.5
 
@@ -41,7 +52,8 @@ class _UnitUniform(ContinuousDistribution):
         return quantile
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        return 1 - quantile
+        # `-q + 1`, not `1 - q`: polars names arithmetic after its left operand.
+        return quantile.neg() + 1
 
     def mean(self) -> pl.Expr:
         return pl.lit(0.5)
@@ -170,12 +182,19 @@ def test_the_default_sf_keeps_the_null_and_nan_contract(toy: _Toy) -> None:
     assert math.isnan(got[2])
 
 
-def test_the_defaults_keep_the_hook_output_name(toy: _Toy) -> None:
-    # Polars names arithmetic after its left operand, so a default spelled `1 - hook` would be `"literal"`.
-    # Both toys name their hooks after the value, as the Rust plugins do.
-    frame = pl.DataFrame({"x": toy.grid})
-    for method in ("sf", f"log_{toy.density}", "log_cdf", "log_sf"):
+def test_every_value_keyed_method_keeps_the_value_name(toy: _Toy) -> None:
+    """Defaults and hooks alike name their output after the value column.
+
+    Polars names arithmetic after its *left* operand, so `1 - hook` is named `"literal"`. The base
+    `_sf` did that until the wrapper's `alias` stopped hiding it, and `_isf` here is the same trap one
+    layer down.
+    """
+    frame = pl.DataFrame({"x": toy.grid, "q": [0.25] * len(toy.grid)})
+
+    for method in ("sf", f"log_{toy.density}", "log_cdf", "log_sf", toy.density, "cdf"):
         assert frame.select(getattr(toy.dist, method)(pl.col("x"))).columns == ["x"], method
+    for method in ("ppf", "isf"):
+        assert frame.select(getattr(toy.dist, method)(pl.col("q"))).columns == ["q"], method
 
 
 def test_the_default_log_density_is_the_log_of_the_density(toy: _Toy) -> None:
