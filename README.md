@@ -65,11 +65,7 @@ readings = pl.LazyFrame(
 
 norm = ps.Normal(mu="mu", sigma="sigma")
 
-anomalies = (
-    readings.with_columns(upper_tail=norm.sf("value"))
-    .filter(pl.col("upper_tail") < 0.01)
-    .collect()
-)
+anomalies = readings.with_columns(upper_tail=norm.sf("value")).filter(pl.col("upper_tail") < 0.01).collect()
 print(anomalies)
 ```
 

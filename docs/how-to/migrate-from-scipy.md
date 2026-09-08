@@ -102,9 +102,7 @@ which keeps the fit and the scoring in one query:
 scored = []
 for name, part in df.group_by("sensor"):
     mu, sigma = stats.norm.fit(part["reading"].to_numpy())
-    scored.append(
-        part.with_columns(tail=pl.Series(stats.norm(mu, sigma).sf(part["reading"])))
-    )
+    scored.append(part.with_columns(tail=pl.Series(stats.norm(mu, sigma).sf(part["reading"]))))
 df = pl.concat(scored)
 ```
 

@@ -100,7 +100,7 @@ def _report(case: _Case, method_fn: Callable[[pl.Expr], pl.Expr], value: float |
         frame.select(r=method_fn(pl.col("v")))
     except pl.exceptions.ComputeError as exc:
         return str(exc)
-    return None
+    return None  # pragma: no cover
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_ids)

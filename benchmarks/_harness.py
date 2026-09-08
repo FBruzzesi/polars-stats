@@ -1012,7 +1012,7 @@ def _header_lines(sweep: Sweep, results: Sequence[Result]) -> list[str]:
     budget = sweep.budget
     memory = "peak RSS (MiB), isolated subprocess" if _memory_measured(results) else "not measured (pass --memory)"
     return [
-        f"- rows: {', '.join(f'{r:_}' for r in sweep.rows)}; `samples` draws per row: "
+        f"- rows: {', '.join(f'{r:_}' for r in sweep.rows)}; `samples` draws per row: "  # noqa: ISC004
         f"{', '.join(str(n) for n in sweep.n_samples)}",
         f"- methods: {', '.join(sweep.methods)}",
         (
@@ -1025,7 +1025,7 @@ def _header_lines(sweep: Sweep, results: Sequence[Result]) -> list[str]:
         ),
         f"- time p50 +/- std (ms); memory: {memory}",
         f"- {env['python']} on {env['platform']}",
-        f"- polars_stats {env['polars_stats']} ({env['build']} build), polars {env['polars']},"
+        f"- polars_stats {env['polars_stats']} ({env['build']} build), polars {env['polars']},"  # noqa: ISC004
         f" scipy {env['scipy']}, numpy {env['numpy']}",
     ]
 

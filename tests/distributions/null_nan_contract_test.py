@@ -107,7 +107,7 @@ def _refusal(frame: pl.DataFrame, expr: pl.Expr) -> str | None:
         frame.select(r=expr)
     except (pl.exceptions.ComputeError, pl.exceptions.InvalidOperationError) as err:
         return f"{type(err).__name__}: {err}"
-    return None
+    return None  # pragma: no cover
 
 
 _Probes = list[tuple[str, pl.DataFrame, pl.Expr]]

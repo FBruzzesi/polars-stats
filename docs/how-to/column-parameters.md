@@ -59,9 +59,7 @@ readings = pl.DataFrame(
         "reading": [9.8, 10.4, 100.0, 135.0],
     }
 )
-baselines = pl.DataFrame(
-    {"sensor": ["a", "b"], "mu": [10.0, 100.0], "sigma": [0.5, 2.0]}
-)
+baselines = pl.DataFrame({"sensor": ["a", "b"], "mu": [10.0, 100.0], "sigma": [0.5, 2.0]})
 
 print(
     readings.join(baselines, on="sensor", maintain_order="left").with_columns(
