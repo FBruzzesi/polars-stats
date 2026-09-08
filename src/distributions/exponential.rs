@@ -4,8 +4,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Exp;
 
 use crate::distributions::{
-    align_inputs, expm1, on_unit_interval, value_keyed_derived_per_row, value_keyed_derived_scalar,
-    ParamDomain, Sides,
+    align_inputs, coerce_f64, expm1, on_unit_interval, value_keyed_derived_per_row,
+    value_keyed_derived_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index,
@@ -49,9 +49,9 @@ impl ExponentialParamsKwargs {
 /// an invalid rate raises as it does from `exponential_sample`.
 #[polars_expr(output_type=Float64)]
 fn exponential_rate(inputs: &[Series]) -> PolarsResult<Series> {
-    let rate = inputs[0].cast(&DataType::Float64)?;
-    RATE.check_column(rate.f64()?)?;
-    Ok(rate)
+    let rate = coerce_f64(&inputs[0])?;
+    RATE.check_column(&rate)?;
+    Ok(rate.into_series())
 }
 
 /// Crossover of [`derive_cdf`], in units of `t = rate * x`.
@@ -311,19 +311,12 @@ fn draw(dist: &Exp, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn exponential_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let rate = inputs[0].cast(&DataType::Float64)?;
+    let rate = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    RATE.check_column(rate.f64()?)?;
+    RATE.check_column(&rate)?;
 
-    sample_per_row_binary(
-        name,
-        rate.f64()?,
-        index.u64()?,
-        kwargs.seed,
-        build_dist,
-        draw,
-    )
+    sample_per_row_binary(name, &rate, index.u64()?, kwargs.seed, build_dist, draw)
 }
 
 /// Constant-rate fast path for [`exponential_sample`].
@@ -362,12 +355,12 @@ fn exponential_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn exponential_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let rate = inputs[0].cast(&DataType::Float64)?;
+    let rate = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    RATE.check_column(rate.f64()?)?;
+    RATE.check_column(&rate)?;
 
-    let rows = binary_param_rows(rate.f64()?, index.u64()?, build_dist);
+    let rows = binary_param_rows(&rate, index.u64()?, build_dist);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

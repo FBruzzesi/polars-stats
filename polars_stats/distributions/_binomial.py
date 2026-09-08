@@ -75,10 +75,9 @@ class Binomial(DiscreteDistribution):
     def _sf(self, value: pl.Expr) -> pl.Expr:
         """Survival ``P(X > floor(value))`` via native ``DiscreteCDF::sf`` (accurate upper tail).
 
-        ``isf`` inherits the base-class default ``ppf(1 - quantile)``. ``log_sf`` (and ``log_cdf``)
-        inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to ``-inf`` deep in the
-        tails: the regularized incomplete beta has no cheap stable log form (scipy's ``logsf`` /
-        ``logcdf`` are naive here too, so parity holds).
+        ``log_sf`` (and ``log_cdf``) inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to
+        ``-inf`` deep in the tails: the regularized incomplete beta has no cheap stable log form (scipy's
+        ``logsf`` / ``logcdf`` are naive here too, so parity holds).
         """
         return self._value_plugin("binomial_sf", value)
 
@@ -91,6 +90,10 @@ class Binomial(DiscreteDistribution):
         statrs' native ``floor(n * p)`` median is a different convention and is deliberately not used.
         """
         return self._value_plugin("binomial_ppf", quantile)
+
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        """``ppf(1 - quantile)``, the complement formed in Rust so the quantile passes the plugin's dtype gate."""
+        return self._value_plugin("binomial_isf", quantile)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``n * p``."""

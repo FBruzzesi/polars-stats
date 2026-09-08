@@ -60,11 +60,16 @@ A length-1 *expression* is accepted wherever a column is and broadcasts rather t
     Computing a parameter with `.over("g")` and using it in a plain `select` is fine too; it is only putting the
     distribution expression itself inside `over()` or `agg()` that is affected.
 
-Numeric columns are cast to `Float64` at evaluation, so an integer column works wherever a float is expected. That
-covers every signed and unsigned integer width up to `Int128` / `UInt128`, and `Float16` / `Float32` / `Float64`.
-`Decimal` is the one numeric dtype the two positions treat differently: it works as a *parameter*, but as an
-evaluation point it raises `InvalidOperationError`, because the null/`NaN` guard applied to the value column has no
-`NaN` to test for on a decimal.
+A column in either position must be numeric: any `Int*` or `UInt*` width up to `Int128` / `UInt128`, `Float16` /
+`Float32` / `Float64`, or `Decimal`. A `Null`-typed column counts as numeric and propagates nulls. Numeric columns
+are cast to `Float64` at evaluation, so an integer column works wherever a float is expected.
+
+That cast is the plugin's. The closed-form moments are polars arithmetic on the parameter itself, so there polars
+decides: a moment that is the parameter (`Normal(mu="mu").mean()`) keeps the column's dtype, and a `Decimal` or
+`Null`-typed `sigma` raises `InvalidOperationError` where polars has no kernel for it on the bare column (`pow`,
+`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`). `Decimal`
+is also the one numeric dtype refused as an *evaluation point*: the null/`NaN` guard applied to the value column has
+no `NaN` to test for on a decimal and raises `InvalidOperationError`.
 
 The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
@@ -77,13 +82,12 @@ In **evaluation-point** position every non-numeric dtype is rejected: Polars fai
 dtypes, plus `Decimal`. Nothing silently parses and nothing silently nulls. (On polars older than 1.25, an `Object`
 column in either position raises `PanicException` from polars' own arrow export instead.)
 
-**Parameter** position is weaker: past the integer rule above there is no dtype check, and the Rust cast decides.
-`Categorical`, `Enum`, `Struct` and `Object` fail it and raise `ComputeError`. The rest are accepted: a `String`
-parameter is *parsed*, so `Normal(mu="mu", sigma=1.0).sample(seed=0)` on a `mu` column holding `"0.5"` draws from a
-normal centred at `0.5`, while a string that does not parse becomes a null parameter on its row and the row nulls
-with no error. A `Boolean`, `String` or temporal parameter carries its own dtype back out of a moment
-(`Normal(mu="mu", sigma=1.0).mean()` on a `Date` column returns `Date`). Cast a parameter to `Float64` when you mean
-a number.
+In **parameter** position the Rust plugin enforces the same rule on every method: a `Boolean`, `String`,
+`Categorical`, `Enum`, `Struct`, `Object` or temporal column raises `ComputeError` naming the column and the dtype
+the plugin received (`Object` arrives as `binary`), and no row computes. Nothing is parsed and nothing is read as
+`0` / `1`. The one variation is the exception type: where a closed-form moment's own polars arithmetic meets the
+column before the plugin does (`n * p` on a `String` `p`), polars raises `InvalidOperationError` instead. Cast a
+parameter to `Float64` when you mean a number.
 
 ## Parameter validity
 
@@ -150,7 +154,7 @@ indistinguishable from a legitimately missing input, and would propagate wrong a
 | `null` parameter on a row | per row | `null` on that row, on every method and off the support too, no error (see below) |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row (matches scipy) |
 | Non-numeric column as an *argument* | evaluation | Polars raises `InvalidOperationError` |
-| Non-numeric column as a *parameter* | Rust evaluation, if at all | `ComputeError` for `Categorical` / `Enum` / `Struct` / `Object`; `Boolean`, `String` and the temporal dtypes are **not** rejected and compute, an unparsable `String` nulling its row (see [Accepted inputs](#accepted-inputs)) |
+| Non-numeric column as a *parameter* | Rust evaluation | `ComputeError` naming the column and its dtype; polars' `InvalidOperationError` where a closed-form moment's arithmetic meets the column first. Nothing computes either way (see [Accepted inputs](#accepted-inputs)) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
 | `pmf(3.5)` for a discrete distribution | per row | `0.0` (matches scipy) |

@@ -104,11 +104,10 @@ class LogNormal(ContinuousDistribution):
         return self._value_plugin("lognormal_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse survival function, the underlying normal's symmetry form exponentiated.
+        """Inverse survival function, ``Normal._isf``'s symmetry form exponentiated.
 
-        Overrides the base-class default ``ppf(1 - quantile)``. See ``Normal._isf``; composing
-        through ``exp`` turns the normal's absolute quantile error into a relative one here, so a
-        large ``sigma`` amplifies it.
+        ``exp`` turns the normal's absolute quantile error into a relative one here, so a large ``sigma``
+        amplifies it.
         """
         return self._value_plugin("lognormal_isf", quantile)
 

@@ -6,7 +6,9 @@ use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, ParamDomain};
+use crate::distributions::{
+    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row, samples_u64_output,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -136,19 +138,12 @@ where
     F: Fn(&Binomial, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
+    let value = coerce_f64(&inputs[0])?;
     let n = coerce_n(&inputs[1])?;
-    let p = inputs[2].cast(&DataType::Float64)?;
-    P.check_column(p.f64()?)?;
+    let p = coerce_f64(&inputs[2])?;
+    P.check_column(&p)?;
 
-    value_keyed_per_row(
-        value.f64()?,
-        &n,
-        p.f64()?,
-        inputs[0].name().clone(),
-        build_dist,
-        f,
-    )
+    value_keyed_per_row(&value, &n, &p, inputs[0].name().clone(), build_dist, f)
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(n, p)`.
@@ -167,24 +162,20 @@ where
 {
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
-    let p = inputs[1].cast(&DataType::Float64)?;
-    P.check_column(p.f64()?)?;
+    let p = coerce_f64(&inputs[1])?;
+    P.check_column(&p)?;
 
-    let ca: Float64Chunked = try_binary_elementwise(
-        &n,
-        p.f64()?,
-        |n, p| -> PolarsResult<Option<f64>> {
-            let (Some(n), Some(p)) = (n, p) else {
-                return Ok(None);
-            };
-            // TODO(FBruzzesi): Remove `n == u64::MAX` guard once fixed upstream in statrs
-            polars_ensure!(
-                n != u64::MAX,
-                ComputeError: "n = {} overflows the entropy support sum: statrs iterates 0..=n via n + 1, which wraps at u64::MAX", n
-            );
-            Ok(Some(f(&build_dist(n, p)?)))
-        },
-    )?;
+    let ca: Float64Chunked = try_binary_elementwise(&n, &p, |n, p| -> PolarsResult<Option<f64>> {
+        let (Some(n), Some(p)) = (n, p) else {
+            return Ok(None);
+        };
+        // TODO(FBruzzesi): Remove `n == u64::MAX` guard once fixed upstream in statrs
+        polars_ensure!(
+            n != u64::MAX,
+            ComputeError: "n = {} overflows the entropy support sum: statrs iterates 0..=n via n + 1, which wraps at u64::MAX", n
+        );
+        Ok(Some(f(&build_dist(n, p)?)))
+    })?;
     Ok(ca.into_series())
 }
 
@@ -206,20 +197,12 @@ fn draw(dist: &BinomialSampler, rng: &mut impl rand::Rng) -> u64 {
 fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
-    let p = inputs[1].cast(&DataType::Float64)?;
+    let p = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(p.f64()?)?;
+    P.check_column(&p)?;
 
-    sample_per_row_ternary(
-        name,
-        &n,
-        p.f64()?,
-        index.u64()?,
-        kwargs.seed,
-        build_sampler,
-        draw,
-    )
+    sample_per_row_ternary(name, &n, &p, index.u64()?, kwargs.seed, build_sampler, draw)
 }
 
 /// Constant-parameter fast path for [`binomial_sample`], on the same [`build_sampler`].
@@ -261,12 +244,12 @@ fn binomial_samples_scalar(
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
-    let p = inputs[1].cast(&DataType::Float64)?;
+    let p = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(p.f64()?)?;
+    P.check_column(&p)?;
 
-    let rows = ternary_param_rows(&n, p.f64()?, index.u64()?, build_sampler);
+    let rows = ternary_param_rows(&n, &p, index.u64()?, build_sampler);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
@@ -388,6 +371,18 @@ fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
+/// `ppf(1 - q)`, so the endpoints reverse (`isf(0) = n`, `isf(1) = 0`) and `q` outside `[0, 1]`
+/// yields `null` through [`ppf_value`].
+fn isf_value(dist: &Binomial, q: f64) -> Option<f64> {
+    ppf_value(dist, 1.0 - q)
+}
+
+/// Element-wise inverse survival function; see [`isf_value`].
+#[polars_expr(output_type=Float64)]
+fn binomial_isf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, isf_value)
+}
+
 /// Constant-parameter fast path for [`binomial_pmf`].
 #[polars_expr(output_type=Float64)]
 fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
@@ -418,6 +413,12 @@ fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> Polar
     kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
+/// Constant-parameter fast path for [`binomial_isf`].
+#[polars_expr(output_type=Float64)]
+fn binomial_isf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], isf_value)
+}
+
 /// Validate the `(n, p)` parameterisation and return the validated `p`.
 ///
 /// `inputs[0]` is `n`, `inputs[1]` is `p`. The Python closed-form moments (`mean = n * p`,
@@ -428,11 +429,10 @@ fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> Polar
 fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
     let n = coerce_n(&inputs[0])?;
-    let p = inputs[1].cast(&DataType::Float64)?;
-    P.check_column(p.f64()?)?;
+    let p = coerce_f64(&inputs[1])?;
+    P.check_column(&p)?;
 
-    let ca: Float64Chunked =
-        binary_elementwise(&n, p.f64()?, |n: Option<u64>, p: Option<f64>| n.and(p));
+    let ca: Float64Chunked = binary_elementwise(&n, &p, |n: Option<u64>, p: Option<f64>| n.and(p));
     Ok(ca.into_series())
 }
 

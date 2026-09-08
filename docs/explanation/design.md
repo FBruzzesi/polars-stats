@@ -54,7 +54,7 @@ The table below is the rule, which every distribution follows. Method by method:
 | `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, or log-gamma plus digamma. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
 | `std` | Polars, and override | The base default `variance().sqrt()` saturates long before the answer does. |
-| `isf` | **always**, override the default | The base default `ppf(1 - q)` saturates long before the answer does, and it is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
+| `isf` | **always**, in Rust | There is no base default: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
 
 ### Expose the conventional parameterisation, document the scipy mapping
 

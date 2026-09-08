@@ -40,6 +40,9 @@ class _UnitUniform(ContinuousDistribution):
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         return quantile
 
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        return 1 - quantile
+
     def mean(self) -> pl.Expr:
         return pl.lit(0.5)
 
@@ -70,6 +73,9 @@ class _FairCoin(DiscreteDistribution):
 
     def _ppf(self, quantile: pl.Expr) -> pl.Expr:
         return (quantile > _MEDIAN_QUANTILE).cast(pl.Float64)
+
+    def _isf(self, quantile: pl.Expr) -> pl.Expr:
+        return (quantile < _MEDIAN_QUANTILE).cast(pl.Float64)
 
     def mean(self) -> pl.Expr:
         return pl.lit(0.5)
@@ -166,8 +172,8 @@ def test_the_default_log_density_is_the_log_of_the_density(toy: _Toy) -> None:
 
 
 def test_the_minimal_surface_is_coherent(toy: _Toy) -> None:
-    # The remaining defaults a distribution inherits for free: `_isf` as `ppf(1 - q)`, `std` as
-    # `sqrt(variance)`, `median` as `ppf(0.5)`.
+    # The remaining defaults a distribution inherits for free: `std` as `sqrt(variance)`, `median` as
+    # `ppf(0.5)`.
     dist = toy.dist
     got = pl.DataFrame({"q": [toy.quantile]}).select(
         ppf=dist.ppf(pl.col("q")),

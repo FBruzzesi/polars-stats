@@ -250,11 +250,11 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 ## Numerical stability
 
 **Every method must be accurate in the regime it exists to serve.** `log_sf` exists for the deep tail, so a `log_sf`
-that returns `-inf` there does not work, even though every test passes. The base-class defaults `_cdf().log()`,
-`_sf().log()` and `_isf(q) = _ppf(1 - q)` are a convenience, not an implementation: inheriting one is a decision to
-justify. `_isf` is the sharpest case, because the loss happens *before* your code runs: `1 - q` resolves to `1.1e-16`
-absolute, so the tail mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve against
-`q` itself, via a symmetry, a closed form, or entering a two-sided solve from the other end.
+that returns `-inf` there does not work, even though every test passes. The base-class defaults `_cdf().log()` and
+`_sf().log()` are a convenience, not an implementation: inheriting one is a decision to justify. `_isf` has no default
+at all, because the loss would happen *before* your code runs: `1 - q` resolves to `1.1e-16` absolute, so the tail
+mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve against `q` itself, via a
+symmetry, a closed form, or entering a two-sided solve from the other end.
 
 **A composed method inherits the weakest part's range, and the composition is often wider than the part.** `std()`
 defaults to `variance().sqrt()`, and a variance that legitimately overflows can hide a standard deviation that does

@@ -108,9 +108,9 @@ def test_ppf_keeps_tiny_quantiles(rate: float, q: float) -> None:
 def test_isf_is_exact_rather_than_ppf_of_the_complement(rate: float, q: float) -> None:
     """`isf(q)` is `-log(q) / rate`, never routed through `ppf(1 - q)`.
 
-    The base-class default builds `1 - q`, whose absolute resolution is `1.1e-16`, so a small `q`
-    was quantised (relative error `~1.1e-16 / q`, `1.4e-9` at `q = 1e-9`) and saturated below
-    `1e-16`. The exponential has a closed-form inverse survival function, so it overrides.
+    Routing through `1 - q` would quantise a small `q` at the complement's `1.1e-16` absolute
+    resolution (relative error `~1.1e-16 / q`, `1.4e-9` at `q = 1e-9`) and saturate below `1e-16`;
+    the exponential has a closed-form inverse survival function instead.
     """
     got = pl.DataFrame({"q": [q]}).select(r=Exponential(rate=rate).isf(pl.col("q")))["r"].item()
     assert got == pytest.approx(-math.log(q) / rate, rel=1e-15)

@@ -4,8 +4,8 @@ use rand::distr::Distribution;
 use statrs::distribution::Bernoulli;
 
 use crate::distributions::{
-    align_inputs, on_unit_interval, value_keyed_derived_per_row, value_keyed_derived_scalar,
-    ParamDomain,
+    align_inputs, coerce_f64, on_unit_interval, value_keyed_derived_per_row,
+    value_keyed_derived_scalar, ParamDomain,
 };
 use crate::rng::{
     binary_param_rows, sample_by_index, sample_per_row_binary, samples_bool_output,
@@ -48,9 +48,9 @@ impl BernoulliParamsKwargs {
 /// invalid `p` raises as it does from `bernoulli_sample`, instead of computing a negative variance.
 #[polars_expr(output_type=Float64)]
 fn bernoulli_proba(inputs: &[Series]) -> PolarsResult<Series> {
-    let proba = inputs[0].cast(&DataType::Float64)?;
-    P.check_column(proba.f64()?)?;
-    Ok(proba)
+    let proba = coerce_f64(&inputs[0])?;
+    P.check_column(&proba)?;
+    Ok(proba.into_series())
 }
 
 // Per-method bodies, shared by the per-row plugins and their `*_scalar` twins. Each method pairs a
@@ -327,19 +327,12 @@ fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let proba = inputs[0].cast(&DataType::Float64)?;
+    let proba = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(proba.f64()?)?;
+    P.check_column(&proba)?;
 
-    sample_per_row_binary(
-        name,
-        proba.f64()?,
-        index.u64()?,
-        kwargs.seed,
-        build_dist,
-        draw,
-    )
+    sample_per_row_binary(name, &proba, index.u64()?, kwargs.seed, build_dist, draw)
 }
 
 /// Constant-parameter fast path for [`bernoulli_sample`].
@@ -378,12 +371,12 @@ fn bernoulli_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let proba = inputs[0].cast(&DataType::Float64)?;
+    let proba = coerce_f64(&inputs[0])?;
     let index = inputs[1].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    P.check_column(proba.f64()?)?;
+    P.check_column(&proba)?;
 
-    let rows = binary_param_rows(proba.f64()?, index.u64()?, build_dist);
+    let rows = binary_param_rows(&proba, index.u64()?, build_dist);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }

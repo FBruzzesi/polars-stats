@@ -8,6 +8,10 @@ row is built, so it cannot depend on what else is null on the row.
 A null parameter is answered before the evaluation point is read, so every method nulls at a finite,
 `NaN`, null and off-support point alike.
 
+A column that is not numeric (`Int*`, `UInt*`, `Float*`, `Decimal`, or `Null`-typed) is refused in either
+position before any row is built, with a `ComputeError` naming the column and its dtype; `Decimal` computes
+as its `Float64` cast and a `Null`-typed column as all-null.
+
 Value-keyed methods go through the private `_x` hooks: on polars >= 1.44 the public wrapper
 `propagate_null_and_nan` masks the plugin out of the null and `NaN` rows before it can validate.
 Moments and samplers have no wrapper and go through the public API.
@@ -33,6 +37,7 @@ from polars_stats import (
     Uniform,
 )
 from polars_stats.distributions._base import DiscreteDistribution, _UnivariateDistribution
+from tests._polars_compat import assert_series_equal
 
 
 @dataclass(frozen=True)
@@ -100,34 +105,44 @@ def _value_hooks(dist: _UnivariateDistribution) -> tuple[str, ...]:
     return (*density, "_cdf", "_log_cdf", "_sf", "_log_sf", "_ppf", "_isf")
 
 
-def _report(frame: pl.DataFrame, expr: pl.Expr) -> str | None:
-    """The `ComputeError` message, or `None` when the query computed."""
+def _refusal(frame: pl.DataFrame, expr: pl.Expr) -> str | None:
+    """The refusal as `<type>: <message>`, or `None` when the query computed."""
     try:
         frame.select(r=expr)
-    except pl.exceptions.ComputeError as err:
-        return str(err)
+    except (pl.exceptions.ComputeError, pl.exceptions.InvalidOperationError) as err:
+        return f"{type(err).__name__}: {err}"
     return None
 
 
-def _probes(
-    dist: _Dist, overrides: dict[str, float | None], points: tuple[float | None, ...]
-) -> list[tuple[str, pl.DataFrame, pl.Expr]]:
-    """Every value-keyed hook at every point, then the moments and both samplers, as `(label, frame, expr)`."""
-    probes = [
+_Probes = list[tuple[str, pl.DataFrame, pl.Expr]]
+_Overrides = dict[str, float | None]
+
+
+def _hook_probes(dist: _Dist, overrides: _Overrides, points: tuple[float | None, ...]) -> _Probes:
+    """Every value-keyed hook at every point, as `(label, frame, expr)`."""
+    return [
         (f"{hook}(x={x})", dist.frame(overrides, x), getattr(dist.dist, hook)(pl.col("x")))
         for x in points
         for hook in _value_hooks(dist.dist)
     ]
+
+
+def _sampler_probes(dist: _Dist, overrides: _Overrides) -> _Probes:
     row = dist.frame(overrides, 0.5)
-    probes += [(method, row, getattr(dist.dist, method)()) for method in _MOMENTS]
-    probes += [("sample", row, dist.dist.sample(seed=0)), ("samples", row, dist.dist.samples(3, seed=0))]
-    return probes
+    return [("sample", row, dist.dist.sample(seed=0)), ("samples", row, dist.dist.samples(3, seed=0))]
 
 
-def _unreported(dist: _Dist, overrides: dict[str, float | None], slot: str) -> list[tuple[str, str | None]]:
+def _probes(dist: _Dist, overrides: _Overrides, points: tuple[float | None, ...]) -> _Probes:
+    """The hooks at every point, then the moments and both samplers."""
+    row = dist.frame(overrides, 0.5)
+    moments = [(method, row, getattr(dist.dist, method)()) for method in _MOMENTS]
+    return _hook_probes(dist, overrides, points) + moments + _sampler_probes(dist, overrides)
+
+
+def _unreported(dist: _Dist, overrides: _Overrides, slot: str) -> list[tuple[str, str | None]]:
     """Every method that computes, or raises without naming `slot`, with what it reported."""
     fragment = f"{slot} must be"
-    reports = [(label, _report(frame, expr)) for label, frame, expr in _probes(dist, overrides, (0.5, math.nan, None))]
+    reports = [(label, _refusal(frame, expr)) for label, frame, expr in _probes(dist, overrides, (0.5, math.nan, None))]
     return [(label, report) for label, report in reports if report is None or fragment not in report]
 
 
@@ -172,3 +187,76 @@ def test_null_parameter_nulls_every_method(dist: _Dist, slot: str) -> None:
     """Off-support constants and the `NaN` short-circuit included."""
     answered = _non_null_answers(dist, slot)
     assert not answered, f"{dist.name} answered with a null `{slot}`: {answered}"
+
+
+_REFUSED_DTYPES = (pl.Boolean(), pl.String(), pl.Date())
+"""One per family polars' own cast would silently accept: `Boolean` as `0` / `1`, `String` parsed, `Date` as days."""
+
+
+def _accepted(column: str, dtype: pl.DataType, probes: _Probes) -> list[tuple[str, str]]:
+    """Every probe that computes, or raises without naming `column`, with `column` recast to `dtype`.
+
+    A moment may refuse with polars' own `InvalidOperationError` instead: its closed-form arithmetic (`n * p`
+    on a `String` `p`) meets the column before the plugin does. Hooks and samplers reach the plugin first.
+    """
+    fragment = f"'{column}' must be a numeric column"
+    refusals = [
+        (label, _refusal(frame.with_columns(pl.col(column).cast(pl.Int64).cast(dtype)), expr))
+        for label, frame, expr in probes
+    ]
+    return [
+        (label, refusal or "computed")
+        for label, refusal in refusals
+        if refusal is None
+        or (fragment not in refusal and not (label in _MOMENTS and refusal.startswith("InvalidOperationError")))
+    ]
+
+
+@pytest.mark.parametrize("dtype", _REFUSED_DTYPES, ids=str)
+@pytest.mark.parametrize("dist", _DISTS, ids=lambda dist: dist.name)
+def test_non_numeric_evaluation_point_raises_on_every_hook(dist: _Dist, dtype: pl.DataType) -> None:
+    accepted = _accepted("x", dtype, _hook_probes(dist, {}, (0.5,)))
+    assert not accepted, f"{dist.name} took a {dtype} evaluation point: {accepted}"
+
+
+@pytest.mark.parametrize("dtype", _REFUSED_DTYPES, ids=str)
+@pytest.mark.parametrize(
+    ("dist", "slot"),
+    [pytest.param(dist, slot, id=f"{dist.name}.{slot}") for dist in _DISTS for slot in dist.float_slots],
+)
+def test_non_numeric_parameter_raises_on_every_method(dist: _Dist, slot: str, dtype: pl.DataType) -> None:
+    """Float slots only: `n` and `DiscreteUniform`'s bounds keep their own, stricter integer gate."""
+    accepted = _accepted(slot, dtype, _probes(dist, {}, (0.5,)))
+    assert not accepted, f"{dist.name} took a {dtype} `{slot}`: {accepted}"
+
+
+_COLUMNS = [
+    pytest.param(dist, column, id=f"{dist.name}.{column}") for dist in _DISTS for column in ("x", *dist.float_slots)
+]
+"""Every column the gate sees: the evaluation point and each float parameter slot."""
+
+
+def _gate_probes(dist: _Dist, column: str) -> _Probes:
+    """The probes where the gate alone stands between `column` and the answer: the hooks, and for a parameter
+    the samplers too. The closed-form moments are polars arithmetic on the parameter itself, so their dtype
+    behaviour is polars' (a missing kernel raises, a bare parameter keeps its dtype), not the gate's.
+    """
+    return _hook_probes(dist, {}, (0.5,)) + ([] if column == "x" else _sampler_probes(dist, {}))
+
+
+@pytest.mark.parametrize(("dist", "column"), _COLUMNS)
+def test_decimal_column_computes_as_its_float64_cast(dist: _Dist, column: str) -> None:
+    for _label, frame, expr in _gate_probes(dist, column):
+        decimal = frame.with_columns(pl.col(column).cast(pl.Decimal(10, 2)))
+        assert_series_equal(decimal.select(r=expr)["r"], frame.select(r=expr)["r"], check_exact=True)
+
+
+@pytest.mark.parametrize(("dist", "column"), _COLUMNS)
+def test_null_dtype_column_nulls_every_answer(dist: _Dist, column: str) -> None:
+    """A `Null`-typed column passes the gate as all-null `Float64`."""
+    answered = [
+        label
+        for label, frame, expr in _gate_probes(dist, column)
+        if frame.with_columns(pl.lit(None).alias(column)).select(r=expr)["r"].item() is not None
+    ]
+    assert not answered, f"{dist.name} answered with a Null-typed `{column}`: {answered}"

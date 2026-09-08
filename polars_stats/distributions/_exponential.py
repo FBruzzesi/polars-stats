@@ -88,10 +88,7 @@ class Exponential(ContinuousDistribution):
         return self._value_plugin("exponential_ppf", quantile)
 
     def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log(q) / rate``; null for ``q`` outside ``[0, 1]``.
-
-        Overrides the base ``ppf(1 - quantile)``, which forms the complement and then undoes it.
-        """
+        """``-log(q) / rate``; null for ``q`` outside ``[0, 1]``."""
         return self._value_plugin("exponential_isf", quantile)
 
     def mean(self) -> pl.Expr:

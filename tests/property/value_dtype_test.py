@@ -15,6 +15,9 @@ version (1.15.0 through current) and pinned here so a regression in either direc
   statrs-backed paths (both a Python-side `cast` and the plugin's internal Rust cast would
   otherwise accept it).
 
+Below the guard, Rust refuses every non-numeric dtype with a `ComputeError` in both positions; parameters
+have no Python guard, so that is their whole contract. `Decimal` is numeric to Rust and computes in both.
+
 Whether a dtype reaches either half at all is `tests/plugin_boundary_dtype_test.py`'s question.
 """
 
@@ -81,7 +84,7 @@ def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType,
     dist = spec.make(params)
     lo, hi = spec.eval_range(params)
     values = pl.Series("x", _int_grid(lo, hi, dtype)).cast(dtype).to_frame()
-    q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.25, 0.5, 0.75, 1.0, None]
+    q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, None]
     quantiles = pl.Series("q", q_grid).cast(dtype).to_frame()
 
     x, q = pl.col("x"), pl.col("q")
@@ -125,7 +128,7 @@ _REFUSED_VALUES = (
     pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Duration("us")),
     pl.Series("x", [1, 2], dtype=pl.Int64).cast(pl.Time),
 )
-"""Every dtype an evaluation point may not be. `Decimal` is numeric but `is_nan` has no `NaN` to test on it."""
+"""Every dtype the public guard refuses in the value position. `Decimal` is numeric, but `is_nan` has no `NaN` on it."""
 
 
 @pytest.mark.parametrize(
@@ -146,22 +149,43 @@ def test_non_numeric_value_column_raises(dist: _UnivariateDistribution, series: 
         series.to_frame().select(dist.cdf(pl.col("x")))
 
 
-_REFUSED_PARAMETERS = (
-    pl.Series("mu", ["a", "b"], dtype=pl.Categorical),
-    pl.Series("mu", ["a", "b"], dtype=pl.Enum(["a", "b"])),
-    pl.Series("mu", [{"a": 1}, {"a": 2}], dtype=pl.Struct({"a": pl.Int64})),
-)
-"""Parameter dtypes the Rust cast refuses; `Boolean`, `String` and the temporal dtypes survive it and compute."""
+_NON_NUMERIC = tuple(series for series in _REFUSED_VALUES if not series.dtype.is_decimal())
+"""Every dtype the Rust gate refuses, in either position, where polars' own cast would compute."""
 
 
-@pytest.mark.parametrize("series", _REFUSED_PARAMETERS, ids=lambda s: str(s.dtype))
+@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
 @pytest.mark.parametrize("method", ["mean", "sample"], ids=str)
-def test_refused_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
-    """A refused *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
+def test_non_numeric_parameter_column_raises_from_the_plugin(series: pl.Series, method: str) -> None:
+    """A non-numeric *parameter* raises `ComputeError` from Rust: no Python-side guard sees a parameter column."""
     dist = Normal(mu="mu", sigma=1.0)
     expr = dist.mean() if method == "mean" else dist.sample(seed=0)
-    with pytest.raises(pl.exceptions.ComputeError):
-        series.to_frame().select(r=expr)
+    with pytest.raises(pl.exceptions.ComputeError, match="'mu' must be a numeric column"):
+        series.rename("mu").to_frame().select(r=expr)
+
+
+@pytest.mark.parametrize(
+    "dist",
+    [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
+    ids=["normal", "uniform"],
+)
+@pytest.mark.parametrize("series", _NON_NUMERIC, ids=lambda s: str(s.dtype))
+def test_non_numeric_value_column_raises_from_the_plugin(dist: _UnivariateDistribution, series: pl.Series) -> None:
+    """Below the public guard, the funnel refuses a non-numeric evaluation point: nothing parses, nothing computes."""
+    with pytest.raises(pl.exceptions.ComputeError, match="'x' must be a numeric column"):
+        series.to_frame().select(dist._cdf(pl.col("x")))
+
+
+@pytest.mark.parametrize(
+    "dist",
+    [Normal(mu=0.0, sigma=1.0), Uniform(min=0.0, max=1.0)],
+    ids=["normal", "uniform"],
+)
+def test_decimal_value_column_computes_through_the_hook(dist: _UnivariateDistribution) -> None:
+    """A `Decimal` evaluation point is numeric to the funnel and evaluates as its `Float64` cast."""
+    frame = pl.Series("x", [Decimal("0.50"), Decimal("0.25"), None], dtype=pl.Decimal(10, 2)).to_frame()
+    narrow = frame.select(r=dist._cdf(pl.col("x")))["r"]
+    wide = frame.select(r=dist._cdf(pl.col("x").cast(pl.Float64())))["r"]
+    assert_series_equal(narrow, wide, check_exact=True)
 
 
 @pytest.mark.parametrize("dtype", [*available_dtypes("Int128", "UInt128", "Float16"), pl.Decimal(10, 2)], ids=str)

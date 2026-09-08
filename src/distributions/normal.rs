@@ -8,7 +8,9 @@ use statrs::distribution::{Continuous, ContinuousCDF, Normal};
 use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
 
-use crate::distributions::{align_inputs, value_keyed_per_row, value_keyed_scalar, ParamDomain};
+use crate::distributions::{
+    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+};
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
     ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
@@ -64,15 +66,14 @@ impl NormalParamsKwargs {
 #[polars_expr(output_type=Float64)]
 fn normal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let mu = inputs[0].cast(&DataType::Float64)?;
-    let sigma = inputs[1].cast(&DataType::Float64)?;
-    check_params(mu.f64()?, sigma.f64()?)?;
+    let mu = coerce_f64(&inputs[0])?;
+    let sigma = coerce_f64(&inputs[1])?;
+    check_params(&mu, &sigma)?;
 
-    let ca: Float64Chunked = binary_elementwise(
-        mu.f64()?,
-        sigma.f64()?,
-        |mu: Option<f64>, sigma: Option<f64>| mu.and(sigma),
-    );
+    let ca: Float64Chunked =
+        binary_elementwise(&mu, &sigma, |mu: Option<f64>, sigma: Option<f64>| {
+            mu.and(sigma)
+        });
     Ok(ca.into_series())
 }
 
@@ -83,19 +84,12 @@ where
     F: Fn(&Normal, f64) -> Option<f64>,
 {
     let inputs = align_inputs(inputs)?;
-    let value = inputs[0].cast(&DataType::Float64)?;
-    let mu = inputs[1].cast(&DataType::Float64)?;
-    let sigma = inputs[2].cast(&DataType::Float64)?;
-    check_params(mu.f64()?, sigma.f64()?)?;
+    let value = coerce_f64(&inputs[0])?;
+    let mu = coerce_f64(&inputs[1])?;
+    let sigma = coerce_f64(&inputs[2])?;
+    check_params(&mu, &sigma)?;
 
-    value_keyed_per_row(
-        value.f64()?,
-        mu.f64()?,
-        sigma.f64()?,
-        inputs[0].name().clone(),
-        build_dist,
-        f,
-    )
+    value_keyed_per_row(&value, &mu, &sigma, inputs[0].name().clone(), build_dist, f)
 }
 
 /// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
@@ -114,16 +108,16 @@ fn draw(dist: &Normal, rng: &mut impl rand::Rng) -> f64 {
 #[polars_expr(output_type=Float64)]
 fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let mu = inputs[0].cast(&DataType::Float64)?;
-    let sigma = inputs[1].cast(&DataType::Float64)?;
+    let mu = coerce_f64(&inputs[0])?;
+    let sigma = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(mu.f64()?, sigma.f64()?)?;
+    check_params(&mu, &sigma)?;
 
     sample_per_row_ternary(
         name,
-        mu.f64()?,
-        sigma.f64()?,
+        &mu,
+        &sigma,
         index.u64()?,
         kwargs.seed,
         build_dist,
@@ -167,13 +161,13 @@ fn normal_samples_scalar(
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
     let inputs = align_inputs(inputs)?;
-    let mu = inputs[0].cast(&DataType::Float64)?;
-    let sigma = inputs[1].cast(&DataType::Float64)?;
+    let mu = coerce_f64(&inputs[0])?;
+    let sigma = coerce_f64(&inputs[1])?;
     let index = inputs[2].cast(&DataType::UInt64)?;
     let name = inputs[0].name().clone();
-    check_params(mu.f64()?, sigma.f64()?)?;
+    check_params(&mu, &sigma)?;
 
-    let rows = ternary_param_rows(mu.f64()?, sigma.f64()?, index.u64()?, build_dist);
+    let rows = ternary_param_rows(&mu, &sigma, index.u64()?, build_dist);
 
     samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
 }
@@ -272,10 +266,10 @@ fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
 /// Inverse survival function, `mu + sigma * sqrt(2) * erfc_inv(2q)`, solved on `q` rather than on
 /// its complement.
 ///
-/// Deliberately not `ppf(1 - q)`, the base-class default: that composes `statrs`' `inverse_cdf`
-/// into `erfc_inv(2 - 2q)`, whose argument resolves to `2.2e-16` absolute, so the tail mass is
-/// quantised before the inverse runs. The symmetry `z_(1-q) = -z_q` puts the sign on the scale
-/// instead, leaving the exact power-of-two `2q` as the only thing the inverse sees.
+/// Not `ppf(1 - q)`: that composes `statrs`' `inverse_cdf` into `erfc_inv(2 - 2q)`, whose argument
+/// resolves to `2.2e-16` absolute, so the tail mass is quantised before the inverse runs. The
+/// symmetry `z_(1-q) = -z_q` puts the sign on the scale instead, leaving the exact power-of-two `2q`
+/// as the only thing the inverse sees.
 ///
 /// Contract mirrors [`ppf_value`]: `null` outside `[0, 1]`, closed endpoints to the infinite tails
 /// (`isf(0) = +inf`, `isf(1) = -inf`, the reverse of `ppf`). `pub(crate)` so `LogNormal` composes it.
