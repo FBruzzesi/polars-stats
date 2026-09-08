@@ -77,13 +77,7 @@ fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Beta, f64) -> Option<f64>,
 {
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let a = coerce_f64(&inputs[1])?;
-    let b = coerce_f64(&inputs[2])?;
-    check_params(&a, &b)?;
-
-    value_keyed_per_row(&value, &a, &b, inputs[0].name().clone(), build_dist, f)
+    value_keyed_per_row(inputs, coerce_f64, coerce_f64, check_params, build_dist, f)
 }
 
 /// Apply a parameter-keyed moment `f(dist)` element-wise over `(a, b)`.

@@ -13,10 +13,12 @@ routing are pinned here, both of which the bit-equality property test
   must produce identical output. A non-finite parameter is invalid by the library's own check,
   whether or not `statrs` would accept it. The fast path cannot quietly accept or reject something
   the per-row path does not.
-* **The fast path validates up front.** The scalar check runs once before any value is touched, so
-  invalid scalar parameters raise even on a zero-row frame; the per-row path's column pass sees no
-  value on an empty frame, so it returns empty. This divergence is intentional (validate-once,
-  mirroring the sampler fast path) and pinned so it cannot regress silently.
+* **Constants validate up front, columns validate value by value.** A Python scalar rides in kwargs
+  and a length-1 expression (`pl.lit`, an aggregate) arrives as a length-1 input. Both are one
+  parameterisation, checked once before any value is read, so an invalid one raises even on a
+  zero-row frame, whether a domain or the strict cast rejects it. A parameter *column* is checked
+  over its values, and an empty column has none, so it returns empty. Only an all-length-1 call takes
+  that branch; one constant beside a column still aligns, and a mismatched column is still reported.
 
 A Python `None` parameter cannot reach either path: `coerce_param` rejects it as a `TypeError` at construction, covered
 by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here, and none for
@@ -138,18 +140,130 @@ def test_scalar_and_column_paths_agree_on_validation(
         assert_series_equal(fast, per_row, check_exact=True)
 
 
-def test_scalar_fast_path_validates_on_empty_input() -> None:
-    """The fast path raises on invalid scalar params even with no rows; the per-row path returns empty.
+_INT = pl.Int64()
 
-    The scalar check runs once up front on the fast path, so an invalid scale is caught regardless
-    of input length. The per-row path's column pass sees no value on a zero-row frame, so it
-    produces an empty result instead. Pinned because it is the one intended observable difference
-    between the two paths.
+# One invalid parameterisation per Rust driver, spelled three ways: Python scalar, length-1 literal,
+# full-length column. id -> (scalar, literal, column, message fragment)
+_INVALID_PER_DRIVER: dict[
+    str, tuple[_UnivariateDistribution, _UnivariateDistribution, _UnivariateDistribution, str]
+] = {
+    "exponential rate=-1": (Exponential(-1.0), Exponential(pl.lit(-1.0)), Exponential(_col(-1.0)), "rate must be"),
+    "uniform max<min": (
+        Uniform(5.0, 2.0),
+        Uniform(pl.lit(5.0), pl.lit(2.0)),
+        Uniform(_col(5.0), _col(2.0)),
+        "max must be",
+    ),
+    "normal std=-1": (
+        Normal(0.0, -1.0),
+        Normal(pl.lit(0.0), pl.lit(-1.0)),
+        Normal(_col(0.0), _col(-1.0)),
+        "sigma must be",
+    ),
+    "discreteuniform min>max": (
+        DiscreteUniform(6, 1),
+        DiscreteUniform(pl.lit(6, dtype=_INT), pl.lit(1, dtype=_INT)),
+        DiscreteUniform(_col(6, _INT), _col(1, _INT)),
+        "max must be",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("scalar", "literal", "column", "fragment"), _INVALID_PER_DRIVER.values(), ids=list(_INVALID_PER_DRIVER)
+)
+def test_constant_parameters_validate_on_empty_input(
+    scalar: _UnivariateDistribution, literal: _UnivariateDistribution, column: _UnivariateDistribution, fragment: str
+) -> None:
+    """A constant parameterisation raises when invalid even with no rows to observe it; an empty column returns empty.
+
+    Python scalars and length-1 literals are both constants, checked once per call before any value is
+    read. A parameter column is checked value by value, and a zero-row column has none.
     """
     empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
 
-    with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
-        empty.select(r=Normal(0.0, -1.0).pdf(pl.col("x")))
+    for constant in (scalar, literal):
+        with pytest.raises(pl.exceptions.ComputeError, match=fragment):
+            empty.select(r=_density(constant, pl.col("x")))
 
-    per_row = empty.select(r=Normal(_col(0.0), _col(-1.0)).pdf(pl.col("x")))
-    assert per_row.height == 0
+    assert empty.select(r=_density(column, pl.col("x"))).height == 0
+
+
+def test_a_constant_the_cast_rejects_also_raises_on_an_empty_frame() -> None:
+    """The zero-row change reaches cast rejections, not only parameter domains.
+
+    `n = -5` never gets as far as a domain check: `coerce_n`'s strict `Int64 -> UInt64` cast refuses it,
+    and on the length-1 path that cast now runs before any row. A negative Python-scalar `n` has no
+    spelling here, `coerce_n` rejects it as a `ValueError` at construction.
+    """
+    empty = pl.DataFrame({"x": []}, schema={"x": pl.Float64})
+
+    with pytest.raises(pl.exceptions.PolarsError, match="n must be a non-negative integer"):
+        empty.select(r=Binomial(n=pl.lit(-5, dtype=_INT), p=pl.lit(0.5)).pmf(pl.col("x")))
+
+    assert empty.select(r=Binomial(n=_col(-5, _INT), p=_col(0.5)).pmf(pl.col("x"))).height == 0
+
+
+@pytest.mark.parametrize(
+    "dist",
+    [
+        Exponential(pl.lit(None, dtype=pl.Float64)),
+        Uniform(pl.lit(None, dtype=pl.Float64), pl.lit(1.0)),
+        Normal(pl.lit(0.0), pl.lit(None, dtype=pl.Float64)),
+        DiscreteUniform(pl.lit(None, dtype=_INT), pl.lit(6, dtype=_INT)),
+    ],
+    ids=["exponential", "uniform", "normal", "discreteuniform"],
+)
+def test_a_null_constant_parameter_nulls_every_row(dist: _UnivariateDistribution) -> None:
+    """A null length-1 parameter is one parameterisation with nothing to build from.
+
+    Each driver declines it and falls back to the row loop rather than raising, so every row is null,
+    as it is for a null parameter column. One case per driver.
+    """
+    frame = pl.DataFrame({"x": [0.5, 1.0, 2.0]})
+
+    result = frame.select(r=_density(dist, pl.col("x")))["r"]
+
+    assert result.len() == frame.height
+    assert result.null_count() == frame.height
+
+
+def test_a_null_constant_parameter_still_gates_the_value_dtype() -> None:
+    """Declining the fast path must not skip the evaluation point's dtype gate.
+
+    The row loop the null falls back to coerces the value column, so a `String` one is still refused.
+    Short-circuiting a null parameterisation straight to all-nulls would lose that.
+    """
+    strings = pl.DataFrame({"x": ["a", "b"]})
+
+    with pytest.raises(pl.exceptions.ComputeError, match="must be a numeric column"):
+        strings.select(r=Normal(pl.lit(0.0), pl.lit(None, dtype=pl.Float64)).pdf(pl.col("x")))
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt64, pl.Int32])
+def test_discreteuniform_integer_points_agree_across_bound_spellings(dtype: pl.DataType) -> None:
+    """The fast path keeps DiscreteUniform's integer-exact point dispatch.
+
+    `du_value_keyed_scalar` re-dispatches on the value dtype, so its `Int` and `Wide` arms are reached
+    only from an integer value column. `UInt64` is the only dtype that reaches the `Wide` arm.
+    """
+    frame = pl.DataFrame({"x": [0, 1, 3, 6, 7]}, schema={"x": dtype})
+    expected = frame.select(r=DiscreteUniform(1, 6).pmf(pl.col("x")))["r"]
+
+    literal = DiscreteUniform(pl.lit(1, dtype=_INT), pl.lit(6, dtype=_INT))
+    column = DiscreteUniform(_col(1, _INT), _col(6, _INT))
+    for dist in (literal, column):
+        assert_series_equal(frame.select(r=dist.pmf(pl.col("x")))["r"], expected, check_exact=True)
+
+
+def test_one_constant_beside_a_mismatched_column_still_raises() -> None:
+    """One length-1 parameter does not make the call constant; the other is still aligned, and reported.
+
+    Which layer reports the mismatch moves with the polars version, as in
+    `broadcast_test.py::test_mismatched_lengths_raise`, so the message is matched loosely.
+    """
+    frame = pl.DataFrame({"x": [0.0, 1.0, 2.0, 3.0]})
+    mismatched = Binomial(n=pl.lit(5, dtype=_INT), p=pl.Series("p", [0.5, 0.5, 0.5])).pmf(pl.col("x"))
+
+    with pytest.raises(pl.exceptions.PolarsError, match=r"incompatible lengths|non-equal length"):
+        frame.select(mismatched)

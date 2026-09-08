@@ -327,9 +327,12 @@ def test_multi_chunk_frame_broadcasts() -> None:
     ],
 )
 def test_broadcast_n_still_rejects_a_bad_dtype(n: pl.Expr, message: str) -> None:
-    """Alignment runs *before* the cast, so `coerce_n` judges the expanded column and still rejects it.
+    """A length-1 `n` beside a column `p` is the mixed shape, so alignment runs *before* the cast and
+    `coerce_n` judges the expanded column, still rejecting it.
 
-    `n` is the one parameter whose cast can reject, so it is the one place the order is observable.
+    `n` is the one parameter whose cast can reject, so it is the one place the order is observable. An
+    *all*-length-1 call casts first instead, pinned by
+    `value_keyed_fast_path_test.py::test_a_constant_the_cast_rejects_also_raises_on_an_empty_frame`.
     """
     frame = pl.DataFrame({"x": [0.0, 1.0, 2.0, 3.0], "p": [0.5] * 4})
 

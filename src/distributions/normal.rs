@@ -83,13 +83,7 @@ fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
 where
     F: Fn(&Normal, f64) -> Option<f64>,
 {
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let mu = coerce_f64(&inputs[1])?;
-    let sigma = coerce_f64(&inputs[2])?;
-    check_params(&mu, &sigma)?;
-
-    value_keyed_per_row(&value, &mu, &sigma, inputs[0].name().clone(), build_dist, f)
+    value_keyed_per_row(inputs, coerce_f64, coerce_f64, check_params, build_dist, f)
 }
 
 /// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.

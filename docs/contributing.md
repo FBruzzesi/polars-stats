@@ -126,7 +126,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 
     * **`align_inputs(inputs)?` first, before any cast**, for any plugin with more than one input. Polars broadcasts
       nothing into a plugin and `try_*_elementwise` truncates to its shortest input, so skipping it silently drops
-      every row past the first. `tests/distributions/broadcast_test.py` catches a missed one.
+      every row past the first. `tests/distributions/broadcast_test.py` catches a missed one. The value-keyed drivers
+      in `mod.rs` are the one exception, and you get it by routing through them rather than by writing it: when
+      *every* parameter is length 1 they cast and check those length-1 columns and skip the expansion entirely.
     * **`is_elementwise=True`**, which the shared `register_plugin` shim fixes for you. An aggregating plugin would
       break `over` and `group_by`, so it is a guard rather than a default.
     * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
@@ -185,9 +187,11 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           is a column.
         * A one-parameter distribution pairs those two through `value_keyed_derived_per_row` and
           `value_keyed_derived_scalar` in `src/distributions/mod.rs`. A two-parameter one takes
-          `value_keyed_derived_pair_per_row` beside them, and keeps its constant-parameter twin local
-          (`UniformParamsKwargs::value_keyed`) until a second distribution needs it; both plugin shells are still one
-          line and neither names a driver internal. They are not `value_keyed_per_row`, which builds a `statrs`
+          `value_keyed_derived_pair_per_row` and `value_keyed_derived_pair_scalar` instead; both plugin shells are
+          still one line and neither names a driver internal. The `_pair_scalar` twin validates nothing, because a
+          pair's rule is the distribution's own `check_params` rather than a `ParamDomain`, so its caller owes it a
+          checked `(a, b)`: `constant_pair` for a length-1 parameterisation, `<Name>ParamsKwargs`' own check for
+          kwargs. They are not `value_keyed_per_row`, which builds a `statrs`
           distribution per row: `derive` takes plain `f64`s and hoists the parameter-only terms out of the loop.
           Every driver nulls a row on any null parameter, before it reads the evaluation point.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
