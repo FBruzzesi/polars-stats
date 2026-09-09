@@ -13,6 +13,8 @@ from polars_stats._lib import LIB
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from typing_extensions import TypeIs
+
     from polars_stats._typing import IntoExprColumn, PolarsDataType
 
 _LITERAL_LEN_IN_AGG = tuple(int(part) for part in pl.__version__.split(".", 2)[:2]) >= (1, 35)
@@ -686,3 +688,72 @@ class ContinuousDistribution(_UnivariateDistribution, ABC):
 
     def _log_pdf(self, value: pl.Expr) -> pl.Expr:
         return self._pdf(value).log()
+
+
+def is_discrete(obj: object, /) -> TypeIs[DiscreteDistribution]:
+    """Whether ``obj`` is a discrete distribution.
+
+    Narrowing guard: on the true branch a type checker sees ``obj`` as a
+    ``DiscreteDistribution``, so ``pmf`` / ``log_pmf`` are reachable without a cast, and on the
+    false branch it drops ``DiscreteDistribution`` from the type.
+
+    Arguments:
+        obj: Any object.
+
+    Returns:
+        ``True`` if ``obj`` is an instance of ``DiscreteDistribution``.
+
+    Examples:
+        >>> import polars_stats as ps
+        >>> ps.is_discrete(ps.Binomial(10, 0.5))
+        True
+        >>> ps.is_discrete(ps.Normal())
+        False
+
+        Dispatching on the kind picks the density method that exists:
+
+        >>> import polars as pl
+        >>> def density(dist: ps.DiscreteDistribution | ps.ContinuousDistribution, value: str):
+        ...     return dist.pmf(value) if ps.is_discrete(dist) else dist.pdf(value)
+        >>> pl.DataFrame({"x": [0.0, 1.0]}).select(density(ps.Binomial(10, 0.5), "x"))
+        shape: (2, 1)
+        ┌──────────┐
+        │ x        │
+        │ ---      │
+        │ f64      │
+        ╞══════════╡
+        │ 0.000977 │
+        │ 0.009766 │
+        └──────────┘
+    """
+    return isinstance(obj, DiscreteDistribution)
+
+
+def is_continuous(obj: object, /) -> TypeIs[ContinuousDistribution]:
+    """Whether ``obj`` is a continuous distribution.
+
+    The counterpart of [`is_discrete`][polars_stats.is_discrete]: the two kinds are disjoint, so
+    exactly one of the guards holds for any distribution in this package.
+
+    Arguments:
+        obj: Any object.
+
+    Returns:
+        ``True`` if ``obj`` is an instance of ``ContinuousDistribution``.
+
+    Examples:
+        >>> import polars_stats as ps
+        >>> ps.is_continuous(ps.Normal())
+        True
+        >>> ps.is_continuous(ps.Binomial(10, 0.5))
+        False
+
+        The guard narrows, so ``pdf`` type checks inside the branch:
+
+        >>> import polars as pl
+        >>> dist = ps.Normal(mu=0.0, sigma=1.0)
+        >>> if ps.is_continuous(dist):
+        ...     print(round(pl.DataFrame({"x": [0.0]}).select(dist.pdf("x")).item(), 6))
+        0.398942
+    """
+    return isinstance(obj, ContinuousDistribution)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from polars_stats._internal import __version__ as __version__
-from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
+from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution, is_continuous, is_discrete
 from polars_stats.distributions._bernoulli import Bernoulli
 from polars_stats.distributions._beta import Beta
 from polars_stats.distributions._binomial import Binomial
@@ -25,4 +25,6 @@ __all__ = (
     "Normal",
     "Uniform",
     "__version__",
+    "is_continuous",
+    "is_discrete",
 )

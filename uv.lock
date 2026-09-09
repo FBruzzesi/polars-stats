@@ -1328,6 +1328,7 @@ typing = [
     { name = "scipy-stubs", version = "1.15.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy-stubs", version = "1.17.1.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy-stubs", version = "1.18.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "typing-extensions" },
 ]
 
 [package.metadata]
@@ -1371,6 +1372,7 @@ typing = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "scipy-stubs", specifier = ">=1.15.3.0" },
+    { name = "typing-extensions", specifier = ">=4.16.0" },
 ]
 
 [[package]]
