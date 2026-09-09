@@ -57,6 +57,15 @@ it; otherwise the composing defaults apply (`sf = 1 - cdf`, `log_pdf = pdf().log
 Argument-free statistics return one value per row of parameters: with column-valued parameters, `mean()` yields the
 mean of a different distribution on every row.
 
+## Type guards
+
+Two module-level guards say which kind a distribution is, for code that accepts either and has to pick between
+`pmf` and `pdf`. Both narrow the argument's type, so the branch body needs no cast.
+
+::: polars_stats.is_discrete
+
+::: polars_stats.is_continuous
+
 ## Compatibility
 
 | Dimension | Values |
