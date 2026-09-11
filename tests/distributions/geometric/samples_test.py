@@ -36,7 +36,7 @@ def test_samples_columns_are_not_all_equal(
     frame: Callable[..., pl.DataFrame],
     seed: int,
 ) -> None:
-    # Regression: the same seed must derive distinct sub-seeds so the `size`
+    # One seed derives a distinct sub-seed per draw, so the `size`
     # columns are independent draws, not `size` copies of the same draw.
     size = 8
     dframe = frame(size=512)

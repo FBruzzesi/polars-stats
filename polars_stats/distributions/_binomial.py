@@ -14,7 +14,7 @@ from polars_stats.distributions._base import (
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_stats._typing import IntoExprColumn
+    from polars_stats._typing import DistributionName, IntoExprColumn
 
 
 class Binomial(DiscreteDistribution):
@@ -41,7 +41,7 @@ class Binomial(DiscreteDistribution):
 
     _n: pl.Expr
     _p: pl.Expr
-    _plugin_prefix: ClassVar[str] = "binomial"
+    _distribution_name: ClassVar[DistributionName] = "binomial"
 
     def __init__(self, n: int | IntoExprColumn, p: float | IntoExprColumn) -> None:
         self._n = coerce_n(n, name="n")
@@ -53,47 +53,16 @@ class Binomial(DiscreteDistribution):
         return (self._n, self._p)
 
     @property
-    def _checked_params(self) -> pl.Expr:
-        """``p`` validated in Rust against the full ``(n, p)`` parameterisation (raises otherwise).
+    def _validated_params(self) -> pl.Expr:
+        return self._validated("params", self._p)
 
-        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
-        """
-        return self._checked("binomial_params", self._p)
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """No Rust ``ln_cdf`` body yet, so this underflows to ``-inf`` where ``cdf`` rounds to ``0``."""
+        return self._cdf(value).log()
 
-    def _pmf(self, value: pl.Expr) -> pl.Expr:
-        """Mass via native ``Discrete::pmf``; zero off the integer support ``{0, ..., n}``."""
-        return self._value_plugin("binomial_pmf", value)
-
-    def _log_pmf(self, value: pl.Expr) -> pl.Expr:
-        """Log-mass via native ``Discrete::ln_pmf`` (more accurate than ``pmf().log()``)."""
-        return self._value_plugin("binomial_ln_pmf", value)
-
-    def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """Cumulative mass ``P(X <= floor(value))`` via native ``DiscreteCDF::cdf``."""
-        return self._value_plugin("binomial_cdf", value)
-
-    def _sf(self, value: pl.Expr) -> pl.Expr:
-        """Survival ``P(X > floor(value))`` via native ``DiscreteCDF::sf`` (accurate upper tail).
-
-        ``log_sf`` (and ``log_cdf``) inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to
-        ``-inf`` deep in the tails: the regularized incomplete beta has no cheap stable log form (scipy's
-        ``logsf`` / ``logcdf`` are naive here too, so parity holds).
-        """
-        return self._value_plugin("binomial_sf", value)
-
-    def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse cdf via the binary-search ``DiscreteCDF::inverse_cdf``, as an integer-valued ``Float64``.
-
-        A quantile outside ``[0, 1]`` yields null. At the endpoints this returns the support bounds
-        (``ppf(0) = 0``, ``ppf(1) = n``); scipy's below-support sentinel ``ppf(0) = -1`` is not
-        reproduced. ``median`` is ``ppf(0.5)`` (the base-class default), which matches scipy exactly;
-        statrs' native ``floor(n * p)`` median is a different convention and is deliberately not used.
-        """
-        return self._value_plugin("binomial_ppf", quantile)
-
-    def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``ppf(1 - quantile)``, the complement formed in Rust so the quantile passes the plugin's dtype gate."""
-        return self._value_plugin("binomial_isf", quantile)
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """No Rust ``ln_sf`` body yet, so this underflows to ``-inf`` where ``sf`` rounds to ``0``."""
+        return self._sf(value).log()
 
     def mean(self) -> pl.Expr:
         """Expected value, ``n * p``."""
@@ -106,7 +75,7 @@ class Binomial(DiscreteDistribution):
     def entropy(self) -> pl.Expr:
         """Shannon entropy in nats, the exact support sum ``-sum_k pmf(k) log pmf(k)``.
 
-        ``0`` at the degenerate endpoints ``p in {0, 1}``. There is no closed form, so
-        ``binomial_entropy`` evaluates the sum in Rust.
+        ``0`` at the degenerate endpoints ``p in {0, 1}``. There is no closed form, so ``binomial_entropy``
+        evaluates the sum in Rust.
         """
-        return self._param_plugin("binomial_entropy")
+        return self._param_plugin("entropy")

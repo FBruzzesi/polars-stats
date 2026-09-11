@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 # Every public method must report an out-of-range `p` as a ComputeError, not silently compute a
-# negative probability. The moments read the Rust-validated `_checked_p`; the value-keyed methods and
+# negative probability. The moments gate on the Rust validator; the value-keyed methods and
 # the samplers validate inside their own plugin.
 _METHODS: dict[str, Callable[[Bernoulli], pl.Expr]] = {
     "pmf": lambda b: b.pmf(pl.col("x")),

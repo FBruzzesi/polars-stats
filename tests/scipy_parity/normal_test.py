@@ -114,8 +114,7 @@ def test_log_near_one_side_keeps_relative_precision(mean: float, std: float) -> 
     np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(lower), rtol=1e-9, atol=0.0)
 
 
-# The `isf` regression. `isf` was the base-class `ppf(1 - quantile)` until X5; it is now
-# `mu + sigma * sqrt(2) * erfc_inv(2q)`, which forms no complement.
+# `isf` is `mu + sigma * sqrt(2) * erfc_inv(2q)`, which forms no complement.
 #
 # Oracled by `scipy.special.ndtri` (the inverse standard-normal cdf) under the normal's symmetry
 # `z_(1-q) = -z_q`, **not** by `scipy.stats.norm.isf`: scipy's `isf` is `ppf(1 - q)` too, so it
@@ -126,11 +125,10 @@ _ISF_DEEP_QUANTILES = [1e-300, 1e-100, 1e-40, 1e-16, 1e-9, 1e-8, 1e-4, 0.3, 0.5,
 
 @pytest.mark.parametrize(("mean", "std"), _PARAMS, ids=str)
 def test_isf_keeps_relative_precision_across_300_decades(mean: float, std: float) -> None:
-    """`isf` holds full relative precision arbitrarily deep, where it used to degrade as `1.1e-16 / q`.
+    """`isf` holds full relative precision arbitrarily deep; `ppf(1 - q)` would degrade as `1.1e-16 / q`.
 
-    Worst measured case was `Normal(-3, 0.5).isf(1e-9)`: relatively wrong by `2.09e-06` against a
-    50-digit oracle, because the answer *also* nearly cancels there (`mu` and `sigma * z` agree to
-    three digits), so the quantile's absolute error is amplified on the way out. Now `2.6e-13`.
+    `Normal(-3, 0.5).isf(1e-9)` is the hardest case: the answer nearly cancels there (`mu` and `sigma * z`
+    agree to three digits), so a quantile's absolute error is amplified on the way out.
     """
     got = pl.DataFrame({"q": _ISF_DEEP_QUANTILES}).select(r=Normal(mu=mean, sigma=std).isf(pl.col("q")))["r"]
     expected = mean - std * scipy_special.ndtri(np.array(_ISF_DEEP_QUANTILES))

@@ -3,17 +3,12 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-from polars_stats.distributions._base import (
-    ContinuousDistribution,
-    coerce_param,
-    scalar_float,
-    scalar_kwargs,
-)
+from polars_stats.distributions._base import ContinuousDistribution, coerce_param, scalar_float, scalar_kwargs
 
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_stats._typing import IntoExprColumn
+    from polars_stats._typing import DistributionName, IntoExprColumn
 
 
 class Exponential(ContinuousDistribution):
@@ -27,19 +22,14 @@ class Exponential(ContinuousDistribution):
         rate: Rate parameter λ, with ``rate > 0``. Either a Python ``float`` or an ``IntoExprColumn``
             (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one rate per row.
 
-    An invalid ``rate`` (``rate <= 0`` or ``NaN``) is not checked at construction; matching every
-    other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is
-    evaluated. The support is ``x >= 0``: ``pdf`` and ``cdf`` are ``0`` for ``x < 0``, and ``sf`` is
-    ``1`` there.
-
-    A null ``rate`` nulls every method, on the support and below it.
-
-    The value-keyed methods compute in Rust, so an invalid ``rate`` is reported whichever branch the
-    value selects. The moments stay in Polars, reading ``rate`` through the same Rust validator.
+    An invalid ``rate`` (``rate <= 0`` or ``NaN``) is not checked at construction; it raises
+    ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. The support is ``x >= 0``:
+    ``pdf`` and ``cdf`` are ``0`` for ``x < 0``, and ``sf`` is ``1`` there. A null ``rate`` nulls every
+    method, on the support and below it.
     """
 
     _rate: pl.Expr
-    _plugin_prefix: ClassVar[str] = "exponential"
+    _distribution_name: ClassVar[DistributionName] = "exponential"
 
     def __init__(self, rate: float | IntoExprColumn) -> None:
         self._rate = coerce_param(rate, name="rate")
@@ -50,67 +40,29 @@ class Exponential(ContinuousDistribution):
         return (self._rate,)
 
     @property
-    def _checked_rate(self) -> pl.Expr:
-        """``rate`` (λ) validated in Rust to be strictly positive (raises otherwise), as a length-n column.
-
-        Null propagates. Read only by the moments, so they report an invalid ``rate`` consistently
-        with ``sample`` rather than silently computing with a non-positive one; the value-keyed
-        methods validate inside their own plugin instead.
-        """
-        return self._checked("exponential_rate", self._rate)
-
-    def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """``rate * exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
-        return self._value_plugin("exponential_pdf", value)
-
-    def _log_pdf(self, value: pl.Expr) -> pl.Expr:
-        """``log(rate) - rate * x`` on ``x >= 0``, ``-inf`` for ``x < 0``."""
-        return self._value_plugin("exponential_ln_pdf", value)
-
-    def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """``1 - exp(-rate * x)`` on ``x >= 0``, ``0`` for ``x < 0``."""
-        return self._value_plugin("exponential_cdf", value)
-
-    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """``log(cdf)`` in the left tail, ``log1p(-sf)`` in the right; ``-inf`` for ``x <= 0``."""
-        return self._value_plugin("exponential_ln_cdf", value)
-
-    def _sf(self, value: pl.Expr) -> pl.Expr:
-        """``exp(-rate * x)`` on ``x >= 0``, ``1`` for ``x < 0``."""
-        return self._value_plugin("exponential_sf", value)
-
-    def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """``-rate * x`` on ``x >= 0``, ``0`` for ``x < 0``."""
-        return self._value_plugin("exponential_ln_sf", value)
-
-    def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log1p(-q) / rate``; null for ``q`` outside ``[0, 1]``."""
-        return self._value_plugin("exponential_ppf", quantile)
-
-    def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``-log(q) / rate``; null for ``q`` outside ``[0, 1]``."""
-        return self._value_plugin("exponential_isf", quantile)
+    def _validated_params(self) -> pl.Expr:
+        """``rate`` validated in Rust to be strictly positive; every moment names it once."""
+        return self._validated("rate", self._rate)
 
     def mean(self) -> pl.Expr:
         """Expected value, ``1 / rate``."""
-        return 1 / self._checked_rate
+        return 1 / self._validated_params
 
     def variance(self) -> pl.Expr:
         """Variance, ``1 / rate**2``."""
-        return 1 / self._checked_rate**2
+        return 1 / self._validated_params**2
 
     def std(self) -> pl.Expr:
-        """Standard deviation, ``1 / rate``, the same expression as ``mean``.
+        """Standard deviation, ``1 / rate``.
 
-        Overrides the base-class ``variance().sqrt()``, which squares the rate and then unsquares
-        it: the round trip saturates about 300 decades before ``1 / rate`` does.
+        Not ``variance().sqrt()``: squaring and unsquaring the rate saturates about 300 decades earlier.
         """
-        return 1 / self._checked_rate
+        return 1 / self._validated_params
 
     def median(self) -> pl.Expr:
         """Median, ``log(2) / rate``."""
-        return math.log(2) / self._checked_rate
+        return math.log(2) / self._validated_params
 
     def entropy(self) -> pl.Expr:
         """Differential entropy, ``1 - log(rate)``."""
-        return 1 - self._checked_rate.log()
+        return 1 - self._validated_params.log()

@@ -48,13 +48,13 @@ The table below is the rule, which every distribution follows. Method by method:
 | parameter validation | **always** | One validation-only round-trip per distribution, since a bare `pl.Expr` cannot raise per row. |
 | `pdf` / `pmf`, `cdf` | **always** | Native `Continuous::pdf` / `Discrete::pmf`, `*CDF::cdf` where `statrs` has them; a hand-written Rust body where the closed form is elementary. Branching on the value puts the validator inside an arm, so these cannot stay in Polars. |
 | `ppf` | **always** | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. Elementary inverses are hand-written Rust bodies, for the same arm-masking reason. |
-| `log_pdf` / `log_pmf` | **always**, override the default | The base default is `_pdf(x).log()`, which underflows. Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body. |
-| `sf` | **always**, override the default | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
-| `log_cdf` / `log_sf` | **always**, override the default | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
+| `log_pdf` / `log_pmf` | **always** | Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body; `pdf(x).log()` would underflow. |
+| `sf` | **always** | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
+| `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. `Beta` and `Binomial` have none yet and override the hook with `log(cdf)` / `log(sf)`, see [Accuracy](accuracy.md). See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
 | `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, or log-gamma plus digamma. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
 | `std` | Polars, and override | The base default `variance().sqrt()` saturates long before the answer does. |
-| `isf` | **always**, in Rust | There is no base default: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
+| `isf` | **always** | Solved against `q` itself: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
 
 ### Expose the conventional parameterisation, document the scipy mapping
 

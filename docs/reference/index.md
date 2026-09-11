@@ -41,7 +41,7 @@ name (`str`), or a `pl.Expr`; argument-free statistics take none. All return a `
 | `cdf(x)` | yes | yes | `P(X <= x)` |
 | `sf(x)` | yes | yes | survival, `P(X > x)`, accurate in the upper tail |
 | `ppf(q)` | yes | yes | inverse cdf, `q` in `[0, 1]` |
-| `isf(q)` | yes | yes | inverse survival, `ppf(1 - q)` |
+| `isf(q)` | yes | yes | inverse survival, the `x` with `sf(x) = q` |
 | `log_cdf(x)` | yes | yes | log cdf |
 | `log_sf(x)` | yes | yes | log survival |
 | `mean()` | yes | yes | `E[X]` |
@@ -51,8 +51,10 @@ name (`str`), or a `pl.Expr`; argument-free statistics take none. All return a `
 | `sample(seed=None)` | yes | yes | one variate per row |
 | `samples(size, seed=None)` | yes | yes | a width-`size` `Array` per row |
 
-Where a more accurate closed form is available (a native `sf`, `ln_pdf`, or a stable `log_sf`), a distribution binds
-it; otherwise the composing defaults apply (`sf = 1 - cdf`, `log_pdf = pdf().log()`, `median = ppf(0.5)`).
+Every value-keyed method runs in Rust (a native `statrs` binding or a hand-written stable form); `median` is
+`ppf(0.5)` unless a closed form exists, and `std` is `sqrt(variance)` unless a form with a wider representable range
+does. The exceptions are `Beta` and `Binomial`, whose `log_cdf` / `log_sf` are `log(cdf)` / `log(sf)` for now (see
+[Accuracy](../explanation/accuracy.md)).
 
 Argument-free statistics return one value per row of parameters: with column-valued parameters, `mean()` yields the
 mean of a different distribution on every row.

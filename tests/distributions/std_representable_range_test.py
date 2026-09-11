@@ -1,18 +1,12 @@
-"""`std()` must hold wherever the standard deviation is representable, not wherever the variance is.
+"""`std()` holds wherever the standard deviation is representable, not only wherever the variance is.
 
-The base-class `std()` is `variance().sqrt()`, which squares a scale parameter and then unsquares it.
-The round trip is lossless in the middle of the range and total at the ends: squaring saturates ~300
-decades before the answer does, so `Normal(0, 1e200).std()` returned `inf` and
-`Normal(0, 1e-200).std()` returned `0.0`, for a quantity that is exactly the parameter passed in.
+The base-class `std()` is `variance().sqrt()`, which squares a scale parameter and unsquares it; squaring
+saturates ~300 decades before the answer does, so every distribution whose variance is a squared scale
+overrides it. Oracled by closed forms: `scipy.stats` composes the same way and returns `inf` too.
 
-`LogNormal.std` was fixed on its own first, which is the mistake this file exists to stop repeating:
-the defect belonged to `_base.py::std`, so every distribution whose variance is a squared scale had
-it. Oracled by closed forms, since `scipy.stats` composes the same way and returns `inf` too.
-
-One case is deliberately absent. `Beta.variance()` returns `NaN` below shapes of ~`1e-154`
-(`a * b` underflows and `(a + b) ** 2` with it, so the ratio is `0 / 0`) against a true `0.5`. That
-is the same class but a `variance` defect rather than a `std` one, it predates this work, and fixing
-it is a separate change; see the review notes rather than treating this file as covering it.
+`Beta` is absent: its `variance()` returns `NaN` below shapes of ~`1e-154` (`a * b` underflows and
+`(a + b) ** 2` with it, so the ratio is `0 / 0`) against a true `0.5`, a `variance` defect rather than a
+`std` one.
 """
 
 from __future__ import annotations

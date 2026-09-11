@@ -249,3 +249,6 @@ min-spaces-from-content = 1
 
 [tool.ryl.rules.braces]
 max-spaces-inside = 1
+
+[tool.typos.default.extend-words]
+lits = "lits"  # Multiple literal

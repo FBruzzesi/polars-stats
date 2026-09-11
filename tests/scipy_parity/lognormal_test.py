@@ -121,8 +121,7 @@ def test_log_near_one_side_keeps_relative_precision(mu: float, sigma: float) -> 
     np.testing.assert_allclose(got["log_sf"].to_numpy(), frozen.logsf(lower), rtol=1e-9, atol=0.0)
 
 
-# The `isf` regression. `isf` was the base-class `ppf(1 - quantile)` until X5; it is now the
-# underlying normal's symmetry form exponentiated, which forms no complement.
+# `isf` is the underlying normal's symmetry form exponentiated, which forms no complement.
 #
 # Oracled by `scipy.special.ndtri` under the symmetry `z_(1-q) = -z_q`, **not** by
 # `scipy.stats.lognorm.isf`: scipy composes the same way, so it carries the same defect and cannot
@@ -134,7 +133,7 @@ _ISF_DEEP_QUANTILES = [1e-300, 1e-100, 1e-40, 1e-16, 1e-9, 1e-8, 1e-4, 0.3, 0.5,
 
 @pytest.mark.parametrize(("mu", "sigma"), [(0.0, 1.0), (0.0, 20.0), (3.0, 2.0), (-5.0, 0.25)], ids=str)
 def test_isf_keeps_relative_precision_across_300_decades(mu: float, sigma: float) -> None:
-    """`isf` holds full relative precision arbitrarily deep, where it used to degrade as `1.1e-16 / q`.
+    """`isf` holds full relative precision arbitrarily deep; `ppf(1 - q)` would degrade as `1.1e-16 / q`.
 
     Asserted in log space, with an *absolute* tolerance: the values here span 600 decades, and an
     absolute error in the log is exactly a relative error in the value, so `atol=1e-12` on the log
@@ -148,9 +147,8 @@ def test_isf_keeps_relative_precision_across_300_decades(mu: float, sigma: float
     np.testing.assert_allclose(np.log(got.to_numpy()[representable]), expected_log[representable], rtol=0.0, atol=1e-12)
 
 
-# The `std` regression: `std` inherited `variance().sqrt()`, and so inherited an overflow the square
-# root would have undone. The variance genuinely exceeds float64 above `sigma ~ 18.8`, but the
-# standard deviation only does above `sigma ~ 26.6`.
+# `variance().sqrt()` would inherit an overflow the square root undoes: the variance exceeds float64
+# above `sigma ~ 18.8`, the standard deviation only above `sigma ~ 26.6`.
 #
 # Oracled by hard-coded 50-digit `mpmath` values, not by scipy: `scipy.stats.lognorm.std` composes
 # through the variance too and returns `inf` at every one of these points.

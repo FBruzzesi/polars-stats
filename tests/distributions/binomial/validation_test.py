@@ -57,8 +57,8 @@ def test_method_raises_on_negative_n_column(expr_fn: Callable[[Binomial], pl.Exp
         df.select(r=expr_fn(b))
 
 
-# A `Float64` `n` used to truncate inside the plugins while the Python closed-form moments kept the
-# fraction, so `n = 2.7` gave `pmf` for `n = 2` beside `mean` for `n = 2.7`, raising nothing.
+# A float `n` column is refused by dtype: a plugin that truncated it beside a closed-form moment that
+# kept the fraction would answer `pmf` for `n = 2` and `mean` for `n = 2.7` from one parameter.
 _NOT_INTEGER = "n must be an integer column"
 _NEGATIVE = "n must be a non-negative integer"
 
@@ -154,7 +154,7 @@ def test_negative_n_raises_at_every_signed_width(dtype: type[pl.DataType]) -> No
 
 
 def test_negative_n_is_judged_for_the_column_not_the_row() -> None:
-    # `n` is checked once for the column where `p` is checked per row, so a null `p` no longer hides a
+    # `n` is checked once for the column where `p` is checked per row, so a null `p` does not hide a
     # negative count. A null `n` is still a null row.
     negative = pl.DataFrame({"n": [-1], "p": [None]}, schema={"n": pl.Int64, "p": pl.Float64})
     with pytest.raises(pl.exceptions.ComputeError, match=_NEGATIVE):

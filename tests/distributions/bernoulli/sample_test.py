@@ -170,13 +170,8 @@ def test_sample_returns_full_length_boolean(
 
 
 def test_sample_in_group_by_draws_per_group(seed: int) -> None:
-    # Under genuine elementwise semantics, draws depend only on (seed, row index, p).
-    # With a constant p and a constant seed, every group sees the same per-row indices
-    # 0..n-1 and so produces an identical bit pattern; variability across groups now
-    # comes from p varying per row. We test:
-    #   * `sum_p05` (constant p): all groups produce the same sum (deterministic);
-    #   * `sum_probas` (per-row p): groups differ;
-    #   * per-group size matches `n_per_group`.
+    # A draw depends only on `(seed, row index, p)`, and every group sees the same indices `0..n-1`:
+    # a constant `p` gives every group the same sum, a per-row `p` makes them differ.
     local_rng = np.random.default_rng(seed=seed)
     n_per_group = 200
     n_groups = 50
@@ -210,14 +205,8 @@ def test_sample_in_group_by_draws_per_group(seed: int) -> None:
 
 
 def test_sample_over_partitions_draws_per_partition(seed: int) -> None:
-    # `over` evaluates the expression per window and aligns back to row order.
-    # Under genuine elementwise semantics, draws depend only on (seed, row index, p).
-    # `pl.len()` inside `over` is the partition length, so every partition sees the
-    # same per-row indices 0..n-1. Requirements:
-    #   1. full-length output;
-    #   2. seed reproducibility across two identical calls;
-    #   3. with constant p + constant seed, per-partition sums are identical (deterministic);
-    #   4. with per-row p, per-partition sums vary.
+    # `pl.len()` inside `over` is the partition length, so every partition sees the same indices
+    # `0..n-1`: the `group_by` contract above, under the other partition context.
     local_rng = np.random.default_rng(seed=seed)
     n_per_group = 200
     n_groups = 20
@@ -255,9 +244,7 @@ def test_sample_over_partitions_draws_per_partition(seed: int) -> None:
 
 
 def test_sample_unseeded_produces_variability(frame: Callable[..., pl.DataFrame]) -> None:
-    # Without a seed, two successive draws on the same frame should not collide. They are not
-    # required to be statistically independent, but `assert_series_not_equal` is sufficient
-    # to catch the pathological case where `seed=None` accidentally became deterministic.
+    # `seed=None` is OS entropy, so two draws on the same frame differ.
     dframe = frame(size=512)
     s1 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=None))["b"]
     s2 = dframe.with_columns(b=Bernoulli(p=0.5).sample(seed=None))["b"]

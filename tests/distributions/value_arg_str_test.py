@@ -1,9 +1,7 @@
-"""A column-name `str` passed to a value-keyed method must mean `pl.col(name)`, not `pl.lit(name)`.
+"""A column-name `str` passed to a value-keyed method means `pl.col(name)`, never `pl.lit(name)`.
 
-`as_expr` previously wrapped every non-`Expr` input in `pl.lit`, so `dist.pdf("x")` built the string
-literal `"x"`; the numeric plugins then cast it to all-null, silently producing wrong answers. This
-module pins the fix across every distribution and every value-keyed method: passing a column name as
-a string is equivalent to passing `pl.col(name)`, and the result is not the all-null regression.
+A string literal would reach the numeric plugins and be cast to all-null, so every case also asserts the
+result is not all-null.
 """
 
 from __future__ import annotations
@@ -80,5 +78,4 @@ def test_str_value_arg_equals_col_expr(dist: _UnivariateDistribution, method: st
     via_str = FRAME.select(r=getattr(dist, method)(column))["r"]
     via_expr = FRAME.select(r=getattr(dist, method)(pl.col(column)))["r"]
     assert_series_equal(via_str, via_expr)
-    # Guard the actual regression: the string-arg path used to collapse to all-null.
     assert via_str.null_count() < via_str.len()

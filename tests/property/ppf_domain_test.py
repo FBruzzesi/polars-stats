@@ -1,22 +1,16 @@
-"""The `ppf` domain contract, across every distribution and both parameter regimes.
+"""The `ppf` / `isf` domain contract, across every distribution and both parameter regimes.
 
-`_UnivariateDistribution.ppf` documents `quantile` outside `[0, 1]` as yielding **null**. That used
-to be a disclaimer ("implementation-defined and should not be relied on") while every implementation
-in fact nulled consistently, so users would have discovered and relied on the de-facto behaviour
-while the docstring told them not to. It is now a guarantee, and a guarantee needs a test that
-covers every distribution rather than the handful whose per-method files happened to assert it.
-
-Three things are pinned here, all of them boundary behaviour a parameter sweep alone would miss:
+`_UnivariateDistribution.ppf` guarantees that `quantile` outside `[0, 1]` yields **null**. Pinned here,
+since a parameter sweep alone would miss the boundary:
 
 * out of range yields null, on both sides and out to the infinities;
 * the closed endpoints `0` and `1` are *in* range and never null, though the value they map to (a
   finite support bound, or an infinite tail) is the distribution's own business;
-* `isf` honours both. It used to inherit them by definition (`ppf(1 - quantile)`); five
-  distributions now implement it independently, so the contract has to be asserted rather than
-  deduced, and the endpoints map in the *opposite* order (`isf(0)` is `ppf(1)`).
+* `isf` honours both, with the endpoints in the opposite order (`isf(0)` is `ppf(1)`). Every
+  distribution solves it in its own Rust body, so the contract is asserted, not deduced.
 
-`ppf` also propagates a null input and maps `NaN` to `NaN`; those belong to the shared value-keyed
-contract and are covered by `value_keyed_test.py` and `plugin_nan_test.py`.
+Null and `NaN` propagation belong to the shared value-keyed contract, `value_keyed_test.py` and
+`plugin_nan_test.py`.
 """
 
 from __future__ import annotations

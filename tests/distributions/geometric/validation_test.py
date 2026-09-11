@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 # Every public method must report an out-of-range `p` as a ComputeError, not silently compute.
 # The support is `0 < p <= 1`, so unlike Bernoulli the degenerate `p = 0` is invalid too. The
-# moments read the Rust-validated `_checked_p`; the value-keyed methods and the samplers validate in
+# moments gate on the Rust validator; the value-keyed methods and the samplers validate in
 # their own plugin.
 _METHODS: dict[str, Callable[[Geometric], pl.Expr]] = {
     "pmf": lambda g: g.pmf(pl.col("k")),
