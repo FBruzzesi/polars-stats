@@ -1,28 +1,18 @@
-"""Validation contract of the constant-parameter moment fast path (validate-once).
+"""Validation contract of the constant-parameter moment fast path.
 
-The closed-form moments (`mean` / `variance` / `std` / `entropy`) and the closed forms of `Uniform`
-/ `Bernoulli` route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`,
-`bernoulli_proba`, `binomial_params`, `lognormal_sigma`, `beta_params`, plus the `binomial_entropy` /
-`beta_entropy` parameter-keyed formulas). For
-all-scalar parameters that plugin is called once on length-1 `pl.lit` inputs instead of per row.
-`tests/property/moment_test.py` pins bit-equality against the per-row path for *valid* parameters;
-this module pins the parts that test does not reach:
+Every moment validates its parameters through a Rust plugin (`normal_sigma`, `uniform_range`,
+`bernoulli_proba`, ..., or the `beta_entropy` / `binomial_entropy` formula itself). With all-scalar
+parameters that plugin runs once on length-1 `pl.lit` inputs instead of per row.
+`tests/property/moment_test.py` pins bit-equality against the per-row path for *valid* parameters; this
+module pins what that test does not reach:
 
-* **Both paths agree on validation.** An invalid scalar parameterisation must raise the same
-  `ComputeError` as the equivalent per-row columns, a non-finite parameter included: finiteness is
-  the library's own check, applied whether or not `statrs` would accept the value. The fast path
-  cannot quietly accept or reject something the per-row path does not. Unlike the value-keyed
-  fast-path test, this covers `Uniform` and `Bernoulli` too: their moments *do* route through a
-  validator, so the scalar path can drift there.
-* **The validator runs once, whatever the frame height.** A length-1 plugin input exists independently
-  of the frame, so an empty frame still validates and an invalid scalar parameterisation still raises,
-  matching the value-keyed kwargs fast path (`value_keyed_fast_path_test.py`). The scalar moment is then
-  one row on a zero-row frame while the per-row path is empty; that asymmetry is pinned here.
+* both paths raise the same `ComputeError` on an invalid scalar parameterisation, a non-finite
+  parameter included (finiteness is the library's own check, whether or not `statrs` accepts the value);
+* the validator runs whatever the frame height, so an empty frame still raises on the scalar path
+  and yields one row on a valid one, while the per-row path returns empty.
 
-A Python `None` parameter cannot reach either path (`coerce_param` rejects it at construction), so
-there is no null-scalar case here. Binomial's `n = -1` is absent for the same reason: `coerce_n` raises
-a `ValueError` at construction, so only a column can carry a negative count to a validator, and
-`binomial/validation_test.py` covers that on every method.
+A Python `None` parameter and a negative scalar `n` are rejected at construction (`coerce_param`,
+`coerce_n`), so neither has a case here.
 """
 
 from __future__ import annotations
@@ -58,7 +48,7 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 
 # id -> (scalar instance, equivalent per-row instance). `variance` is the representative
 # moment: it routes through the parameter validator for every distribution (Normal/LogNormal/Binomial
-# via `_moment`, Uniform via `range`, Bernoulli via `_checked_p`). The `inf` cases guard that the fast
+# via `_moment`, Uniform via `range`). The `inf` cases guard that the fast
 # path applies the library's own finiteness check where `statrs` alone would accept the value.
 _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution]] = {
     "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0))),
@@ -112,11 +102,7 @@ def test_scalar_and_column_paths_agree_on_validation(
     ids=["p=1.5"],
 )
 def test_binomial_entropy_scalar_and_column_paths_agree_on_validation(scalar: Binomial, per_row: Binomial) -> None:
-    """`Binomial.entropy` has its own scalar branch (the Rust support sum on length-1 inputs).
-
-    It is gated by `_moment` like the closed-form moments, so an invalid `(n, p)` must raise on both
-    paths there too, not only through `variance`.
-    """
+    """`Binomial.entropy` is its own plugin (the Rust support sum), so its validation is pinned on its own."""
     frame = pl.DataFrame({"_": range(4)})
     with pytest.raises(pl.exceptions.ComputeError):
         frame.select(r=scalar.entropy())

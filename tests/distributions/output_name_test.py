@@ -103,7 +103,7 @@ def test_value_keyed_keeps_value_root_name(dist: _UnivariateDistribution, method
 # Every second parameter carries a different column name from its first, which is what makes these
 # cases discriminating: an output that followed `inputs[1]` instead of polars' first-input rule
 # would fail the assertion.
-# `_checked_params` is the unaliased read for the four routed through `_moment`, whose
+# `_validated_params` is the unaliased read for the distributions routed through `_moment`, whose
 # `pl.when(...).then(value)` gate would otherwise rename the output and make any assertion pass.
 _VALIDATOR_FRAME = pl.DataFrame(
     {
@@ -121,15 +121,15 @@ _VALIDATOR_FRAME = pl.DataFrame(
 
 # Validating plugin -> (the expression that reaches it unaliased, the root name it inherits).
 _VALIDATOR_EXPRS: dict[str, tuple[pl.Expr, str]] = {
-    "bernoulli_proba": (Bernoulli(p=pl.col("p"))._checked_p, "p"),
-    "exponential_rate": (Exponential(rate=pl.col("rate"))._checked_rate, "rate"),
-    "geometric_p": (Geometric(p=pl.col("p"))._checked_p, "p"),
+    "bernoulli_proba": (Bernoulli(p=pl.col("p"))._validated_params, "p"),
+    "exponential_rate": (Exponential(rate=pl.col("rate"))._validated_params, "rate"),
+    "geometric_p": (Geometric(p=pl.col("p"))._validated_params, "p"),
     "uniform_range": (Uniform(min=pl.col("lo"), max=pl.col("hi")).range, "lo"),
-    "normal_sigma": (Normal(mu=pl.col("mu"), sigma=pl.col("sigma"))._checked_params, "mu"),
-    "lognormal_sigma": (LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma"))._checked_params, "mu"),
-    "beta_params": (Beta(a=pl.col("a"), b=pl.col("b"))._checked_params, "a"),
-    "binomial_params": (Binomial(n=pl.col("n"), p=pl.col("p"))._checked_params, "n"),
-    "discreteuniform_range": (DiscreteUniform(min=pl.col("n"), max=pl.col("n"))._checked_params, "n"),
+    "normal_sigma": (Normal(mu=pl.col("mu"), sigma=pl.col("sigma"))._validated_params, "mu"),
+    "lognormal_sigma": (LogNormal(mu=pl.col("mu"), sigma=pl.col("sigma"))._validated_params, "mu"),
+    "beta_params": (Beta(a=pl.col("a"), b=pl.col("b"))._validated_params, "a"),
+    "binomial_params": (Binomial(n=pl.col("n"), p=pl.col("p"))._validated_params, "n"),
+    "discreteuniform_range": (DiscreteUniform(min=pl.col("n"), max=pl.col("n"))._validated_params, "n"),
 }
 
 

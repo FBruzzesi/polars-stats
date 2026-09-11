@@ -15,20 +15,14 @@ from polars_stats.distributions._base import (
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_stats._typing import IntoExprColumn
-
-
-_TWO_PI_E = math.tau * math.e
-"""2 * pi * e, the constant inside the log-normal's differential entropy `mu + 0.5 * log(2 * pi * e * sigma^2)`."""
+    from polars_stats._typing import DistributionName, IntoExprColumn
 
 
 class LogNormal(ContinuousDistribution):
     """Log-normal distribution: ``X`` such that ``ln(X)`` is ``Normal(mu, sigma)``.
 
-    Parameterised by the underlying normal's location ``mu`` and scale ``sigma`` (``sigma > 0``).
-
-    Equivalent to ``scipy.stats.lognorm(s=sigma, scale=exp(mu))`` (with ``loc=0``):
-    scipy's shape ``s`` is ``sigma`` and its ``scale`` is ``exp(mu)``.
+    Equivalent to ``scipy.stats.lognorm(s=sigma, scale=exp(mu))`` (with ``loc=0``): scipy's shape ``s`` is
+    ``sigma`` and its ``scale`` is ``exp(mu)``.
 
     The support is ``x > 0``; ``pdf`` and ``cdf`` are ``0`` and ``sf`` is ``1`` for ``x <= 0``, matching scipy.
 
@@ -38,14 +32,13 @@ class LogNormal(ContinuousDistribution):
         sigma: Scale of the underlying normal (std-dev of ``ln(X)``), with ``sigma > 0``. Same accepted types as ``mu``.
 
     An invalid parameterisation (``sigma <= 0`` or a non-finite parameter) is not checked at construction;
-    it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
-
-    Null parameters propagate to null.
+    it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Null parameters propagate
+    to null.
     """
 
     _mu: pl.Expr
     _sigma: pl.Expr
-    _plugin_prefix: ClassVar[str] = "lognormal"
+    _distribution_name: ClassVar[DistributionName] = "lognormal"
 
     def __init__(self, mu: float | IntoExprColumn = 0.0, sigma: float | IntoExprColumn = 1.0) -> None:
         self._mu = coerce_param(mu, name="mu")
@@ -57,63 +50,11 @@ class LogNormal(ContinuousDistribution):
         return (self._mu, self._sigma)
 
     @property
-    def _checked_params(self) -> pl.Expr:
-        """``sigma`` validated in Rust against the full ``(mu, sigma)`` parameterisation.
-
-        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
-        """
-        return self._checked("lognormal_sigma", self._sigma)
-
-    def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """Density via native ``statrs`` ``Continuous::pdf`` (``0`` for ``value <= 0``)."""
-        return self._value_plugin("lognormal_pdf", value)
-
-    def _log_pdf(self, value: pl.Expr) -> pl.Expr:
-        """Log-density via native ``Continuous::ln_pdf`` (more accurate than ``pdf().log()``)."""
-        return self._value_plugin("lognormal_ln_pdf", value)
-
-    def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """Cumulative distribution via native ``ContinuousCDF::cdf`` (``0`` for ``value <= 0``)."""
-        return self._value_plugin("lognormal_cdf", value)
-
-    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """Log-cdf via the underlying normal's stable ``ln_erfc`` form; ``-inf`` for ``value <= 0``.
-
-        Finite far into the left tail, unlike ``cdf().log()``.
-        """
-        return self._value_plugin("lognormal_ln_cdf", value)
-
-    def _sf(self, value: pl.Expr) -> pl.Expr:
-        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail)."""
-        return self._value_plugin("lognormal_sf", value)
-
-    def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """Log-sf via the underlying normal's stable ``ln_erfc`` form; ``0`` for ``value <= 0``.
-
-        Finite far into the right tail, unlike ``sf().log()``: ``sf`` for a far-tail value underflows
-        to ``0`` and its log to ``-inf``.
-        """
-        return self._value_plugin("lognormal_ln_sf", value)
-
-    def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf``.
-
-        A quantile outside ``[0, 1]`` yields null; the endpoints map to the support boundaries
-        (``ppf(0) = 0``, ``ppf(1) = +inf``), matching scipy.
-        """
-        return self._value_plugin("lognormal_ppf", quantile)
-
-    def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse survival function, ``Normal._isf``'s symmetry form exponentiated.
-
-        ``exp`` turns the normal's absolute quantile error into a relative one here, so a large ``sigma``
-        amplifies it.
-        """
-        return self._value_plugin("lognormal_isf", quantile)
+    def _validated_params(self) -> pl.Expr:
+        return self._validated("sigma", self._sigma)
 
     @property
     def _half_sigma_sq(self) -> pl.Expr:
-        """``sigma ** 2 / 2``, the exponent `mean` and `std` are written in."""
         return self._sigma**2 / 2
 
     def mean(self) -> pl.Expr:
@@ -123,24 +64,19 @@ class LogNormal(ContinuousDistribution):
     def variance(self) -> pl.Expr:
         """Variance, ``(exp(sigma ** 2) - 1) * exp(2 * mu + sigma ** 2)``.
 
-        The leading factor goes through `expm1`, since the literal ``exp(sigma ** 2) - 1`` cancels
-        for a small ``sigma``. It needs no cut-over: the argument is positive, so the identity
-        overflows no earlier than the result does.
+        The leading factor goes through `expm1`: the literal ``exp(sigma ** 2) - 1`` cancels for a small
+        ``sigma``. No cut-over is needed, the argument is positive.
         """
         return self._moment(expm1(self._sigma**2) * (2 * self._mu + self._sigma**2).exp())
 
     def std(self) -> pl.Expr:
         """Standard deviation, ``exp(0.5 * log(exp(sigma ** 2) - 1) + mu + sigma ** 2 / 2)``.
 
-        Overrides the base-class ``variance().sqrt()``, which inherits an overflow the square root
-        would have undone: the variance genuinely exceeds ``f64`` above ``sigma ~ 18.8`` (so ``inf``
-        is right *there*), but the standard deviation only does above ``sigma ~ 26.6``.
-
-        Consequence worth knowing: ``std() ** 2`` and ``variance()`` are no longer interchangeable
-        at a large ``sigma``, because one is representable and the other is not.
+        Not ``variance().sqrt()``: the variance overflows ``f64`` above ``sigma ~ 18.8`` (so ``inf`` is right
+        *there*), the standard deviation only above ``sigma ~ 26.6``. ``std() ** 2`` and ``variance()`` are
+        therefore not interchangeable at a large ``sigma``.
         """
-        half = self._half_sigma_sq
-        return self._moment((0.5 * log_abs_expm1(self._sigma**2) + self._mu + half).exp())
+        return self._moment((0.5 * log_abs_expm1(self._sigma**2) + self._mu + self._half_sigma_sq).exp())
 
     def median(self) -> pl.Expr:
         """Median, ``exp(mu)``."""
@@ -148,4 +84,4 @@ class LogNormal(ContinuousDistribution):
 
     def entropy(self) -> pl.Expr:
         """Differential entropy, ``mu + 0.5 * log(2 * pi * e * sigma ** 2)``."""
-        return self._moment(self._mu + 0.5 * (_TWO_PI_E * self._sigma**2).log())
+        return self._moment(self._mu + 0.5 * (math.tau * math.e * self._sigma**2).log())

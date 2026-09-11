@@ -160,10 +160,10 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       `0.5*log(2*pi*e*sigma^2)`, a Bernoulli's `1 - p` at 0, `mean = n*p`, ...), the test is **whether every row
       reaches the validator**, not whether Polars can express the arithmetic:
 
-        * The validated parameter is read **unconditionally** (`Bernoulli.mean` is `_checked_p`), or it is named in a
-          `when(...)` **condition** (`Bernoulli.entropy`'s `when((p == 0) | (p == 1))`): **leave it in Python as a
-          Polars expression.** A Rust binding for arithmetic Polars does natively is dead FFI surface. In practice
-          this is the moments: `mean`, `variance`, `std`, `median`, `entropy`.
+        * The validated parameter is read **unconditionally** (`Bernoulli.mean` is the validator's own output), or
+          it is named in a `when(...)` **condition** (`_moment`'s `when(validator.is_not_null())` gate): **leave it
+          in Python as a Polars expression.** A Rust binding for arithmetic Polars does natively is dead FFI
+          surface. In practice this is the moments: `mean`, `variance`, `std`, `median`, `entropy`.
         * The validated parameter is read **only inside a `when` / `then` / `otherwise` arm**, which is what every
           method that branches on the *evaluation value* looks like: **compute it in Rust.** From polars 1.44 an arm
           is masked to null on the rows it does not select, so the validator never sees an invalid parameter on those
@@ -171,8 +171,8 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           ([pola-rs/polars#29005](https://github.com/pola-rs/polars/issues/29005)), and no Polars expression can
           spell a guard that survives the optimiser. In practice this is the value-keyed set: `pdf` / `pmf`,
           `log_pdf` / `log_pmf`, `cdf`, `log_cdf`, `sf`, `log_sf`, `ppf`, `isf`. `DiscreteUniform`, `Bernoulli`,
-          `Exponential`, `Geometric` and `Uniform` are the worked examples: every value-keyed method is a one-line
-          `_value_plugin` hook over a Rust body, and only the moments stay in `_<name>.py`.
+          `Exponential`, `Geometric` and `Uniform` are the worked examples: the base routes every value-keyed method
+          to its `<name>_<method>` Rust body, and only the moments stay in `_<name>.py`.
         * Split such a body into a `derive` that turns the parameters into their branch answers and a `select` that
           picks one by the evaluation value. Where the branch answers are fixed once the parameters are, the table is
           non-generic and `derive` is an associated constructor (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`,
@@ -203,28 +203,35 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
    `DiscreteDistribution`. In `__init__`, coerce each parameter with `coerce_param` / `coerce_n` (types only, **never
    validate values** at construction, let invalid values raise in Rust) and store the fast-path bundle
-   `self._scalar_kwargs = scalar_kwargs(...)`. The base owns all routing (`sample`, `samples`, `_samples_columns`,
-   `_value_plugin`, `_moment`); a subclass declares only what is distribution-specific:
+   `self._scalar_kwargs = scalar_kwargs(...)`. The base owns all routing (`sample`, `samples`, `_value_plugin`,
+   `_param_plugin`, `_validated`, `_moment`); a subclass declares only what is distribution-specific:
 
-    * `_plugin_prefix: ClassVar[str]` (e.g. `"normal"`), from which the base derives every sampler plugin name
-      (`<prefix>_sample` / `_sample_scalar` / `_samples` / `_samples_scalar`), routing scalar vs column parameters off
-      `_scalar_kwargs`.
+    * `_distribution_name: ClassVar[DistributionName]` (e.g. `"normal"`), the prefix of every plugin the base calls:
+      the samplers (`<name>_sample` / `_sample_scalar` / `_samples` / `_samples_scalar`), the value-keyed hooks
+      (`<name>_pdf`, `<name>_ln_cdf`, ...) and the validator. Constant parameters route to the `_scalar` twins off
+      `_scalar_kwargs`. Add the name to `DistributionName` in `polars_stats/_typing.py`.
     * `_param_exprs`, the coerced parameters as a tuple in plugin-input order; the *first* sets the output's root name.
-    * The private formula hooks (`_pdf` / `_pmf`, `_cdf`, `_ppf`, and any `_log_*` / `_sf` closed form). For a
-      statrs-backed method, return `self._value_plugin("<name>_<method>", value)`: the base routes constant parameters
-      to the `_scalar` fast path and column parameters to the per-row plugin.
-    * A validating plugin returning a reused quantity that raises on invalid parameters and nulls on a null one (e.g.
-      `uniform_range` returns `max - min`). Cast each input, run the domain pass, then return the quantity: the
-      checked column itself for one parameter (`bernoulli_proba`), or a `binary_elementwise` over both columns that
-      nulls where either is null (`normal_sigma`, `uniform_range`). It takes no output name: polars resolves an
-      expression's output name from its first input, so the column follows `inputs[0]` whatever the plugin calls
-      its `Series`. For a statrs-backed
-      distribution whose moment formulas may omit a parameter, expose the validator as `_checked_params` and gate
-      every closed-form moment through `self._moment(<formula>)`; for a closed-form distribution whose validator
-      is already part of every moment formula (`Uniform`, `Bernoulli`), weave it in directly and do not call `_moment`.
+    * Nothing for the value-keyed methods. The base hooks (`_pdf` / `_pmf`, `_log_*`, `_cdf`, `_sf`, `_ppf`, `_isf`)
+      each call `self._value_plugin("<method>", value)`, which resolves `<name>_<method>` (`ln_` for the log forms).
+      Override a hook only where the Rust body does not exist (`Beta` and `Binomial` compose `log_cdf` / `log_sf` as
+      `log(cdf)` / `log(sf)`).
+    * `_validated_params`, the validating plugin call the moments gate on. In Rust, a plugin returning a reused
+      quantity that raises on invalid parameters and nulls on a null one (`uniform_range` returns `max - min`,
+      `normal_sigma` the validated `sigma`); its suffix must be in `ParamFunction`. Cast each input, run the domain
+      pass, then return the quantity: the checked column itself for one parameter (`bernoulli_proba`), or a
+      `binary_elementwise` over both columns that nulls where either is null. It takes no output name: polars resolves
+      an expression's output name from its first input. In Python, `_validated_params` is
+      `self._validated("<suffix>", <the same quantity as a polars expr>)`, which runs the plugin per row for column
+      parameters and once, on length-1 literals, for constants; or `self._param_plugin("<suffix>")` when the plugin's
+      own output is the answer on both routings (`DiscreteUniform.support_size`, whose `Float64` count must not be
+      recomputed in polars).
+    * The closed-form moments, as `self._moment(<formula over the raw parameters>)`: one validator mention however
+      many times the formula names a parameter. A moment whose formula *is* the validated quantity reads
+      `_validated_params` directly (`Bernoulli.mean`, `Exponential`'s five, `Uniform.range`). A moment with no closed
+      form is its own parameter-keyed plugin, `self._param_plugin("entropy")`, validating inside.
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
-    `_samples_columns` / `_value_plugin` / `_moment`. Export the class from `polars_stats/__init__.py`.
+    `_value_plugin` / `_param_plugin` / `_validated` / `_moment`. Export the class from `polars_stats/__init__.py`.
 3. **Tests.** A new distribution touches its own files **and** several shared registries.
 
     !!! warning "Missing a shared registry is silent, and CI stays green"
@@ -253,11 +260,11 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 ## Numerical stability
 
 **Every method must be accurate in the regime it exists to serve.** `log_sf` exists for the deep tail, so a `log_sf`
-that returns `-inf` there does not work, even though every test passes. The base-class defaults `_cdf().log()` and
-`_sf().log()` are a convenience, not an implementation: inheriting one is a decision to justify. `_isf` has no default
-at all, because the loss would happen *before* your code runs: `1 - q` resolves to `1.1e-16` absolute, so the tail
-mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve against `q` itself, via a
-symmetry, a closed form, or entering a two-sided solve from the other end.
+that returns `-inf` there does not work, even though every test passes. Composing `log_cdf` as `cdf().log()` (as
+`Beta` and `Binomial` still do) is a stopgap, not an implementation: shipping one is a decision to justify. Never
+write `isf` as `ppf(1 - q)`, because the loss would happen *before* your code runs: `1 - q` resolves to `1.1e-16`
+absolute, so the tail mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve
+against `q` itself, via a symmetry, a closed form, or entering a two-sided solve from the other end.
 
 **A composed method inherits the weakest part's range, and the composition is often wider than the part.** `std()`
 defaults to `variance().sqrt()`, and a variance that legitimately overflows can hide a standard deviation that does

@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from polars_stats.distributions._base import (
-    ContinuousDistribution,
-    coerce_param,
-    scalar_float,
-    scalar_kwargs,
-)
+from polars_stats.distributions._base import ContinuousDistribution, coerce_param, scalar_float, scalar_kwargs
 
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_stats._typing import IntoExprColumn
+    from polars_stats._typing import DistributionName, IntoExprColumn
 
 
 class Beta(ContinuousDistribution):
@@ -26,9 +21,9 @@ class Beta(ContinuousDistribution):
             (``pl.Expr``, ``pl.Series`` or column name ``str``) carrying one shape per row.
         b: Second shape parameter (beta), with ``b > 0``. Same accepted types as ``a``.
 
-    An invalid shape (``a <= 0``, ``b <= 0``, or a non-finite parameter) is not checked at construction; matching every
-    other distribution, it raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated.
-    Null parameters propagate to null.
+    An invalid shape (``a <= 0``, ``b <= 0``, or a non-finite parameter) is not checked at construction; it
+    raises ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Null parameters propagate
+    to null.
 
     The support is ``[0, 1]``: ``pdf`` is ``0`` outside it, and when a shape is ``< 1`` the density
     diverges (``inf`` or large finite values) at the corresponding boundary.
@@ -36,7 +31,7 @@ class Beta(ContinuousDistribution):
 
     _a: pl.Expr
     _b: pl.Expr
-    _plugin_prefix: ClassVar[str] = "beta"
+    _distribution_name: ClassVar[DistributionName] = "beta"
 
     def __init__(self, a: float | IntoExprColumn, b: float | IntoExprColumn) -> None:
         self._a = coerce_param(a, name="a")
@@ -48,46 +43,16 @@ class Beta(ContinuousDistribution):
         return (self._a, self._b)
 
     @property
-    def _checked_params(self) -> pl.Expr:
-        """``b`` validated in Rust against the full ``(a, b)`` parameterisation (raises otherwise).
+    def _validated_params(self) -> pl.Expr:
+        return self._validated("params", self._b)
 
-        See ``_UnivariateDistribution._checked_params`` / ``_checked`` for the moment-gating contract.
-        """
-        return self._checked("beta_params", self._b)
+    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
+        """No Rust ``ln_cdf`` body yet, so this underflows to ``-inf`` where ``cdf`` rounds to ``0``."""
+        return self._cdf(value).log()
 
-    def _pdf(self, value: pl.Expr) -> pl.Expr:
-        """Density via native ``statrs`` ``Continuous::pdf`` (Beta function); ``0`` outside ``[0, 1]``."""
-        return self._value_plugin("beta_pdf", value)
-
-    def _log_pdf(self, value: pl.Expr) -> pl.Expr:
-        """Log-density via native ``Continuous::ln_pdf`` (more accurate than ``pdf().log()``)."""
-        return self._value_plugin("beta_ln_pdf", value)
-
-    def _cdf(self, value: pl.Expr) -> pl.Expr:
-        """Cumulative distribution via native ``ContinuousCDF::cdf`` (regularized incomplete beta)."""
-        return self._value_plugin("beta_cdf", value)
-
-    def _sf(self, value: pl.Expr) -> pl.Expr:
-        """Survival function via native ``ContinuousCDF::sf`` (accurate in the upper tail).
-
-        ``log_sf`` (and ``log_cdf``) inherit the naive ``sf().log()`` / ``cdf().log()``, which underflow to
-        ``-inf`` deep in the tails: the regularized incomplete beta has no cheap stable log form (scipy's
-        ``logsf`` / ``logcdf`` are naive here too, so parity holds).
-        """
-        return self._value_plugin("beta_sf", value)
-
-    def _ppf(self, quantile: pl.Expr) -> pl.Expr:
-        """Inverse cdf via the closed-form ``ContinuousCDF::inverse_cdf`` (inverse regularized incomplete beta).
-
-        A quantile outside ``[0, 1]`` yields null; the endpoints map to the support bounds
-        (``ppf(0) = 0``, ``ppf(1) = 1``), matching scipy. ``median`` is ``ppf(0.5)`` (the base-class default);
-        the beta median has no closed form.
-        """
-        return self._value_plugin("beta_ppf", quantile)
-
-    def _isf(self, quantile: pl.Expr) -> pl.Expr:
-        """``ppf(1 - quantile)``, the complement formed in Rust so the quantile passes the plugin's dtype gate."""
-        return self._value_plugin("beta_isf", quantile)
+    def _log_sf(self, value: pl.Expr) -> pl.Expr:
+        """No Rust ``ln_sf`` body yet, so this underflows to ``-inf`` where ``sf`` rounds to ``0``."""
+        return self._sf(value).log()
 
     def mean(self) -> pl.Expr:
         """Expected value, ``a / (a + b)``."""
@@ -100,6 +65,6 @@ class Beta(ContinuousDistribution):
     def entropy(self) -> pl.Expr:
         """Differential entropy in nats, ``ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b) + (a + b - 2) psi(a + b)``.
 
-        No elementary closed form (log-Beta and digamma), so ``beta_entropy`` evaluates it in Rust.
+        Log-Beta and digamma have no elementary closed form, so ``beta_entropy`` evaluates it in Rust.
         """
-        return self._param_plugin("beta_entropy")
+        return self._param_plugin("entropy")

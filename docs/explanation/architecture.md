@@ -24,22 +24,29 @@ The method surface (`pdf`/`pmf`, `cdf`, `sf`, `ppf`, `isf`, the `log_*` family, 
 `DiscreteDistribution`. The catalogue and the full table live in the [API reference](../reference/index.md#method-surface).
 
 **Template-method split**: every value-keyed method is *concrete in the base*: it coerces the argument with `as_expr`
-and delegates everything else to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). **Subclasses implement and override the
-`_x` hooks, never the public methods.** The hook receives an already-coerced `pl.Expr` and owns the whole per-row
-contract, the null and `NaN` rows included (null in, null out; `NaN` in, `NaN` out, matching scipy). Nothing sits
-between the hook and the caller; [Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust)
-explain why a `when` / `then` / `otherwise` above it could not be trusted with those rows.
+and delegates everything else to a private hook (`_pdf`, `_cdf`, `_ppf`, ...). The hook receives an already-coerced
+`pl.Expr` and owns the whole per-row contract, the null and `NaN` rows included (null in, null out; `NaN` in, `NaN`
+out, matching scipy). Nothing sits between the hook and the caller;
+[Design notes](design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust) explain why a
+`when` / `then` / `otherwise` above it could not be trusted with those rows.
 
-Composing defaults live in the base and call the other hooks:
+**Every hook dispatches to Rust by name.** A subclass declares `_distribution_name` (`"normal"`, `"beta"`, ...), and
+the base hook for each value-keyed method calls the plugin `<name>_<method>` (`normal_cdf`, `beta_ln_pdf`, ...) through
+`_value_plugin`, or its `<name>_<method>_scalar` twin when every parameter is constant. The valid names are `Literal`
+aliases in `polars_stats/_typing.py`, so a typo is a type error. A subclass overrides a hook only where the Rust body
+does not exist yet: `Beta` and `Binomial` compose `log_cdf` / `log_sf` as `log(cdf)` / `log(sf)`, which underflow in
+the tails (see [Accuracy](accuracy.md)). **Override the private `_x` hook, never the public method**: the public
+methods only coerce, and `median` (`ppf(0.5)`) and `std` (`variance().sqrt()`) are composed from the hooks and public
+moments, so a public override is bypassed by everything built on it.
 
-* `_sf` defaults to `1 - _cdf(x)`
-* `_log_pdf` / `_log_pmf` / `_log_cdf` / `_log_sf` default to `.log()` of the underlying hook
-* `median` defaults to `ppf(0.5)`, `std` to `variance().sqrt()`
+`_isf` is solved against `q` itself, in Rust: `_ppf(1 - q)` quantises a small quantile before the inverse runs, and
+polars would form `1 - q` ahead of the Rust dtype gate.
 
-A subclass overrides one of these only when `statrs` (or a closed form) is more numerically accurate, for instance
-binding a native `ln_pdf` instead of letting `log_pdf` underflow in the tails. `_isf` has no default: `_ppf(1 - q)`
-quantises a small quantile before the inverse runs, and polars would form `1 - q` ahead of the Rust dtype gate, so
-every distribution solves against `q` itself, in Rust.
+The moments follow the same split at the parameter level. A closed-form moment is a polars expression over the raw
+parameters, gated by `_moment` on the distribution's `_validated_params`: one validating plugin call (`normal_sigma`,
+`uniform_range`, ...) that raises on an invalid parameterisation and is null on a null one. A moment with no closed
+form (`Beta.entropy`, `Binomial.entropy`) calls its own parameter-keyed plugin through `_param_plugin`, which validates
+inside. Both run once, on length-1 literals, when the parameters are constant.
 
 ## Column-valued parameters
 

@@ -10,7 +10,7 @@ import pytest
 from polars.exceptions import ComputeError
 
 import polars_stats as ps
-from polars_stats.distributions._base import _MAX_WIRE_INT
+from polars_stats.distributions._base import _MAX_WIRE_INT, ROW_INDEX_EXPR, register_plugin
 from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
@@ -98,7 +98,8 @@ def test_no_seed_is_still_accepted(call: SamplingCallable) -> None:
 
 def test_the_bound_is_the_wire_limit_not_a_chosen_one() -> None:
     """One past `_MAX_WIRE_INT` really is undeliverable, so the guard is no stricter than it must be."""
-    expr = ps.Normal(0.0, 1.0)._samples(size=1, seed=_MAX_WIRE_INT + 1)
+    kwargs = {"seed": _MAX_WIRE_INT + 1, "size": 1, "mu": 0.0, "sigma": 1.0}
+    expr = register_plugin("normal", "samples", (ROW_INDEX_EXPR,), kwargs=kwargs, scalar=True)
 
     with pytest.raises(ComputeError, match="could not parse kwargs"):
         _FRAME.select(expr)

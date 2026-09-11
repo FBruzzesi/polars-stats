@@ -1,27 +1,19 @@
 """Validation contract of the constant-parameter value-keyed fast path.
 
-Covers every distribution: each has per-method Rust plugins.
+All-scalar parameters route every value-keyed method through the ``<name>_<method>_scalar`` plugin, which
+validates and builds the distribution once instead of per row. `tests/property/value_keyed_test.py` pins
+bit-equality against the per-row path for *valid* parameters; this module pins what that test does not reach:
 
-`pdf` / `pmf` / `cdf` / `sf` / `ppf` with all-scalar parameters route through a dedicated ``<name>_<method>_scalar``
-plugin that validates the parameters and builds the distribution once, instead of per row. Two properties of that
-routing are pinned here, both of which the bit-equality property test
-(`tests/property/value_keyed_test.py`, valid params only) does not exercise:
+* both paths raise the same `ComputeError` on an invalid parameterisation, and agree on an accepted
+  degenerate one (`Bernoulli`'s point masses, `Geometric`'s `p = 1`, `DiscreteUniform`'s one-point support).
+  A non-finite parameter is invalid by the library's own check, whether or not `statrs` accepts it;
+* constants validate up front, columns value by value. A Python scalar in kwargs and a length-1
+  expression (`pl.lit`, an aggregate) are checked before any value is read, so an invalid one raises on a
+  zero-row frame; an empty parameter column has no values to reject and returns empty. One constant beside
+  a column still aligns, and a mismatched column is still reported.
 
-* **Both paths agree on validation.** For an invalid parameterisation both the fast path and the
-  general per-row path must raise the same `ComputeError`; for an accepted degenerate one
-  (`Bernoulli`'s point masses, `Geometric`'s `p = 1`, `DiscreteUniform`'s one-point support) both
-  must produce identical output. A non-finite parameter is invalid by the library's own check,
-  whether or not `statrs` would accept it. The fast path cannot quietly accept or reject something
-  the per-row path does not.
-* **Constants validate up front, columns validate value by value.** A Python scalar in kwargs and a
-  length-1 expression (`pl.lit`, an aggregate) are one parameterisation, checked once before any value
-  is read, so an invalid one raises even on a zero-row frame. A parameter *column* is checked over its
-  values, and an empty column has none, so it returns empty. One constant beside a column still
-  aligns, and a mismatched column is still reported.
-
-A Python `None` parameter cannot reach either path: `coerce_param` rejects it as a `TypeError` at construction, covered
-by each distribution's `construct_test.py`. So there is no "null scalar parameter" case to test here, and none for
-Binomial's `n = -1`, which `coerce_n` rejects as a `ValueError` at construction for the same reason.
+A Python `None` parameter and a negative scalar `n` are rejected at construction (`coerce_param`, `coerce_n`),
+so neither has a case here.
 """
 
 from __future__ import annotations

@@ -1,22 +1,4 @@
-"""Compatibility shims for ``polars`` across supported polars versions.
-
-Polars renamed the tolerance keyword arguments of `assert_series_equal` from ``rtol``/``atol`` to
-``rel_tol``/``abs_tol`` in v1.32.3. This project supports ``polars>=1.15.0``, so the test suite has to run
-against both spellings.
-
-The wrapper exposes the *latest* signature (``rel_tol``/``abs_tol``) explicitly, by remapping the two tolerance
-arguments to whatever the installed polars version actually accepts; every other argument has a stable name and is
-forwarded untouched.
-
-`linear_space` backfills `polars.linear_space`, which is missing on older supported polars; the implementation here
-reproduces its evenly spaced, inclusive-endpoint grid on every supported version.
-
-`available_dtypes` drops the dtypes an older supported polars has no name for.
-
-`arr_explode` wraps `Series.arr.explode`: polars 1.36 added the `empty_as_null` flag and 1.42 deprecated its
-default (a warning `filterwarnings = ["error"]` escalates), so newer polars needs the explicit kwarg while older
-supported polars does not accept it.
-"""
+"""Shims over the polars API differences between the supported floor (``polars>=1.15.0``) and the latest release."""
 
 from __future__ import annotations
 
@@ -118,10 +100,9 @@ def assert_series_equal(  # noqa: PLR0913
     abs_tol: float = 1e-08,
     categorical_as_str: bool = False,
 ) -> None:
-    """Version-agnostic `polars.testing.assert_series_equal`.
+    """`polars.testing.assert_series_equal` with the latest signature.
 
-    Mirrors the latest polars signature. ``rel_tol``/``abs_tol`` are remapped to the
-    spelling the installed polars version supports.
+    polars < 1.32.3 spells the tolerances `rtol` / `atol`.
     """
     _assert_series_equal(
         left,
