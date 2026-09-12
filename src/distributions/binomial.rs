@@ -1,4 +1,3 @@
-use polars::prelude::arity::{binary_elementwise, try_binary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -7,61 +6,42 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+    coerce_f64, param_keyed, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
 };
 use crate::rng::{
-    sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row, samples_u64_output,
-    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row_ternary,
+    samples_u64_output, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 /// `n` has no rule of its own beyond the `u64` [`coerce_n`] makes it.
 const P: ParamDomain = ParamDomain::probability("p");
 
+fn check_params(_n: &UInt64Chunked, p: &Float64Chunked) -> PolarsResult<()> {
+    P.check_column(p)
+}
+
 /// `statrs::Binomial::new(p, n)` takes the arguments in the opposite order to this crate's `(n, p)`.
-/// Its `n` is a `u64` and so is this one, so no row converts a trial count and a negative cannot
-/// arrive here at all; behind [`P`]'s pass this cannot fail.
 fn build_dist(n: u64, p: f64) -> PolarsResult<Binomial> {
     Binomial::new(p, n).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
-/// Construct a `rand_distr::Binomial` for sampling, mirroring [`build_dist`]'s validation contract.
-///
-/// `statrs`' `Distribution<u64>` draw for `Binomial` is `(0..n).fold(...)`: one uniform per trial, so
-/// `O(n)` draws per sampled row. `rand_distr`'s sampler is `O(1)`-amortised (inversion for small
-/// `n*p`, BTPE otherwise), so the sampler builds *this* distribution rather than the `statrs` one.
-/// The accepted/rejected parameter set is identical to [`build_dist`]: the same `u64` `n`, and `p`
-/// finite in `[0, 1]` (`rand_distr` rejects `NaN` via `!(p >= 0.0)`). The error messages share the
-/// same prefixes, so validation behaviour is unchanged from the value-keyed methods. The value-keyed
-/// methods keep building the `statrs` distribution; only the sampler uses this.
+/// The samplers draw from `rand_distr::Binomial`, `O(1)`-amortised (inversion for small `n p`, BTPE
+/// otherwise), where `statrs`' draw is one uniform per trial. Both accept the same parameter set.
 fn build_sampler(n: u64, p: f64) -> PolarsResult<BinomialSampler> {
     BinomialSampler::new(n, p).map_err(|e| {
         PolarsError::InvalidOperation(format!("p must be in [0, 1], got {p}: {e}").into())
     })
 }
 
-/// Widen an `n` column to the `UInt64` both distribution types take. The Rust half of `coerce_n`, and
-/// the single place an `n` *column* becomes a `u64`, so no row converts one again.
+/// An `n` column as the `UInt64` both distribution types take. A float dtype is refused rather than
+/// cast, since a cast would truncate `2.7` to `2` while the Python closed-form moments keep `2.7`;
+/// the strict cast reports a negative `n`, where the default cast would null the row. Widening to
+/// `UInt64` rather than `Int64` keeps the whole `u64` range reachable.
 ///
-/// A float dtype is refused rather than cast: a bare `cast(&DataType::Int64)` would truncate `2.7`
-/// to `2` here while the Python closed-form moments keep `2.7`. Refusing leaves the caller to say
-/// how a fraction rounds, and matches `coerce_n`, which refuses a scalar `2.0` on type.
-///
-/// The sign comes free from a *strict* cast, since a negative has no `u64` to widen to; the
-/// default `cast` is `NonStrict` and would null the row instead. Polars' message names the column and
-/// every offending value. Unlike the row loops this reads the whole column, so a negative `n` raises
-/// even on a row another parameter nulls; a null `n` still propagates.
-///
-/// Widening rather than narrowing is also what lets the whole `u64` range reach `statrs`: funnelling
-/// through `Int64` maps anything above `i64::MAX` to `null`, turning a trial count `statrs` accepts
-/// into a silent null row. A `UInt64` column costs nothing, since an equal-dtype cast is a clone;
-/// any other width pays one pass, measurable only on `mean` / `variance` (~5% at 1M rows) and
-/// cheaper than the `max()` scan plus down-cast that narrowing would need.
+/// A `Null`-dtype column widens to all-null so null-in-null-out holds; the dtype gate stays
+/// column-level, so a float column is refused even when every value in it is null.
 fn coerce_n(n: &Series) -> PolarsResult<UInt64Chunked> {
     let dtype = n.dtype();
-    // A `Null`-dtype column (e.g. `pl.DataFrame({"n": [None]})`) has no values the integer rule
-    // could protect; it widens to all-null `UInt64` so null-in-null-out holds, exactly as every
-    // other parameter's cast treats it. The dtype gate below stays column-level: a *float* column
-    // is refused even when every value in it is null.
     if dtype == &DataType::Null {
         return Ok(n.cast(&DataType::UInt64)?.u64()?.clone());
     }
@@ -79,49 +59,44 @@ fn coerce_n(n: &Series) -> PolarsResult<UInt64Chunked> {
     Ok(widened.u64()?.clone())
 }
 
-/// Binomial's constant parameters, deserialised once per call.
-///
-/// The one place this file spells `(n, p)`. The two families build different types from it: the
-/// value-keyed twins take the `statrs` distribution via [`Self::build`], the samplers take the
-/// `rand_distr` sampler via [`Self::build_sampler`]. `n` arrives as the `u64` both of them want:
-/// `coerce_n` refuses a negative Python constant before it reaches the wire, so nothing converts it
-/// here, and a negative would fail deserialisation rather than reach a message.
+/// Constant parameters, deserialised once per call. The value-keyed `_scalar` twins build the
+/// `statrs` distribution through [`Self::build`], the samplers the `rand_distr` sampler through
+/// [`Self::build_sampler`]; neither can rebuild per row. Swapping `(n, p)` is a compile error.
 #[derive(serde::Deserialize)]
-struct BinomialParamsKwargs {
+struct BinomialParams {
     n: u64,
     p: f64,
 }
 
-impl BinomialParamsKwargs {
-    /// The `statrs` distribution, for the value-keyed methods.
+impl BinomialParams {
     fn build(&self) -> PolarsResult<Binomial> {
         P.check(self.p)?;
         build_dist(self.n, self.p)
     }
 
-    /// The `rand_distr` sampler, for the samplers. The free [`build_sampler`] carries the note on
-    /// why the two families use different distribution types.
     fn build_sampler(&self) -> PolarsResult<BinomialSampler> {
         P.check(self.p)?;
         build_sampler(self.n, self.p)
     }
 
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    fn value_keyed<Body>(&self, value: &Series, body: Body) -> PolarsResult<Series>
     where
-        F: Fn(&Binomial, f64) -> Option<f64>,
+        Body: Fn(&Binomial, f64) -> Option<f64>,
     {
-        let dist = self.build()?;
-        value_keyed_scalar(value, |v| f(&dist, v))
+        value_keyed_scalar(value, &self.build()?, body)
     }
 }
 
-/// `value` as a binomial support point: `Some(k)` when `value` is a non-negative integer, else
-/// `None` (off the support, where the mass is zero). `value > n` still maps to `Some`; `statrs`
-/// returns zero mass there, so the check need only reject negatives and non-integers. The `as`
-/// cast saturates to `u64::MAX` for values beyond the integer range, which `statrs` then treats as
-/// `> n`.
+fn value_keyed<Body>(inputs: &[Series], body: Body) -> PolarsResult<Series>
+where
+    Body: Fn(&Binomial, f64) -> Option<f64>,
+{
+    value_keyed_ternary(inputs, coerce_n, coerce_f64, check_params, build_dist, body)
+}
+
+/// `Some(k)` for a non-negative integer point, `None` off the support. `value > n` still maps to
+/// `Some`; `statrs` returns zero mass there. The cast saturates to `u64::MAX` beyond the integer
+/// range, which `statrs` treats as `> n`.
 #[inline]
 fn support_point(value: f64) -> Option<u64> {
     if value < 0.0 || value.fract() != 0.0 {
@@ -131,136 +106,57 @@ fn support_point(value: f64) -> Option<u64> {
     }
 }
 
-/// Apply a value-keyed `f(dist, value)` element-wise over `(value, n, p)`; shared by `pmf`,
-/// `ln_pmf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Binomial, f64) -> Option<f64>,
-{
-    value_keyed_per_row(
-        inputs,
-        coerce_n,
-        coerce_f64,
-        |_, p| P.check_column(p),
-        build_dist,
-        f,
-    )
-}
-
-/// Apply a parameter-keyed moment `f(dist)` element-wise over `(n, p)`.
-///
-/// `inputs[0]` is `n`, `inputs[1]` is `p`. `null` in either propagates; an invalid `p` raises from
-/// [`P`]'s column pass. Only `entropy` routes through here (the one moment without an
-/// elementary closed form); `mean` and `variance` are closed forms computed in Polars and gated on
-/// [`binomial_params`].
-///
-/// `n == u64::MAX` is refused here rather than in [`build_dist`]: it is a valid trial count for
-/// every other method, but `statrs` evaluates the support-sum moments by iterating `(0..n + 1)`,
-/// which wraps to an empty range at `u64::MAX` in release and returns a confident `0.0` entropy.
-fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Binomial) -> f64,
-{
-    let inputs = align_inputs(inputs)?;
-    let n = coerce_n(&inputs[0])?;
-    let p = coerce_f64(&inputs[1])?;
-    P.check_column(&p)?;
-
-    let ca: Float64Chunked = try_binary_elementwise(&n, &p, |n, p| -> PolarsResult<Option<f64>> {
-        let (Some(n), Some(p)) = (n, p) else {
-            return Ok(None);
-        };
-        // TODO(FBruzzesi): Remove `n == u64::MAX` guard once fixed upstream in statrs
-        polars_ensure!(
-            n != u64::MAX,
-            ComputeError: "n = {} overflows the entropy support sum: statrs iterates 0..=n via n + 1, which wraps at u64::MAX", n
-        );
-        Ok(Some(f(&build_dist(n, p)?)))
-    })?;
-    Ok(ca.into_series())
-}
-
-/// One Binomial draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
-///
-/// The state is a [`BinomialSampler`] (`rand_distr`), built by [`build_sampler`] and not by
-/// [`build_dist`]. Every Binomial sampler draws through here, per-row and fast path alike, so their
-/// bit-equality is structural rather than only sampled by `sample_test.py`.
 #[inline]
 fn draw(dist: &BinomialSampler, rng: &mut impl rand::Rng) -> u64 {
     dist.sample(rng)
 }
 
-/// Element-wise Binomial sampler over `(n, p, row_index)`, returning `UInt64`.
-///
-/// Per row, `null` propagates; an invalid `p` raises from [`P`]'s column pass first.
-/// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let n = coerce_n(&inputs[0])?;
-    let p = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    P.check_column(&p)?;
-
-    sample_per_row_ternary(name, &n, &p, index.u64()?, kwargs.seed, build_sampler, draw)
+    sample_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_n,
+        coerce_f64,
+        check_params,
+        build_sampler,
+        draw,
+    )
 }
 
-/// Constant-parameter fast path for [`binomial_sample`], on the same [`build_sampler`].
 #[polars_expr(output_type=UInt64)]
 fn binomial_sample_scalar(
     inputs: &[Series],
-    kwargs: SampleScalarKwargs<BinomialParamsKwargs>,
+    kwargs: SampleScalarKwargs<BinomialParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build_sampler()?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
-/// Constant-parameter multi-draw fast path: the `samples` twin of [`binomial_sample_scalar`].
-///
-/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
-/// bit and the sampler (whose BINV/BTPE setup is the expensive part) is built once per call rather
-/// than once per draw. Returns `Array(UInt64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples_scalar(
     inputs: &[Series],
-    kwargs: SamplesScalarKwargs<BinomialParamsKwargs>,
+    kwargs: SamplesScalarKwargs<BinomialParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build_sampler()?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        draw(&dist, rng)
-    })
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| draw(&dist, rng))
 }
 
-/// Element-wise multi-draw Binomial sampler: `size` draws per row in one call, the `rand_distr`
-/// sampler (whose BINV/BTPE setup is the expensive part) built once per row.
-/// Returns `Array(UInt64, size)`.
-///
-/// Seeding and the null/error contract follow [`samples_per_row`] and [`binomial_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn binomial_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let n = coerce_n(&inputs[0])?;
-    let p = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    P.check_column(&p)?;
-
-    let rows = ternary_param_rows(&n, &p, index.u64()?, build_sampler);
-
-    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
+    samples_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_n,
+        coerce_f64,
+        check_params,
+        build_sampler,
+        draw,
+    )
 }
 
-// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
-//
-// The bodies never see a `NaN` value: the shared drivers short-circuit it to `NaN` first (see
-// `value_keyed_scalar` in `mod.rs`). That guard is load-bearing here: `NaN < 0.0` is false and
-// `NaN.floor() as u64` saturates to `0`, so an unguarded body would confidently return
-// `P(X <= 0)` (and `pmf` a confident `0.0`) instead of propagating `NaN` (scipy semantics).
+// The bodies never see a `NaN` point: `NaN < 0.0` is false and `NaN.floor() as u64` is `0`, so an
+// unguarded `cdf` would answer a confident `P(X <= 0)`. The drivers' short-circuit keeps it out.
 
 fn pmf_value(dist: &Binomial, v: f64) -> Option<f64> {
     Some(support_point(v).map_or(0.0, |k| dist.pmf(k)))
@@ -286,52 +182,14 @@ fn sf_value(dist: &Binomial, v: f64) -> Option<f64> {
     }
 }
 
-/// Element-wise pmf via `statrs` `Discrete::pmf`; zero off the integer support (`value < 0`,
-/// non-integer, or `value > n`), `NaN` for a `NaN` value. See [`value_keyed`] for the null/error
-/// contract.
-#[polars_expr(output_type=Float64)]
-fn binomial_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, pmf_value)
-}
-
-/// Element-wise log-pmf via native `Discrete::ln_pmf` (more accurate than `pmf().ln()`);
-/// `-inf` off the integer support, `NaN` for a `NaN` value.
-#[polars_expr(output_type=Float64)]
-fn binomial_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, ln_pmf_value)
-}
-
-/// Element-wise cdf `P(X <= floor(value))` via `statrs` `DiscreteCDF::cdf`; `0` for `value < 0`,
-/// `1` for `value >= n`, `NaN` for a `NaN` value.
-#[polars_expr(output_type=Float64)]
-fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, cdf_value)
-}
-
-/// Element-wise survival function `P(X > floor(value))` via native `DiscreteCDF::sf` (accurate in
-/// the upper tail); `1` for `value < 0`, `0` for `value >= n`, `NaN` for a `NaN` value.
-#[polars_expr(output_type=Float64)]
-fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed(inputs, sf_value)
-}
-
-/// Slack absorbing the rounding error in `statrs`' regularized-incomplete-beta cdf when comparing
-/// against a quantile that sits exactly on a cdf step. The cdf is accurate to a few ULP (~1e-15),
-/// so 1e-12 reliably treats `cdf(k) == q` as satisfied (matching scipy's integer-valued ppf) while
-/// staying far below the gap between distinct adjacent cdf values at any quantile a caller would
-/// pass.
+/// Relative slack on the cdf-step comparison in [`inverse_cdf`]. The regularized-incomplete-beta
+/// cdf is accurate to a few ulp (`~1e-15`), so `1e-12` treats `cdf(k) == q` as satisfied (scipy's
+/// integer-valued `ppf`) while staying far below the gap between adjacent cdf values. Relative, not
+/// absolute: an absolute slack exceeds every quantile below it and would collapse the search to `0`.
 const PPF_CDF_TOL: f64 = 1e-12;
 
-/// Smallest support point `k in {0, ..., n}` with `cdf(k) >= q`, by binary search over the bounded
-/// discrete CDF.
-///
-/// This is the inverse-cdf statrs documents for `Binomial` (a search over the CDF), reimplemented
-/// here so the cdf-step comparison carries the **relative** slack below, which `statrs`' generic
-/// `DiscreteCDF::inverse_cdf` does not provide.
-///
-/// The step slack is **relative** ([`PPF_CDF_TOL`] scaled by `q`), not absolute: an absolute slack
-/// exceeds every quantile below it, so `cdf(0) + tol >= q` would hold for any `q <= 1e-12`,
-/// collapsing the search to `0`. The caller maps the closed endpoints, so `q` here is interior.
+/// Smallest `k in {0, ..., n}` with `cdf(k) >= q (1 - tol)`, by binary search; the caller maps the
+/// closed endpoints, so `q` here is interior.
 fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
     let threshold = q * (1.0 - PPF_CDF_TOL);
     let mut lo = 0u64;
@@ -347,12 +205,9 @@ fn inverse_cdf(dist: &Binomial, q: f64) -> u64 {
     lo
 }
 
-/// A quantile outside `[0, 1]` yields `null`. At the endpoints this returns the support bounds
-/// (`ppf(0) = 0`, `ppf(1) = n`); scipy's below-support sentinel `ppf(0) = -1` is not reproduced, so
-/// parity comparisons restrict to interior quantiles.
-///
-/// `q == 1` is mapped here rather than left to the search: `cdf(k)` reaches `1.0` a long way below
-/// `n` once the upper tail underflows, so the search would stop at the first such `k`.
+/// Null outside `[0, 1]`; the endpoints map to the support bounds (`ppf(0) = 0`, `ppf(1) = n`),
+/// not scipy's `-1` sentinel. `q == 1` is mapped here because `cdf(k)` reaches `1.0` far below `n`
+/// once the upper tail underflows, and the search would stop there.
 fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
@@ -365,88 +220,89 @@ fn ppf_value(dist: &Binomial, q: f64) -> Option<f64> {
     }
 }
 
-/// Element-wise ppf (inverse cdf), returning the integer support point as `f64`.
-/// See [`ppf_value`] for the endpoint and out-of-range contract.
+fn isf_value(dist: &Binomial, q: f64) -> Option<f64> {
+    ppf_value(dist, 1.0 - q)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_pmf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, pmf_value)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_pmf_value)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, cdf_value)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, sf_value)
+}
+
 #[polars_expr(output_type=Float64)]
 fn binomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// `ppf(1 - q)`, so the endpoints reverse (`isf(0) = n`, `isf(1) = 0`) and `q` outside `[0, 1]`
-/// yields `null` through [`ppf_value`].
-fn isf_value(dist: &Binomial, q: f64) -> Option<f64> {
-    ppf_value(dist, 1.0 - q)
-}
-
-/// Element-wise inverse survival function; see [`isf_value`].
 #[polars_expr(output_type=Float64)]
 fn binomial_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_pmf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_pmf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], pmf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_ln_pmf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_ln_pmf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_ln_pmf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ln_pmf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_cdf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], cdf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_sf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], sf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_ppf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_ppf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
-/// Constant-parameter fast path for [`binomial_isf`].
 #[polars_expr(output_type=Float64)]
-fn binomial_isf_scalar(inputs: &[Series], kwargs: BinomialParamsKwargs) -> PolarsResult<Series> {
+fn binomial_isf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], isf_value)
 }
 
-/// Validate the `(n, p)` parameterisation and return the validated `p`.
-///
-/// `inputs[0]` is `n`, `inputs[1]` is `p`. The Python closed-form moments (`mean = n * p`,
-/// `variance = n * p * (1 - p)`) are gated on this single FFI round-trip, so they raise on an
-/// invalid parameterisation exactly like the value-keyed methods. `null` in either input
-/// propagates.
 #[polars_expr(output_type=Float64)]
 fn binomial_params(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let n = coerce_n(&inputs[0])?;
-    let p = coerce_f64(&inputs[1])?;
-    P.check_column(&p)?;
-
-    let ca: Float64Chunked = binary_elementwise(&n, &p, |n: Option<u64>, p: Option<f64>| n.and(p));
-    Ok(ca.into_series())
+    validated_pair(inputs, coerce_n, check_params)
 }
 
-/// Element-wise Shannon entropy (in nats) via `statrs` `Distribution::entropy`, the exact support
-/// sum `-sum_k pmf(k) ln pmf(k)`; `0` at the degenerate endpoints `p in {0, 1}`.
-///
-/// Kept in Rust, unlike `mean` / `variance`: the binomial entropy has no elementary closed form (it
-/// is a sum over the whole `{0, ..., n}` support, which scipy also evaluates exactly), so there is no
-/// numerically equivalent Polars expression to move it to.
+/// Shannon entropy (nats) as the exact support sum `-sum_k pmf(k) ln pmf(k)`, which has no Polars
+/// expression to move to. `n == u64::MAX` is refused here and nowhere else: it is a valid trial count
+/// for every other method, but `statrs` iterates `0..n + 1`, which wraps to an empty range and returns
+/// a confident `0.0`.
 #[polars_expr(output_type=Float64)]
 fn binomial_entropy(inputs: &[Series]) -> PolarsResult<Series> {
-    params_keyed(inputs, |dist| {
-        dist.entropy()
-            .expect("Binomial::entropy is Some for every valid (n, p)")
+    param_keyed(inputs, coerce_n, coerce_f64, check_params, |n, p| {
+        // TODO(FBruzzesi): Remove once fixed upstream in statrs
+        polars_ensure!(
+            n != u64::MAX,
+            ComputeError: "n = {} overflows the entropy support sum: statrs iterates 0..=n via n + 1, which wraps at u64::MAX", n
+        );
+        Ok(build_dist(n, p)?
+            .entropy()
+            .expect("Binomial::entropy is Some for every valid (n, p)"))
     })
 }

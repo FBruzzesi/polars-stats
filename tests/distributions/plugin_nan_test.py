@@ -1,19 +1,17 @@
 """Every value-keyed method propagates a `NaN` evaluation point as `NaN`, `ppf` / `isf` included.
 
-The `NaN` short-circuit lives in the shared drivers (`value_keyed_scalar` / `value_keyed_per_row` in
-`src/distributions/mod.rs`) and is load-bearing in two places:
+The `NaN` short-circuit lives in the shared drivers in `src/distributions/mod.rs` (`value_keyed_scalar`
+for constant parameters, `value_keyed_binary` and `value_keyed_ternary` for column parameters) and is
+load-bearing in two places:
 
 * `Beta` `cdf` / `sf`: statrs' regularized incomplete beta panics on a `NaN` evaluation point, so
   without the short-circuit the whole query aborts.
 * `Binomial`: `NaN < 0.0` is false and `NaN.floor() as u64` saturates to `0`, so unguarded bodies
   would return a confident `P(X <= 0)` (and a `pmf` of `0.0`).
 
-`Bernoulli`, `Exponential` and `Geometric` take a third driver (`value_keyed_derived_per_row`) and
-`Uniform` its two-parameter sibling; both repeat the short-circuit rather than share one, so every
-case here runs against all four and the drivers cannot drift apart.
-
-Both plugin shapes are covered: scalar-parameter instances route to the `<method>_scalar` twins,
-column-parameter instances to the per-row plugins.
+Each driver repeats the short-circuit rather than sharing one, so every case here runs against all
+three and the drivers cannot drift apart. Both plugin shapes are covered: scalar-parameter instances
+route to the `<method>_scalar` twins, column-parameter instances to the per-row plugins.
 """
 
 from __future__ import annotations

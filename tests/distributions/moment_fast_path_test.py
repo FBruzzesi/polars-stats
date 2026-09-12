@@ -1,18 +1,17 @@
 """Validation contract of the constant-parameter moment fast path.
 
-Every moment validates its parameters through a Rust plugin (`normal_sigma`, `uniform_range`,
-`bernoulli_proba`, ..., or the `beta_entropy` / `binomial_entropy` formula itself). With all-scalar
-parameters that plugin runs once on length-1 `pl.lit` inputs instead of per row.
-`tests/property/moment_test.py` pins bit-equality against the per-row path for *valid* parameters; this
-module pins what that test does not reach:
+Every moment validates its parameters through a Rust plugin call. With all-scalar parameters that
+plugin runs once on length-1 `pl.lit` inputs instead of per row. `tests/property/moment_test.py`
+pins bit-equality against the per-row path for *valid* parameters; this module pins what that test
+does not reach:
 
 * both paths raise the same `ComputeError` on an invalid scalar parameterisation, a non-finite
   parameter included (finiteness is the library's own check, whether or not `statrs` accepts the value);
 * the validator runs whatever the frame height, so an empty frame still raises on the scalar path
   and yields one row on a valid one, while the per-row path returns empty.
 
-A Python `None` parameter and a negative scalar `n` are rejected at construction (`coerce_param`,
-`coerce_n`), so neither has a case here.
+A Python `None` parameter and a negative scalar `n` are rejected at construction, so neither has a
+case here.
 """
 
 from __future__ import annotations
@@ -47,9 +46,9 @@ def _col(value: float, dtype: pl.DataType | None = None) -> pl.Expr:
 
 
 # id -> (scalar instance, equivalent per-row instance). `variance` is the representative
-# moment: it routes through the parameter validator for every distribution (Normal/LogNormal/Binomial
-# via `_moment`, Uniform via `range`). The `inf` cases guard that the fast
-# path applies the library's own finiteness check where `statrs` alone would accept the value.
+# moment: it routes through the parameter validator for every distribution. The `inf` cases guard
+# that the fast path applies the library's own finiteness check where `statrs` alone would accept
+# the value.
 _CASES: dict[str, tuple[_UnivariateDistribution, _UnivariateDistribution]] = {
     "normal mu=nan": (Normal(_NAN, 1.0), Normal(_col(_NAN), _col(1.0))),
     "normal mu=inf": (Normal(_INF, 1.0), Normal(_col(_INF), _col(1.0))),

@@ -74,8 +74,7 @@ def test_sample_null_param_row_is_null(seed: int) -> None:
 
 
 def test_sample_non_positive_std_row_raises(seed: int) -> None:
-    # An invalid scale on a row raises (no early Python validation), the same way Bernoulli reports an
-    # out-of-range `p`. Plugin errors surface as `ComputeError`.
+    # An invalid scale on a row raises (no early Python validation); plugin errors surface as `ComputeError`.
     dframe = pl.DataFrame({"mu": [0.0, 1.0, -1.0], "sigma": [1.0, -2.0, 3.0]})  # row 1: sigma = -2.0
     with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
         dframe.with_columns(z=Normal(mu=pl.col("mu"), sigma=pl.col("sigma")).sample(seed=seed))

@@ -1,4 +1,3 @@
-use polars::prelude::arity::{binary_elementwise, try_binary_elementwise};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -6,11 +5,11 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+    coerce_f64, param_keyed, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
 };
 use crate::rng::{
-    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
-    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
+    samples_per_row_ternary, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 const A: ParamDomain = ParamDomain::positive("a");
@@ -21,166 +20,100 @@ fn check_params(a: &Float64Chunked, b: &Float64Chunked) -> PolarsResult<()> {
     B.check_column(b)
 }
 
-/// Cannot fail behind [`A`] and [`B`]'s pass; the `statrs` error is kept as the backstop.
 fn build_dist(a: f64, b: f64) -> PolarsResult<Beta> {
     Beta::new(a, b).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
-/// Beta's constant shapes, deserialised once per call.
-///
-/// The one place this file spells `(a, b)`: every fast path, sampler or value-keyed, reaches the
-/// constructor through [`Self::build`], so the order cannot drift between them.
+/// Constant parameters, deserialised once per call. Every `_scalar` twin builds through
+/// [`Self::build`], so it cannot rebuild per row.
 #[derive(serde::Deserialize)]
-struct BetaParamsKwargs {
+struct BetaParams {
     a: f64,
     b: f64,
 }
 
-impl BetaParamsKwargs {
+impl BetaParams {
     fn build(&self) -> PolarsResult<Beta> {
         A.check(self.a)?;
         B.check(self.b)?;
         build_dist(self.a, self.b)
     }
 
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    fn value_keyed<Body>(&self, value: &Series, body: Body) -> PolarsResult<Series>
     where
-        F: Fn(&Beta, f64) -> Option<f64>,
+        Body: Fn(&Beta, f64) -> Option<f64>,
     {
-        let dist = self.build()?;
-        value_keyed_scalar(value, |v| f(&dist, v))
+        value_keyed_scalar(value, &self.build()?, body)
     }
 }
 
-/// Validate the `(a, b)` parameterisation and return the validated `b`.
-///
-/// `inputs[0]` is `a`, `inputs[1]` is `b`. The Python closed-form moments (`mean = a / (a + b)`,
-/// `variance = a * b / ((a + b)^2 * (a + b + 1))`) are gated on this single FFI round-trip, so
-/// they raise on an invalid parameterisation exactly like the value-keyed methods. `null` in
-/// either input propagates.
+fn value_keyed<Body>(inputs: &[Series], body: Body) -> PolarsResult<Series>
+where
+    Body: Fn(&Beta, f64) -> Option<f64>,
+{
+    value_keyed_ternary(
+        inputs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        build_dist,
+        body,
+    )
+}
+
 #[polars_expr(output_type=Float64)]
 fn beta_params(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let a = coerce_f64(&inputs[0])?;
-    let b = coerce_f64(&inputs[1])?;
-    check_params(&a, &b)?;
-
-    let ca: Float64Chunked = binary_elementwise(&a, &b, |a: Option<f64>, b: Option<f64>| a.and(b));
-    Ok(ca.into_series())
+    validated_pair(inputs, coerce_f64, check_params)
 }
 
-/// Apply a value-keyed `f(dist, value)` element-wise over `(value, a, b)`; shared by `pdf`,
-/// `ln_pdf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Beta, f64) -> Option<f64>,
-{
-    value_keyed_per_row(inputs, coerce_f64, coerce_f64, check_params, build_dist, f)
-}
-
-/// Apply a parameter-keyed moment `f(dist)` element-wise over `(a, b)`.
-///
-/// `inputs[0]` is `a`, `inputs[1]` is `b`. `null` in either propagates; an invalid shape raises
-/// from [`check_params`]. Only `entropy` routes through here (the one moment without an elementary
-/// closed form); `mean` and `variance` are closed forms computed in Polars and gated on
-/// [`beta_params`].
-fn params_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Beta) -> f64,
-{
-    let inputs = align_inputs(inputs)?;
-    let a = coerce_f64(&inputs[0])?;
-    let b = coerce_f64(&inputs[1])?;
-    check_params(&a, &b)?;
-
-    let ca: Float64Chunked = try_binary_elementwise(&a, &b, |a, b| -> PolarsResult<Option<f64>> {
-        match (a, b) {
-            (Some(a), Some(b)) => Ok(Some(f(&build_dist(a, b)?))),
-            _ => Ok(None),
-        }
-    })?;
-    Ok(ca.into_series())
-}
-
-/// One Beta draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
-///
-/// Every Beta sampler draws through here, per-row and fast path alike, so their bit-equality is
-/// structural rather than only sampled by `sample_test.py`.
 #[inline]
 fn draw(dist: &Beta, rng: &mut impl rand::Rng) -> f64 {
     RandDistribution::sample(dist, rng)
 }
 
-/// Element-wise Beta sampler over `(a, b, row_index)`, returning `Float64`.
-///
-/// Per row, `null` propagates; an invalid shape raises from [`check_params`] first. Seeding and
-/// chunk-invariance follow [`sample_per_row_ternary`].
-///
-/// The draw keeps `statrs` (two `O(1)`-amortised Gamma draws, normalised); routing it through
-/// `rand_distr` would buy nothing, since that is already the algorithm class it uses (unlike the
-/// binomial draw, see docs/explanation/design.md).
 #[polars_expr(output_type=Float64)]
 fn beta_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let a = coerce_f64(&inputs[0])?;
-    let b = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&a, &b)?;
-
-    sample_per_row_ternary(name, &a, &b, index.u64()?, kwargs.seed, build_dist, draw)
+    sample_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        build_dist,
+        draw,
+    )
 }
 
-/// Constant-parameter fast path for [`beta_sample`].
 #[polars_expr(output_type=Float64)]
 fn beta_sample_scalar(
     inputs: &[Series],
-    kwargs: SampleScalarKwargs<BetaParamsKwargs>,
+    kwargs: SampleScalarKwargs<BetaParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build()?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
-/// Constant-parameter multi-draw fast path: the `samples` twin of [`beta_sample_scalar`].
-///
-/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
-/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn beta_samples_scalar(
     inputs: &[Series],
-    kwargs: SamplesScalarKwargs<BetaParamsKwargs>,
+    kwargs: SamplesScalarKwargs<BetaParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build()?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        draw(&dist, rng)
-    })
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| draw(&dist, rng))
 }
 
-/// Element-wise multi-draw Beta sampler: `size` draws per row in one call, the distribution built
-/// once per row. Returns `Array(Float64, size)`.
-///
-/// Seeding and the null/error contract follow [`samples_per_row`] and [`beta_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn beta_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let a = coerce_f64(&inputs[0])?;
-    let b = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&a, &b)?;
-
-    let rows = ternary_param_rows(&a, &b, index.u64()?, build_dist);
-
-    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
+    samples_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        build_dist,
+        draw,
+    )
 }
-
-// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
 fn pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
@@ -190,9 +123,8 @@ fn ln_pdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.ln_pdf(v))
 }
 
-// `cdf` / `sf` rely on the shared drivers' `NaN` short-circuit (see `value_keyed_scalar` in
-// `mod.rs`): unlike `pdf` / `ln_pdf`, which compute through to `NaN`, the regularized incomplete
-// beta behind them panics on a `NaN` evaluation point, which would abort the whole query.
+// The regularized incomplete beta behind `cdf` / `sf` panics on a `NaN` point; the drivers'
+// short-circuit is what keeps it out.
 
 fn cdf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.cdf(v))
@@ -202,9 +134,7 @@ fn sf_value(dist: &Beta, v: f64) -> Option<f64> {
     Some(dist.sf(v))
 }
 
-/// A quantile outside `[0, 1]` yields `null` (statrs' `inverse_cdf` panics there, so the guard is
-/// load-bearing); the endpoints map to the support bounds (`ppf(0) = 0`, `ppf(1) = 1`), matching
-/// `scipy.stats.beta.ppf`.
+/// Null outside `[0, 1]`; `statrs` panics there. The endpoints map to the support bounds.
 fn ppf_value(dist: &Beta, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
@@ -213,102 +143,77 @@ fn ppf_value(dist: &Beta, q: f64) -> Option<f64> {
     }
 }
 
-/// Element-wise pdf via `statrs` `Continuous::pdf` (Beta function); `0` outside `[0, 1]`, and
-/// divergent (`inf`) at a boundary whose shape is `< 1`. See [`value_keyed`] for the null/error
-/// contract.
+fn isf_value(dist: &Beta, q: f64) -> Option<f64> {
+    ppf_value(dist, 1.0 - q)
+}
+
 #[polars_expr(output_type=Float64)]
 fn beta_pdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, pdf_value)
 }
 
-/// Element-wise log-pdf via native `Continuous::ln_pdf` (more accurate than `pdf().ln()`);
-/// `-inf` outside `[0, 1]`.
 #[polars_expr(output_type=Float64)]
 fn beta_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ln_pdf_value)
 }
 
-/// Element-wise cdf via `statrs` `ContinuousCDF::cdf` (regularized incomplete beta); `0` below the
-/// support, `1` at/above `1`, `NaN` for a `NaN` value (short-circuited in the shared drivers:
-/// statrs panics on it).
 #[polars_expr(output_type=Float64)]
 fn beta_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, cdf_value)
 }
 
-/// Element-wise survival function via native `ContinuousCDF::sf` (accurate in the upper tail);
-/// `1` below the support, `0` at/above `1`, `NaN` for a `NaN` value (short-circuited in the shared
-/// drivers: statrs panics on it).
 #[polars_expr(output_type=Float64)]
 fn beta_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
 }
 
-/// Element-wise ppf via the closed-form `ContinuousCDF::inverse_cdf` (inverse regularized
-/// incomplete beta). See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn beta_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// `ppf(1 - q)`, so the endpoints reverse (`isf(0) = 1`, `isf(1) = 0`) and `q` outside `[0, 1]`
-/// yields `null` through [`ppf_value`].
-fn isf_value(dist: &Beta, q: f64) -> Option<f64> {
-    ppf_value(dist, 1.0 - q)
-}
-
-/// Element-wise inverse survival function; see [`isf_value`].
 #[polars_expr(output_type=Float64)]
 fn beta_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
 }
 
-/// Constant-parameter fast path for [`beta_pdf`].
 #[polars_expr(output_type=Float64)]
-fn beta_pdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_pdf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], pdf_value)
 }
 
-/// Constant-parameter fast path for [`beta_ln_pdf`].
 #[polars_expr(output_type=Float64)]
-fn beta_ln_pdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_ln_pdf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ln_pdf_value)
 }
 
-/// Constant-parameter fast path for [`beta_cdf`].
 #[polars_expr(output_type=Float64)]
-fn beta_cdf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_cdf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], cdf_value)
 }
 
-/// Constant-parameter fast path for [`beta_sf`].
 #[polars_expr(output_type=Float64)]
-fn beta_sf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_sf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], sf_value)
 }
 
-/// Constant-parameter fast path for [`beta_ppf`].
 #[polars_expr(output_type=Float64)]
-fn beta_ppf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_ppf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
-/// Constant-parameter fast path for [`beta_isf`].
 #[polars_expr(output_type=Float64)]
-fn beta_isf_scalar(inputs: &[Series], kwargs: BetaParamsKwargs) -> PolarsResult<Series> {
+fn beta_isf_scalar(inputs: &[Series], kwargs: BetaParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], isf_value)
 }
 
-/// Element-wise differential entropy (in nats) via `statrs` `Distribution::entropy`:
-/// `ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b) + (a + b - 2) psi(a + b)`.
-///
-/// Kept in Rust, unlike `mean` / `variance`: the beta entropy needs log-Beta and digamma, which
-/// have no elementary closed form, so there is no numerically equivalent Polars expression to move
-/// it to (the same reasoning as `binomial_entropy`).
+/// Differential entropy (nats), `ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b) + (a + b - 2) psi(a + b)`:
+/// log-Beta and digamma have no Polars expression to move to.
 #[polars_expr(output_type=Float64)]
 fn beta_entropy(inputs: &[Series]) -> PolarsResult<Series> {
-    params_keyed(inputs, |dist| {
-        dist.entropy()
-            .expect("Beta::entropy is Some for every valid (a, b)")
+    param_keyed(inputs, coerce_f64, coerce_f64, check_params, |a, b| {
+        Ok(build_dist(a, b)?
+            .entropy()
+            .expect("Beta::entropy is Some for every valid (a, b)"))
     })
 }

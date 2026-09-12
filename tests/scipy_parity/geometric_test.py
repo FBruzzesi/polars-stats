@@ -105,8 +105,7 @@ def test_isf_deep_tail_keeps_full_precision() -> None:
 
     Asserted against the exact closed form only: scipy's discrete inverse goes through
     `ppf(1 - q)`, whose complement saturates here (`log1p(0)` divides by zero and scipy answers
-    `inf`), so it is not a usable oracle in this regime — which is the defect this override exists
-    to avoid.
+    `inf`), so it is not a usable oracle in this regime.
     """
     p = 0.5
     q = 1e-300

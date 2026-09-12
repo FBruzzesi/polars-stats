@@ -30,7 +30,6 @@ def test_entropy_at_half_equals_two_log_two(unit_frame: pl.DataFrame) -> None:
 
 @pytest.mark.parametrize("p", [0.1, 0.3, 0.7])
 def test_entropy_grows_as_p_shrinks(p: float, unit_frame: pl.DataFrame) -> None:
-    # The geometric distribution spreads out as success becomes rarer.
     smaller = unit_frame.select(v=Geometric(p=p / 2).entropy()).item(0, "v")
     larger = unit_frame.select(v=Geometric(p=p).entropy()).item(0, "v")
     assert smaller > larger

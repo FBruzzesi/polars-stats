@@ -20,8 +20,8 @@ def test_construct_invalid_max_type_raises(bad: object) -> None:
 
 @pytest.mark.parametrize(("mn", "mx"), [(1.0, 1.0), (2.0, 1.0), (0.0, -1.0)])
 def test_construct_scalar_max_le_min_defers_to_eval(mn: float, mx: float) -> None:
-    # No early Python validation: construction succeeds (matching Bernoulli's deferral); the invalid
-    # parameterisation surfaces as a ComputeError when a method is evaluated, not a ValueError here.
+    # No early Python validation: construction succeeds; the invalid parameterisation surfaces as a
+    # ComputeError when a method is evaluated, not a ValueError.
     Uniform(min=mn, max=mx)
     with pytest.raises(pl.exceptions.ComputeError, match="max must be strictly greater than min"):
         pl.DataFrame({"x": [0.5]}).select(r=Uniform(min=mn, max=mx).pdf(pl.col("x")))

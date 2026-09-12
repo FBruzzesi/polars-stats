@@ -178,10 +178,10 @@ def test_null_dtype_n_column_propagates() -> None:
     # null-in-null-out like every other parameter instead of hitting the dtype gate.
     df = pl.DataFrame({"n": [None, None], "p": [0.5, 0.5]})  # n dtype: Null
     b = Binomial(pl.col("n"), pl.col("p"))
-    # `pmf(1.0)`, not `pmf(pl.lit(1.0))`: a Python scalar is row-aligned by `_coerce`'s
-    # `pl.repeat`, where a caller-built length-1 literal expr is passed to the plugin as-is and
-    # `try_ternary_elementwise` zips it to length 1 (the truncation `_coerce` documents). The
-    # in-memory engine exposes that; the streaming engine broadcasts upstream and hides it.
+    # `pmf(1.0)`, not `pmf(pl.lit(1.0))`: a Python scalar is row-aligned to the column length,
+    # where a caller-built length-1 literal expr would take a different broadcast path and hide
+    # the same truncation. The in-memory engine exposes it; the streaming engine broadcasts
+    # upstream and hides it.
     got = df.select(mean=b.mean(), pmf=b.pmf(1.0), draw=b.sample(seed=0))
     assert got["mean"].to_list() == [None, None]
     assert got["pmf"].to_list() == [None, None]

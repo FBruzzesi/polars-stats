@@ -124,9 +124,8 @@ def test_sample_with_series_p_seed_reproducible(rng: np.random.Generator, seed: 
 
 @pytest.mark.parametrize("bad_p", [-0.1, 1.5, float("nan")])
 def test_sample_with_column_p_out_of_range_raises(bad_p: float, seed: int) -> None:
-    # Plugin-side errors are always wrapped in ComputeError by the polars FFI
-    # layer (the underlying PolarsError::InvalidOperation variant is lost at
-    # the plugin boundary). The message is preserved.
+    # Plugin-side errors are always wrapped in ComputeError by the polars FFI layer.
+    # The message is preserved.
     dframe = pl.DataFrame({"p": [0.5, bad_p, 0.7]})
     with pytest.raises(pl.exceptions.ComputeError, match="p must be in"):
         dframe.with_columns(b=Bernoulli(p=pl.col("p")).sample(seed=seed))
