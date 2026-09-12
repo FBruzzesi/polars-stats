@@ -26,8 +26,8 @@ def test_construct_defaults_to_standard_normal() -> None:
 
 @pytest.mark.parametrize("bad_std", [0.0, -1.0, -1e-9])
 def test_construct_scalar_non_positive_std_defers_to_eval(bad_std: float) -> None:
-    # No early Python validation (matching Bernoulli / Uniform): construction succeeds; the invalid
-    # scale surfaces as a ComputeError when a method is evaluated, not a ValueError here.
+    # No early Python validation: construction succeeds; the invalid scale surfaces as a
+    # ComputeError when a method is evaluated, not a ValueError.
     Normal(mu=0.0, sigma=bad_std)
     with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
         pl.DataFrame({"x": [0.5]}).select(r=Normal(mu=0.0, sigma=bad_std).pdf(pl.col("x")))

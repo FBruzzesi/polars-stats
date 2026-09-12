@@ -1,29 +1,27 @@
-use polars::prelude::arity::binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::{Distribution, StandardUniform};
 
 use crate::distributions::{
-    align_inputs, coerce_f64, on_unit_interval, value_keyed_derived_pair_per_row,
-    value_keyed_derived_pair_scalar, PairDomain, ParamDomain,
+    coerce_f64, on_unit_interval, param_keyed, value_keyed_derived_ternary, value_keyed_scalar,
+    PairDomain, ParamDomain,
 };
 use crate::rng::{
-    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
-    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
+    samples_per_row_ternary, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 const MIN: ParamDomain = ParamDomain::finite("min");
 const MAX: ParamDomain = ParamDomain::finite("max");
 
-/// `max - min` overflows to `inf` for `min=-1e308, max=1e308`, and with it every derived quantity
-/// (`range`, the moments, the draw) would silently be `inf`.
+/// `max - min` overflows to `inf` for `min=-1e308, max=1e308`, and every derived quantity with it.
 const BOUNDS: PairDomain<f64> = PairDomain {
     names: ("min", "max"),
     rule: "strictly greater than min, and max - min must be finite",
     accepts: |min, max| max > min && (max - min).is_finite(),
 };
 
-/// The constant regime's once-per-call check, and the row loops' backstop.
+/// The samplers' per-row state: the bounds themselves, checked.
 fn checked_bounds(min: f64, max: f64) -> PolarsResult<(f64, f64)> {
     MIN.check(min)?;
     MAX.check(max)?;
@@ -37,15 +35,14 @@ fn check_params(min: &Float64Chunked, max: &Float64Chunked) -> PolarsResult<()> 
     BOUNDS.check_columns(min, max)
 }
 
-/// Uniform's constant bounds, deserialised once per call.
+/// Constant parameters, deserialised once per call; every `_scalar` twin checks them once here.
 #[derive(serde::Deserialize)]
-struct UniformParamsKwargs {
+struct UniformParams {
     min: f64,
     max: f64,
 }
 
-impl UniformParamsKwargs {
-    /// Validates once per call, then derives and maps through [`value_keyed_derived_pair_scalar`].
+impl UniformParams {
     fn value_keyed<Branches>(
         &self,
         value: &Series,
@@ -53,17 +50,15 @@ impl UniformParamsKwargs {
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         checked_bounds(self.min, self.max)?;
-        value_keyed_derived_pair_scalar(value, self.min, self.max, derive, select)
+        value_keyed_scalar(value, &derive(self.min, self.max), select)
     }
 }
 
-/// Where both inverses switch which bound they interpolate from; see [`derive_inverse`].
+/// Where both inverses switch which bound they interpolate from.
 const MEDIAN_QUANTILE: f64 = 0.5;
 
-/// Where the two log methods swap conditioning, as `min + range / 2` rather than `(min + max) / 2`.
-///
-/// The two round differently on a span that straddles zero, and `min + max` can overflow where
-/// `range / 2` cannot: `range` is already known finite.
+/// `min + range / 2` rather than `(min + max) / 2`: `min + max` can overflow where `range` is
+/// already known finite.
 fn midpoint(min: f64, range: f64) -> f64 {
     min + range / 2.0
 }
@@ -77,7 +72,6 @@ struct Density {
 }
 
 impl Density {
-    /// `1 / range` on the support, `0` off it.
     fn pdf(min: f64, max: f64) -> Self {
         Density {
             min,
@@ -87,8 +81,8 @@ impl Density {
         }
     }
 
-    /// `-ln(range)` on the support, `-inf` off it. From the width rather than as `ln(pdf)`, so it
-    /// stays exact where the density itself has underflowed or overflowed.
+    /// `-ln(range)` from the width rather than `ln(pdf)`, so it stays exact where the density has
+    /// under- or overflowed.
     fn ln_pdf(min: f64, max: f64) -> Self {
         Density {
             min,
@@ -98,11 +92,8 @@ impl Density {
         }
     }
 
-    /// The support is closed at both ends, so `max` is on it (`pdf(max) == 1 / range`) and only
-    /// `value > max` is outside. scipy's convention, and the one asymmetry with `uniform_sample`,
-    /// which draws on the half-open `[min, max)`.
-    ///
-    /// A `NaN` point never reaches here: both drivers short-circuit it.
+    /// Closed at both ends (scipy's convention), so `pdf(max) == 1 / range`; the one asymmetry with
+    /// the sampler, which draws on `[min, max)`.
     fn at(&self, value: f64) -> Option<f64> {
         Some(if value < self.min || value > self.max {
             self.off_support
@@ -112,10 +103,8 @@ impl Density {
     }
 }
 
-/// `cdf` / `log_cdf` / `sf` / `log_sf`: the three places an evaluation point lands, and the answer
-/// at each.
-///
-/// These saturate from `max` up, so `max` takes `at_or_above_max` rather than the interior.
+/// `cdf` / `log_cdf` / `sf` / `log_sf`: the three places a point lands. These saturate from `max`
+/// up, so `max` takes `at_or_above_max`.
 struct Regions<Arm> {
     min: f64,
     max: f64,
@@ -136,7 +125,6 @@ impl<Arm: Fn(f64) -> f64> Regions<Arm> {
     }
 }
 
-/// `(value - min) / range` on the support, clamped to `0` below and `1` from `max` up.
 fn derive_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
@@ -150,12 +138,9 @@ fn derive_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     }
 }
 
-/// `ln(cdf)` below the midpoint, `ln_1p(-sf)` above it; `-inf` below `min`, `0` from `max` up.
-///
-/// Approaching `max` the cdf ratio rounds to exactly `1` and its log to `0`, where the truth is a
-/// small negative, so the near-certain half reads the *survival* fraction through `ln_1p` instead.
-/// The other half is well conditioned and takes the plain log, the same branch `normal.rs`'s
-/// `ln_half_erfc` takes.
+/// `ln(cdf)` below the midpoint, `ln_1p(-sf)` above it. Approaching `max` the cdf ratio rounds to
+/// exactly `1` and its log to `0` where the truth is a small negative, so the near-certain half reads
+/// the survival fraction through `ln_1p`.
 fn derive_ln_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
@@ -176,10 +161,8 @@ fn derive_ln_cdf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     }
 }
 
-/// `(max - value) / range` on the support, `1` below `min` and `0` from `max` up.
-///
-/// The closed form, never `1 - cdf`: the complement quantises the upper tail to the `1.1e-16`
-/// spacing of `1.0` and reaches `0.0` below that.
+/// `(max - value) / range`; never `1 - cdf`, which quantises the upper tail to the `1.1e-16` spacing
+/// of `1.0`.
 fn derive_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
@@ -193,8 +176,8 @@ fn derive_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     }
 }
 
-/// The mirror of [`derive_ln_cdf`]: `0` below `min`, `-inf` from `max` up, and the `ln_1p` branch on
-/// the **lower** half, which is where the survival function is the near-certain one.
+/// The mirror of [`derive_ln_cdf`]: `ln_1p` on the lower half, where the survival function is the
+/// near-certain one.
 fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     Regions {
         min,
@@ -215,17 +198,11 @@ fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
     }
 }
 
-/// `ppf` and `isf`, interpolating from whichever bound the answer is nearest.
-///
-/// Both inverses are one multiply-add, and both lose the answer when they interpolate from the
-/// *far* bound: `min + quantile * range` is a difference of nearly equal numbers once the result
-/// lands near `max`. Anchoring to the near bound makes the addition well conditioned, and the
-/// `1 - quantile` it needs is formed only above [`MEDIAN_QUANTILE`], where Sterbenz makes it
-/// exact.
-///
-/// `ascending` is `true` for `ppf`, whose quantile `0` sits at `min`, and `false` for `isf`, whose
-/// sits at `max`. Mirroring rather than `ppf(1 - q)`: below `q ~ 1.1e-16` that complement rounds to
-/// `1.0` and the whole tail collapses onto one bound.
+/// `ppf` (`ascending`) and `isf`, interpolating from whichever bound the answer is nearest:
+/// `min + q * range` is a difference of nearly equal numbers once the result lands near `max`, so
+/// above [`MEDIAN_QUANTILE`] the answer anchors to the far bound through `1 - q`, which Sterbenz
+/// makes exact there. Mirroring rather than `ppf(1 - q)`: below `q ~ 1.1e-16` that complement rounds
+/// to `1.0`.
 fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
     let range = max - min;
     let (at_zero, at_one, step) = if ascending {
@@ -242,132 +219,99 @@ fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
     }
 }
 
-/// `min + quantile * range`, from `max` down above the median; null outside `[0, 1]`.
 fn derive_ppf(min: f64, max: f64) -> impl Fn(f64) -> f64 {
     derive_inverse(min, max, true)
 }
 
-/// `max - quantile * range`, from `min` up above the median; null outside `[0, 1]`.
 fn derive_isf(min: f64, max: f64) -> impl Fn(f64) -> f64 {
     derive_inverse(min, max, false)
 }
 
-/// Element-wise pdf; see [`Density::at`] for why the support is closed at `max`.
-/// See [`value_keyed_derived_pair_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn uniform_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, Density::pdf, Density::at)
+    value_keyed_derived_ternary(inputs, check_params, Density::pdf, Density::at)
 }
 
-/// Element-wise log-pdf; see [`Density::ln_pdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, Density::ln_pdf, Density::at)
+    value_keyed_derived_ternary(inputs, check_params, Density::ln_pdf, Density::at)
 }
 
-/// Element-wise cdf `P(X <= value)`; see [`derive_cdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_cdf, Regions::at)
+    value_keyed_derived_ternary(inputs, check_params, derive_cdf, Regions::at)
 }
 
-/// Element-wise log-cdf; see [`derive_ln_cdf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_ln_cdf, Regions::at)
+    value_keyed_derived_ternary(inputs, check_params, derive_ln_cdf, Regions::at)
 }
 
-/// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn uniform_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_sf, Regions::at)
+    value_keyed_derived_ternary(inputs, check_params, derive_sf, Regions::at)
 }
 
-/// Element-wise log-sf; see [`derive_ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_ln_sf, Regions::at)
+    value_keyed_derived_ternary(inputs, check_params, derive_ln_sf, Regions::at)
 }
 
-/// Element-wise ppf (inverse cdf); see [`derive_inverse`].
 #[polars_expr(output_type=Float64)]
 fn uniform_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_ppf, on_unit_interval)
+    value_keyed_derived_ternary(inputs, check_params, derive_ppf, on_unit_interval)
 }
 
-/// Element-wise inverse survival function; see [`derive_inverse`] for why it never forms a
-/// complement.
 #[polars_expr(output_type=Float64)]
 fn uniform_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_pair_per_row(inputs, check_params, derive_isf, on_unit_interval)
+    value_keyed_derived_ternary(inputs, check_params, derive_isf, on_unit_interval)
 }
 
-/// Constant-bounds fast path for [`uniform_pdf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_pdf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_pdf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], Density::pdf, Density::at)
 }
 
-/// Constant-bounds fast path for [`uniform_ln_pdf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_ln_pdf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_ln_pdf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], Density::ln_pdf, Density::at)
 }
 
-/// Constant-bounds fast path for [`uniform_cdf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_cdf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_cdf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_cdf, Regions::at)
 }
 
-/// Constant-bounds fast path for [`uniform_ln_cdf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_ln_cdf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_ln_cdf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ln_cdf, Regions::at)
 }
 
-/// Constant-bounds fast path for [`uniform_sf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_sf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_sf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_sf, Regions::at)
 }
 
-/// Constant-bounds fast path for [`uniform_ln_sf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_ln_sf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_ln_sf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ln_sf, Regions::at)
 }
 
-/// Constant-bounds fast path for [`uniform_ppf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_ppf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_ppf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ppf, on_unit_interval)
 }
 
-/// Constant-bounds fast path for [`uniform_isf`].
 #[polars_expr(output_type=Float64)]
-fn uniform_isf_scalar(inputs: &[Series], kwargs: UniformParamsKwargs) -> PolarsResult<Series> {
+fn uniform_isf_scalar(inputs: &[Series], kwargs: UniformParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
-/// One half-open `[lo, hi)` draw: `lo + (hi - lo) * U[0, 1)`, matching scipy's
-/// `loc + scale * U[0, 1)`.
-///
-/// Uniform's counterpart of the other distributions' `fn draw`: every Uniform sampler draws through
-/// here, per-row and fast path alike, so their bit-equality is structural rather than only sampled
-/// by `sample_test.py`.
-///
-/// This deliberately bypasses `statrs`' `Distribution::sample`, which rebuilds a
-/// `rand::distr::Uniform` float sampler (scale/bias/rejection-zone setup) on *every* call: that
-/// fixed per-draw cost dwarfs the single multiply-add here, enough to leave the sampler slower
-/// than scipy.
-///
-/// `u < 1` does not survive the multiply-add's rounding: `lo + (hi - lo) * u` can land exactly on
-/// `hi` (or one ulp above) when `u` is close to 1, so the result is nudged back to the largest
-/// float below `hi` to keep the documented half-open contract. `lo < hi` guarantees
-/// `hi.next_down() >= lo`.
+/// One `[lo, hi)` draw, `lo + (hi - lo) * U[0, 1)`, bypassing `statrs`' `sample`, which rebuilds a
+/// `rand::distr::Uniform` sampler on every call. The multiply-add can round onto `hi` when `u` is
+/// close to `1`, so the result is nudged back below `hi`; `lo < hi` guarantees `hi.next_down() >= lo`.
 #[inline]
-fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
+fn draw(&(lo, hi): &(f64, f64), rng: &mut impl rand::Rng) -> f64 {
     let u: f64 = StandardUniform.sample(rng);
     let x = lo + (hi - lo) * u;
     if x < hi {
@@ -377,101 +321,56 @@ fn draw_half_open(lo: f64, hi: f64, rng: &mut impl rand::Rng) -> f64 {
     }
 }
 
-/// Element-wise continuous Uniform sampler over `[min, max)`, taking `(min, max, row_index)` and
-/// returning `Float64`.
-///
-/// Per row, `null` propagates; an invalid parameterisation (`max <= min`, non-finite bounds, or a
-/// width overflowing `f64`) raises from [`check_params`] before any row is drawn. Seeding and
-/// chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Float64)]
 fn uniform_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let min = coerce_f64(&inputs[0])?;
-    let max = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&min, &max)?;
-
     sample_per_row_ternary(
-        name,
-        &min,
-        &max,
-        index.u64()?,
-        kwargs.seed,
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
         checked_bounds,
-        |&(lo, hi), rng| draw_half_open(lo, hi, rng),
+        draw,
     )
 }
 
-/// Constant-bounds fast path for [`uniform_sample`].
 #[polars_expr(output_type=Float64)]
 fn uniform_sample_scalar(
     inputs: &[Series],
-    kwargs: SampleScalarKwargs<UniformParamsKwargs>,
+    kwargs: SampleScalarKwargs<UniformParams>,
 ) -> PolarsResult<Series> {
-    let (lo, hi) = checked_bounds(kwargs.params.min, kwargs.params.max)?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index(name, &inputs[0], kwargs.seed, |rng| {
-        draw_half_open(lo, hi, rng)
-    })
+    let bounds = checked_bounds(kwargs.params.min, kwargs.params.max)?;
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&bounds, rng))
 }
 
-/// Constant-bounds multi-draw fast path: the `samples` twin of [`uniform_sample_scalar`].
-///
-/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
-/// bit and the bounds are validated once per call. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples_scalar(
     inputs: &[Series],
-    kwargs: SamplesScalarKwargs<UniformParamsKwargs>,
+    kwargs: SamplesScalarKwargs<UniformParams>,
 ) -> PolarsResult<Series> {
-    let (lo, hi) = checked_bounds(kwargs.params.min, kwargs.params.max)?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        draw_half_open(lo, hi, rng)
+    let bounds = checked_bounds(kwargs.params.min, kwargs.params.max)?;
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&bounds, rng)
     })
 }
 
-/// Element-wise multi-draw Uniform sampler over `[min, max)`: `size` draws per row in one call.
-/// Returns `Array(Float64, size)`.
-///
-/// Seeding and the null/error contract follow [`samples_per_row`] and [`uniform_sample`]; the
-/// draw is the shared [`draw_half_open`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn uniform_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let min = coerce_f64(&inputs[0])?;
-    let max = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&min, &max)?;
-
-    let rows = ternary_param_rows(&min, &max, index.u64()?, checked_bounds);
-
-    samples_per_row(name, rows, kwargs.seed, kwargs.size, |&(lo, hi), rng| {
-        draw_half_open(lo, hi, rng)
-    })
+    samples_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        checked_bounds,
+        draw,
+    )
 }
 
-/// Element-wise support width `max - min`, behind [`check_params`].
-///
-/// `inputs[0]` is the lower bound, `inputs[1]` the upper bound. `null` in either propagates;
-/// `max <= min`, non-finite bounds, or a width overflowing `f64` raise `ComputeError`.
-///
-/// Every closed-form Python method derives from this width, so routing it through Rust is what
-/// lets them report an invalid parameterisation consistently with `uniform_sample`, instead of
-/// silently producing a negative or infinite result.
+/// The support width `max - min`, which the Python moments derive from.
 #[polars_expr(output_type=Float64)]
 fn uniform_range(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let min = coerce_f64(&inputs[0])?;
-    let max = coerce_f64(&inputs[1])?;
-    check_params(&min, &max)?;
-
-    let ca: Float64Chunked = binary_elementwise(&min, &max, |lo: Option<f64>, hi: Option<f64>| {
-        Some(hi? - lo?)
-    });
-    Ok(ca.into_series())
+    param_keyed(inputs, coerce_f64, coerce_f64, check_params, |lo, hi| {
+        Ok(hi - lo)
+    })
 }

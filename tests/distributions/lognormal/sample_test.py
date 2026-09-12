@@ -21,7 +21,6 @@ def test_sample_basic_properties(size: int, frame: Callable[..., pl.DataFrame], 
 
 
 def test_sample_is_positive(frame: Callable[..., pl.DataFrame], seed: int) -> None:
-    # The LogNormal support is (0, inf): every draw is strictly positive.
     s = frame(size=10_000).with_columns(z=LogNormal(mu=0.0, sigma=1.5).sample(seed=seed))["z"]
     assert s.min() > 0.0  # type: ignore[operator]
 

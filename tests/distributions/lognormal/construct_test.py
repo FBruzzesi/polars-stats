@@ -26,8 +26,8 @@ def test_construct_defaults_to_standard_lognormal() -> None:
 
 @pytest.mark.parametrize("bad_sigma", [0.0, -1.0, -1e-9])
 def test_construct_scalar_non_positive_sigma_defers_to_eval(bad_sigma: float) -> None:
-    # No early Python validation (matching Bernoulli / Uniform / Normal): construction succeeds; the
-    # invalid scale surfaces as a ComputeError when a method is evaluated, not a ValueError here.
+    # No early Python validation: construction succeeds; the invalid scale surfaces as a
+    # ComputeError when a method is evaluated, not a ValueError.
     LogNormal(mu=0.0, sigma=bad_sigma)
     with pytest.raises(pl.exceptions.ComputeError, match="sigma must be finite and strictly positive"):
         pl.DataFrame({"x": [0.5]}).select(r=LogNormal(mu=0.0, sigma=bad_sigma).pdf(pl.col("x")))

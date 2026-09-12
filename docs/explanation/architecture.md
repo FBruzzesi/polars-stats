@@ -117,10 +117,10 @@ index crosses FFI, instead of one broadcast column per parameter that the genera
 on every row. The shared `sample_by_index` helper in `rng.rs` resolves the seed once and maps the dense,
 non-null index straight into the typed output. Each distribution writes the two fast-path shells by hand over
 `sample_by_index` / `samples_by_index`, carrying its parameters in `SampleScalarKwargs<P>` / `SamplesScalarKwargs<P>`,
-the generic `seed` / `size` wrappers in `rng.rs` around the distribution's own `<Name>ParamsKwargs`. The shells reuse
+the generic `seed` / `size` wrappers in `rng.rs` around the distribution's own `<Name>Params`. The shells reuse
 the same `(root_seed, row_index)` seeding and call the same named `draw` as the per-row path, so output is
 byte-identical for the same seed (a property test pins that equality); column-valued parameters still take the general
-per-row plugin, itself a shell over the `sample_per_row_*` / `samples_per_row` drivers in the same file.
+per-row plugin, itself a shell over the `sample_per_row_*` / `samples_per_row_*` drivers in the same file.
 
 !!! info "Earlier `ChaCha20` design (removed)"
 

@@ -294,10 +294,10 @@ def test_mismatched_lengths_raise() -> None:
     """Lengths that are neither equal nor 1 have no defined broadcast, so they raise.
 
     *Which layer* rejects the shape is a polars scheduling detail that moves with the version and the engine:
-    `align_inputs` names both lengths, while polars' own zip node reports `non-equal length inputs` when it
-    gets there first. Both are correct rejections, so the message is matched loosely and the raise itself,
-    which is the contract, is asserted strictly. `engine=` is deliberately not passed: `"in-memory"` is not a
-    valid engine name on the oldest supported polars.
+    this library's own alignment check names both lengths, while polars' own zip node reports `non-equal
+    length inputs` when it gets there first. Both are correct rejections, so the message is matched loosely
+    and the raise itself, which is the contract, is asserted strictly. `engine=` is deliberately not passed:
+    `"in-memory"` is not a valid engine name on the oldest supported polars.
     """
     frame = pl.DataFrame({"x": [0.0, 1.0, 2.0, 3.0], "p": [0.5] * 4})
     mismatched = Binomial(n=pl.Series("n", [1, 2, 3]), p=pl.col("p")).pmf(pl.col("x"))
@@ -347,8 +347,8 @@ def test_partition_contexts_keep_sampler_bit_equality(spec: DistSpec) -> None:
 def test_multi_chunk_frame_broadcasts() -> None:
     """A broadcast input is single-chunk; the column it is zipped against need not be.
 
-    `try_*_elementwise` calls `align_chunks_*` itself and the `*_param_rows` iterators walk chunks in order,
-    so length alignment is all the funnels owe. Nothing else pinned that.
+    The elementwise funnel aligns chunks itself before zipping, so length alignment is all it owes.
+    Nothing else pinned that.
     """
     parts = [pl.DataFrame({"x": [float(i) for i in range(k, k + 8)]}) for k in (0, 8, 16)]
     chunked = pl.concat(parts, rechunk=False)

@@ -92,8 +92,8 @@ def test_sample_null_bound_row_is_null(seed: int) -> None:
 
 
 def test_sample_max_le_min_row_raises(seed: int) -> None:
-    # An invalid parameterisation on a row raises (no early Python validation), the same way
-    # Bernoulli reports an out-of-range `p`. Plugin errors surface as `ComputeError`.
+    # An invalid parameterisation on a row raises (no early Python validation); plugin errors surface
+    # as `ComputeError`.
     dframe = pl.DataFrame({"lo": [0.0, 5.0, -1.0], "hi": [1.0, 2.0, 3.0]})  # row 1: hi (2.0) <= lo (5.0)
     with pytest.raises(pl.exceptions.ComputeError, match="max must be strictly greater than min"):
         dframe.with_columns(u=Uniform(min=pl.col("lo"), max=pl.col("hi")).sample(seed=seed))

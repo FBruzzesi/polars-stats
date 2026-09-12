@@ -43,7 +43,7 @@ def test_samples_columns_are_not_all_equal(
     result = dframe.select(s=Bernoulli(p=0.5).samples(size=size, seed=seed))["s"]
     columns = [result.arr.get(i) for i in range(size)]
     distinct = {tuple(c.to_list()) for c in columns}
-    assert len(distinct) == size  # 8 truly independent draws → 8 distinct rasters
+    assert len(distinct) == size
 
 
 def test_samples_mean_close_to_p_for_large_total(

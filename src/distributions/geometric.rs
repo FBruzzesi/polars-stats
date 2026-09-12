@@ -4,11 +4,11 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Geometric;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, expm1, ln_abs_expm1, on_unit_interval, value_keyed_derived_per_row,
-    value_keyed_derived_scalar, ParamDomain, Sides,
+    expm1, ln_abs_expm1, on_unit_interval, validated_param, value_keyed_derived_binary,
+    value_keyed_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
-    binary_param_rows, sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row,
+    sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row_binary,
     samples_u64_output, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
@@ -19,38 +19,35 @@ const P: ParamDomain = ParamDomain {
     accepts: |p| p.is_finite() && p > 0.0 && p <= 1.0,
 };
 
-/// Cannot fail behind [`P`]'s pass; the `statrs` error is kept as the backstop.
-fn build_dist(proba: f64) -> PolarsResult<Geometric> {
-    Geometric::new(proba).map_err(|e| polars_err!(ComputeError: "{e}"))
+fn build_dist(p: f64) -> PolarsResult<Geometric> {
+    Geometric::new(p).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
-/// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` (a few
-/// parts in `1e9` at `p = 1e-8`) and collapses to `0.0` below `p ~ 1.1e-16`. `-inf` at `p = 1`.
+/// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` and
+/// collapses to `0.0` below `p ~ 1.1e-16`. `-inf` at `p = 1`.
 #[inline]
-fn ln_failure(proba: f64) -> f64 {
-    (-proba).ln_1p()
+fn ln_failure(p: f64) -> f64 {
+    (-p).ln_1p()
 }
 
-/// The samplers' per-row state: [`ln_failure`], behind [`build_dist`]'s backstop. Built once per
-/// row, not once per draw: the multi-draw and constant-parameter paths take many draws per state.
-fn build_sampler(proba: f64) -> PolarsResult<f64> {
-    build_dist(proba)?;
-    Ok(ln_failure(proba))
+/// The samplers' per-row state, behind [`build_dist`]'s check.
+fn build_sampler(p: f64) -> PolarsResult<f64> {
+    build_dist(p)?;
+    Ok(ln_failure(p))
 }
 
-/// Geometric's constant success probability, deserialised once per call.
+/// Constant parameter, deserialised once per call; every `_scalar` twin checks it once here.
 #[derive(serde::Deserialize)]
-struct GeometricParamsKwargs {
+struct GeometricParams {
     p: f64,
 }
 
-impl GeometricParamsKwargs {
+impl GeometricParams {
     fn build_sampler(&self) -> PolarsResult<f64> {
         P.check(self.p)?;
         build_sampler(self.p)
     }
 
-    /// Validates once per call, then derives and maps through [`value_keyed_derived_scalar`].
     fn value_keyed<Branches>(
         &self,
         value: &Series,
@@ -58,33 +55,24 @@ impl GeometricParamsKwargs {
         select: impl Fn(&Branches, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         P.check(self.p)?;
-        value_keyed_derived_scalar(value, self.p, derive, select)
+        value_keyed_scalar(value, &derive(self.p), select)
     }
 }
 
-/// `p` unchanged after [`P`]'s column pass, `null` included. The moments derive from this so an
-/// invalid `p` raises as it does from `geometric_sample`.
 #[polars_expr(output_type=Float64)]
 fn geometric_p(inputs: &[Series]) -> PolarsResult<Series> {
-    let proba = coerce_f64(&inputs[0])?;
-    P.check_column(&proba)?;
-    Ok(proba.into_series())
+    validated_param(inputs, &P)
 }
 
-/// Crossover of [`derive_cdf`], in units of `ln(sf)`.
-///
-/// Below it `exp(ln_sf)` is small enough that the direct `1 - exp(ln_sf)` rounds no worse than the
-/// `sinh` identity and cannot round above `1`. The identity itself only breaks past `ln_sf ~ -1455`,
-/// where `sinh` overflows, far inside this branch.
+/// Crossover of [`derive_cdf`] in units of `ln(sf)`: below it `exp(ln_sf)` is small enough that the
+/// direct `1 - exp(ln_sf)` rounds no worse than the `sinh` identity and cannot round above `1`.
 const CDF_DIRECT_COMPLEMENT_MAX: f64 = -20.0;
 
-/// Crossover of [`derive_ln_cdf`], in units of `ln(sf)`.
-///
-/// Below it the cdf sits within `0.63` of `1` and `ln_1p(-exp(ln_sf))` carries that difference
-/// exactly, down through the `cdf ~ 1 - 1e-16` zone where `cdf.ln()` reads the tail mass as `0`.
+/// Crossover of [`derive_ln_cdf`] in units of `ln(sf)`: below it the cdf sits within `0.63` of `1`
+/// and `ln_1p(-exp(ln_sf))` carries that difference exactly, where `cdf.ln()` reads the tail as `0`.
 const LN_CDF_LN_1P_MAX: f64 = -1.0;
 
-/// `pmf` / `log_pmf`: the constant off the support (below `1`, or a non-integral point), and the arm
+/// `pmf` / `log_pmf`: a constant off the support (below `1`, or a non-integral point), and the arm
 /// `p` derives on it.
 struct Mass<Arm> {
     off_support: f64,
@@ -92,10 +80,8 @@ struct Mass<Arm> {
 }
 
 impl<Arm: Fn(f64) -> f64> Mass<Arm> {
-    /// Only a positive integer takes the arm, so `pmf(2.5)` is `0`, not the mass at `2`.
     /// `floor(k) == k` rather than an integer cast keeps `1e300` and `+inf` on the support, answering
-    /// `0` through the arm instead of saturating. A `NaN` point never reaches here: both drivers
-    /// short-circuit it.
+    /// `0` through the arm instead of saturating.
     fn at(&self, value: f64) -> Option<f64> {
         Some(if value >= 1.0 && value.floor() == value {
             (self.on_support)(value)
@@ -105,15 +91,11 @@ impl<Arm: Fn(f64) -> f64> Mass<Arm> {
     }
 }
 
-/// `cdf` / `log_cdf` / `sf` / `log_sf`: the tail methods floor a non-integral point onto the support,
-/// so `cdf(2.5)` is `cdf(2)` and needs `p` where [`Mass`] answers its constant; the two cannot share
-/// a table.
+/// The tail methods floor a non-integral point onto the support, so `cdf(2.5)` is `cdf(2)`.
 type Tail<Arm> = Sides<Arm, 1>;
 
-/// `(1 - p)^(k - 1) * p` on the positive integers, `0` elsewhere.
-///
-/// `k = 1` short-circuits the power: its exponent `(k - 1) * ln(1 - p)` is `0 * -inf = NaN` at
-/// `p = 1`, where the whole mass sits on `k = 1`.
+/// `(1 - p)^(k - 1) * p` on the positive integers, `0` elsewhere. `k = 1` short-circuits the power,
+/// whose exponent `(k - 1) * ln(1 - p)` is `0 * -inf = NaN` at `p = 1`.
 fn derive_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     Mass {
         off_support: 0.0,
@@ -130,10 +112,8 @@ fn derive_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     }
 }
 
-/// `(k - 1) * ln(1 - p) + ln(p)` on the positive integers, `-inf` elsewhere.
-///
-/// Not `ln(pmf)`, whose `ln(1 - p)` collapses to `0.0` below `p ~ 1.1e-16`. `k = 1` reads `ln(p)`
-/// alone, for the same `0 * -inf` reason as [`derive_pmf`].
+/// `(k - 1) * ln(1 - p) + ln(p)` on the positive integers, `-inf` elsewhere; same `k = 1` guard as
+/// [`derive_pmf`].
 fn derive_ln_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     Mass {
         off_support: f64::NEG_INFINITY,
@@ -150,10 +130,8 @@ fn derive_ln_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
     }
 }
 
-/// `1 - (1 - p)^floor(k)` from `1` up, `0` below, read as `-expm1(ln_sf)`.
-///
-/// Below [`CDF_DIRECT_COMPLEMENT_MAX`] it is the direct `1 - exp(ln_sf)` instead. The literal
-/// `1 - (1 - p)^k` would inherit the rounding of both `1 - p` and the subtraction against `1`.
+/// `1 - (1 - p)^floor(k)` from `1` up, `0` below, as `-expm1(ln_sf)`; the direct complement below
+/// [`CDF_DIRECT_COMPLEMENT_MAX`].
 fn derive_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 0.0,
@@ -171,11 +149,8 @@ fn derive_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     }
 }
 
-/// `ln(1 - exp(ln_sf))` from `1` up, `-inf` below.
-///
-/// Split at [`LN_CDF_LN_1P_MAX`], where the answer's own magnitude stops dwarfing the absolute
-/// granularity of the pieces: below it `ln_1p` carries the difference from `1` exactly, above it
-/// [`ln_abs_expm1`] assembles the answer on the log scale so the rounding stays relative.
+/// `ln(1 - exp(ln_sf))` from `1` up, `-inf` below: `ln_1p` below [`LN_CDF_LN_1P_MAX`], where the
+/// difference from `1` is what carries the answer, [`ln_abs_expm1`] above it.
 fn derive_ln_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: f64::NEG_INFINITY,
@@ -193,10 +168,8 @@ fn derive_ln_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     }
 }
 
-/// `exp(ln_sf)` from `1` up, exactly `1` below.
-///
-/// Never `1 - cdf`, which recomputes `p` as `1 - (1 - p)` and so quantises it to the `1.1e-16`
-/// spacing of `1.0`, reaching `0.0` below that.
+/// `exp(ln_sf)` from `1` up, exactly `1` below; never `1 - cdf`, which quantises `p` to the
+/// `1.1e-16` spacing of `1.0`.
 fn derive_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 1.0,
@@ -207,7 +180,6 @@ fn derive_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     }
 }
 
-/// `ln(sf) = floor(k) * ln(1 - p)` from `1` up, `0` below.
 fn derive_ln_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
         below_support: 0.0,
@@ -218,17 +190,12 @@ fn derive_ln_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     }
 }
 
-/// Smallest `k >= 1` with `k * ln_failure <= log_target`, the shape both inverses share: they differ
-/// only in what they take the log of (`1 - q` against `q`).
+/// Smallest `k >= 1` with `k * ln_failure <= log_target`, shared by both inverses.
 ///
-/// A ratio sitting an ulp above an exact integer overshoots by one support point, so the ceiling
-/// steps back down whenever `k - 1` already satisfies the inequality, compared in the same log domain
-/// both sides entered through. The clip to `1.0` is also where `-0.0` lands at the degenerate
-/// endpoint of either inverse.
-///
-/// `ln_failure` is divided by, never reciprocated: `x * (1 / d)` rounds twice where `x / d` rounds
-/// once, and at a subnormal `ln(1 - p)` the reciprocal overflows to `inf`, turning `q = 0` into `NaN`
-/// and every other quantile into `inf`. So neither inverse hoists it into its `derive`.
+/// A ratio one ulp above an exact integer overshoots by one support point, so the ceiling steps back
+/// whenever `k - 1` already satisfies the inequality, compared in the same log domain. The clip to
+/// `1.0` is also where `-0.0` lands at the degenerate endpoint. `ln_failure` is divided by, never
+/// reciprocated: at a subnormal `ln(1 - p)` the reciprocal overflows to `inf`.
 fn smallest_support_point(log_target: f64, ln_failure: f64) -> f64 {
     let ceiling = (log_target / ln_failure).ceil();
     let overshot = (ceiling - 1.0) * ln_failure <= log_target;
@@ -237,11 +204,8 @@ fn smallest_support_point(log_target: f64, ln_failure: f64) -> f64 {
 }
 
 /// `ceil(ln_1p(-q) / ln(1 - p))`, the smallest `k` with `cdf(k) >= q`; null outside `[0, 1]`.
-///
-/// `ln_1p(-q)`, not `ln(1 - q)`, which collapses to `0.0` below `q ~ 1.1e-16` and answers `0` where
-/// `1` is the only correct answer. `q = 1` runs the ratio off to `+inf`, right for an unbounded
-/// support. `p = 1` short-circuits before [`smallest_support_point`], where the ratio would be
-/// `-inf / -inf = NaN`.
+/// `ln_1p(-q)`, not `ln(1 - q)`, which collapses below `q ~ 1.1e-16`. `p = 1` short-circuits the
+/// `-inf / -inf` ratio.
 fn derive_ppf(p: f64) -> impl Fn(f64) -> f64 {
     let ln_failure = ln_failure(p);
     move |quantile: f64| {
@@ -253,12 +217,8 @@ fn derive_ppf(p: f64) -> impl Fn(f64) -> f64 {
     }
 }
 
-/// `ceil(ln(q) / ln(1 - p))`, the smallest `k` with `sf(k) <= q`; null outside `[0, 1]`.
-///
-/// Entered against `q` itself, never as `ppf(1 - q)`, whose complement throws the tail mass away
-/// before the inverse runs. `q = 1` degenerates to `-0.0` and `q = 0` flows through as `+inf`. At
-/// `p = 1` every survival quantile inverts to `k = 1`, `q = 0` included, since `sf(1) = 0` already
-/// satisfies the inequality.
+/// `ceil(ln(q) / ln(1 - p))`, the smallest `k` with `sf(k) <= q`, solved on `q` itself rather than
+/// as `ppf(1 - q)`; null outside `[0, 1]`.
 fn derive_isf(p: f64) -> impl Fn(f64) -> f64 {
     let ln_failure = ln_failure(p);
     move |quantile: f64| {
@@ -270,188 +230,122 @@ fn derive_isf(p: f64) -> impl Fn(f64) -> f64 {
     }
 }
 
-/// Element-wise pmf; see [`derive_pmf`], and [`Mass::at`] for the support rule.
-/// See [`value_keyed_derived_per_row`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn geometric_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_pmf, Mass::at)
+    value_keyed_derived_binary(inputs, &P, derive_pmf, Mass::at)
 }
 
-/// Element-wise log-pmf; see [`derive_ln_pmf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ln_pmf, Mass::at)
+    value_keyed_derived_binary(inputs, &P, derive_ln_pmf, Mass::at)
 }
 
-/// Element-wise cdf `P(X <= value)`; see [`derive_cdf`] and [`CDF_DIRECT_COMPLEMENT_MAX`].
 #[polars_expr(output_type=Float64)]
 fn geometric_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_cdf, Tail::at)
+    value_keyed_derived_binary(inputs, &P, derive_cdf, Tail::at)
 }
 
-/// Element-wise log-cdf; see [`derive_ln_cdf`] and [`LN_CDF_LN_1P_MAX`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ln_cdf, Tail::at)
+    value_keyed_derived_binary(inputs, &P, derive_ln_cdf, Tail::at)
 }
 
-/// Element-wise survival function `P(X > value)`; see [`derive_sf`] for why it is not `1 - cdf`.
 #[polars_expr(output_type=Float64)]
 fn geometric_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_sf, Tail::at)
+    value_keyed_derived_binary(inputs, &P, derive_sf, Tail::at)
 }
 
-/// Element-wise log-sf; see [`derive_ln_sf`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ln_sf, Tail::at)
+    value_keyed_derived_binary(inputs, &P, derive_ln_sf, Tail::at)
 }
 
-/// Element-wise ppf (inverse cdf); see [`derive_ppf`] and [`smallest_support_point`].
 #[polars_expr(output_type=Float64)]
 fn geometric_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_ppf, on_unit_interval)
+    value_keyed_derived_binary(inputs, &P, derive_ppf, on_unit_interval)
 }
 
-/// Element-wise inverse survival function; see [`derive_isf`] for why it never forms a complement.
 #[polars_expr(output_type=Float64)]
 fn geometric_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_per_row(inputs, &P, derive_isf, on_unit_interval)
+    value_keyed_derived_binary(inputs, &P, derive_isf, on_unit_interval)
 }
 
-/// Constant-`p` fast path for [`geometric_pmf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_pmf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
+fn geometric_pmf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_pmf, Mass::at)
 }
 
-/// Constant-`p` fast path for [`geometric_ln_pmf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_ln_pmf_scalar(
-    inputs: &[Series],
-    kwargs: GeometricParamsKwargs,
-) -> PolarsResult<Series> {
+fn geometric_ln_pmf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ln_pmf, Mass::at)
 }
 
-/// Constant-`p` fast path for [`geometric_cdf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_cdf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
+fn geometric_cdf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_cdf, Tail::at)
 }
 
-/// Constant-`p` fast path for [`geometric_ln_cdf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_ln_cdf_scalar(
-    inputs: &[Series],
-    kwargs: GeometricParamsKwargs,
-) -> PolarsResult<Series> {
+fn geometric_ln_cdf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ln_cdf, Tail::at)
 }
 
-/// Constant-`p` fast path for [`geometric_sf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_sf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
+fn geometric_sf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_sf, Tail::at)
 }
 
-/// Constant-`p` fast path for [`geometric_ln_sf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_ln_sf_scalar(
-    inputs: &[Series],
-    kwargs: GeometricParamsKwargs,
-) -> PolarsResult<Series> {
+fn geometric_ln_sf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ln_sf, Tail::at)
 }
 
-/// Constant-`p` fast path for [`geometric_ppf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_ppf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
+fn geometric_ppf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_ppf, on_unit_interval)
 }
 
-/// Constant-`p` fast path for [`geometric_isf`].
 #[polars_expr(output_type=Float64)]
-fn geometric_isf_scalar(inputs: &[Series], kwargs: GeometricParamsKwargs) -> PolarsResult<Series> {
+fn geometric_isf_scalar(inputs: &[Series], kwargs: GeometricParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
-/// One Geometric draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
-///
-/// Every Geometric sampler draws through here, per-row and fast path alike, so their bit-equality is
-/// structural rather than only sampled by `sample_test.py`.
-///
-/// The inverse transform `ceil(ln u / ln(1 - p))` takes its log base from [`ln_failure`], not from
-/// `statrs`' `Distribution<u64>`, which forms the literal `1.0 - p`: that rounds to `1.0` at
-/// `p <= 2^-54`, so the base is `0.0`, the ratio `-inf`, and every draw below the threshold casts to
-/// `0` where the true draws are around `1 / p`.
-///
-/// `u` comes from `(0, 1]`, so `u = 1` gives a raw draw of `0`; `.max(1)` lifts it to the support
-/// floor, where that endpoint's mass belongs in the limit. At the other end the cast saturates once
-/// `-ln u` outgrows `u64::MAX * p`, from around `p ~ 2e-18`: a dtype limit, not an algorithm one.
+/// Inverse transform `ceil(ln u / ln(1 - p))` with the log base from [`ln_failure`] rather than
+/// `statrs`' draw, whose literal `1.0 - p` rounds to `1.0` at `p <= 2^-54` and casts every draw to
+/// `0`. `u` is in `(0, 1]`, so `u = 1` gives `0` and `.max(1)` lifts it to the support floor; the
+/// cast saturates once `-ln u` outgrows `u64::MAX * p`, from around `p ~ 2e-18`.
 #[inline]
 fn draw(ln_failure: &f64, rng: &mut impl rand::Rng) -> u64 {
     let uniform: f64 = RandDistribution::sample(&rand::distr::OpenClosed01, rng);
     ((uniform.ln() / ln_failure).ceil() as u64).max(1)
 }
 
-/// Element-wise Geometric sampler over `(p, row_index)`, returning `UInt64`.
-///
-/// Per row, `null` propagates; an invalid `p` raises from [`P`]'s column pass first. Seeding and
-/// chunk-invariance follow [`sample_per_row_binary`].
 #[polars_expr(output_type=UInt64)]
 fn geometric_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let proba = coerce_f64(&inputs[0])?;
-    let index = inputs[1].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    P.check_column(&proba)?;
-
-    sample_per_row_binary(name, &proba, index.u64()?, kwargs.seed, build_sampler, draw)
+    sample_per_row_binary(inputs, kwargs, &P, build_sampler, draw)
 }
 
-/// Constant-parameter fast path for [`geometric_sample`].
 #[polars_expr(output_type=UInt64)]
 fn geometric_sample_scalar(
     inputs: &[Series],
-    kwargs: SampleScalarKwargs<GeometricParamsKwargs>,
+    kwargs: SampleScalarKwargs<GeometricParams>,
 ) -> PolarsResult<Series> {
     let ln_failure = kwargs.params.build_sampler()?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&ln_failure, rng))
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&ln_failure, rng))
 }
 
-/// Constant-parameter multi-draw fast path: the `samples` twin of [`geometric_sample_scalar`].
-///
-/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
-/// bit. Returns `Array(UInt64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn geometric_samples_scalar(
     inputs: &[Series],
-    kwargs: SamplesScalarKwargs<GeometricParamsKwargs>,
+    kwargs: SamplesScalarKwargs<GeometricParams>,
 ) -> PolarsResult<Series> {
     let ln_failure = kwargs.params.build_sampler()?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| {
         draw(&ln_failure, rng)
     })
 }
 
-/// Element-wise multi-draw Geometric sampler: `size` draws per row in one call. Returns
-/// `Array(UInt64, size)`.
-///
-/// Seeding and the null/error contract follow [`samples_per_row`] and [`geometric_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_u64_output)]
 fn geometric_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let proba = coerce_f64(&inputs[0])?;
-    let index = inputs[1].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    P.check_column(&proba)?;
-
-    let rows = binary_param_rows(&proba, index.u64()?, build_sampler);
-
-    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
+    samples_per_row_binary(inputs, kwargs, &P, build_sampler, draw)
 }

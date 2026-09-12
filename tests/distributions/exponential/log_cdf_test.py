@@ -13,7 +13,7 @@ def test_log_cdf_stable_in_deep_right_tail() -> None:
     # At `rate * x = 40`, `1 - exp(-rate * x)` rounds to exactly `1.0`, so the naive `log(cdf)`
     # collapses to `0.0`. The `log1p(-sf)` form keeps the true value `log(1 - exp(-40)) ~= -exp(-40)`.
     result = pl.DataFrame({"x": [40.0]}).select(r=Exponential(rate=1.0).log_cdf(pl.col("x")))["r"].item()
-    assert result < 0.0  # not collapsed to 0.0 like the naive form
+    assert result < 0.0
     assert result == pytest.approx(-math.exp(-40.0), rel=1e-6)
 
 

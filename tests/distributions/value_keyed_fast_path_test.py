@@ -12,8 +12,8 @@ bit-equality against the per-row path for *valid* parameters; this module pins w
   zero-row frame; an empty parameter column has no values to reject and returns empty. One constant beside
   a column still aligns, and a mismatched column is still reported.
 
-A Python `None` parameter and a negative scalar `n` are rejected at construction (`coerce_param`, `coerce_n`),
-so neither has a case here.
+A Python `None` parameter and a negative scalar `n` are rejected at construction, so neither has a
+case here.
 """
 
 from __future__ import annotations

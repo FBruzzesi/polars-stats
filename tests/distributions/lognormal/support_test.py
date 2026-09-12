@@ -5,8 +5,7 @@ from polars.testing import assert_series_equal
 
 from polars_stats import LogNormal
 
-# The LogNormal support is `x > 0`. For `x <= 0` the density and cdf are 0 and the survival function
-# is 1, matching `scipy.stats.lognorm`. The boundary `x == 0` is included in the "outside" branch.
+# Matches `scipy.stats.lognorm`: `x == 0` falls in the off-support branch, not the support `x > 0`.
 
 
 def test_pdf_is_zero_at_or_below_zero() -> None:

@@ -133,29 +133,30 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       break `over` and `group_by`, so it is a guard rather than a default.
     * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
       which is the one way to lose the contract while writing ordinary-looking Rust.
-    * Always the samplers. Every one is a shell over a driver in `src/rng.rs`; none resolves a seed or writes a row
-      loop itself, which is what keeps seeding, `null` propagation (a `null` in any input nulls the row) and the
-      invalid-parameter error contract in one place. The per-row `<name>_sample` / `<name>_samples` (multi-draw,
-      backing `samples`) take the parameter columns plus a row index as the last input: `<name>_sample` calls
-      `sample_per_row_binary` (one parameter column) or `sample_per_row_ternary` (two), passing a `build` that
-      constructs the row's draw state; `<name>_samples` feeds `binary_param_rows` /
-      `ternary_param_rows` into `samples_per_row`. The constant-parameter fast paths `<name>_sample_scalar` /
-      `<name>_samples_scalar` are shells over `sample_by_index` / `samples_by_index`, taking
-      `SampleScalarKwargs<<Name>ParamsKwargs>` / `SamplesScalarKwargs<<Name>ParamsKwargs>` so the parameters are
-      validated once. All five drivers share the argument order `name, inputs, seed, [size], closures` and take the
-      output dtype from what `draw` returns, so no call site names a polars type. The per-row drivers want the index
-      pre-cast (`index.u64()?`, since `*_param_rows` hands back a borrowing iterator); the fast-path drivers take the
-      raw `&inputs[0]` and cast it themselves. Give the distribution one named `fn draw` and call it from the
-      per-row plugin and both shells; that shared call, not a test, is what keeps the three byte-identical.
+    * Always the samplers. Every one is a one-line shell over a driver in `src/rng.rs`; none resolves a seed, coerces
+      an input or writes a row loop itself, which is what keeps seeding, `null` propagation (a `null` in any input
+      nulls the row) and the invalid-parameter error contract in one place. The per-row `<name>_sample` /
+      `<name>_samples` (multi-draw, backing `samples`) take the parameter columns plus a row index as the last input
+      and call `sample_per_row_binary` / `samples_per_row_binary` (one parameter, passing its `ParamDomain`) or
+      `sample_per_row_ternary` / `samples_per_row_ternary` (two, passing each parameter's coercer and the
+      `check_params` pass), plus a `build` that constructs the row's draw state. The constant-parameter fast paths
+      `<name>_sample_scalar` / `<name>_samples_scalar` build once from `SampleScalarKwargs<<Name>Params>` /
+      `SamplesScalarKwargs<<Name>Params>` and hand `sample_by_index` / `samples_by_index` the row index and a draw
+      closure. Every driver takes its output dtype from what `draw` returns, so no call site names a polars type.
+      Give the distribution one named `fn draw` and call it from all four shells; that shared call, not a test, is
+      what keeps them byte-identical.
     * When a method needs a **special function** (`erf`, log-gamma, regularized incomplete beta/gamma, ...) or has
       no elementary closed form: bind it in `statrs` (`pdf` / `pmf`, `cdf`, `ppf`, `ln_pdf` / `ln_pmf`, native `sf`,
-      native `median`). Each shares one named `*_value` body between the per-row `value_keyed` helper (a hand-written
-      shell over the `value_keyed_per_row` driver in `src/distributions/mod.rs`) and the constant-parameter
-      `<name>_<method>_scalar` twin, so the two paths are byte-identical by construction. Write each twin as a
-      one-line `#[polars_expr]` shell over `kwargs.value_keyed(&inputs[0], <method>_value)`, an inherent method on
-      the distribution's `<Name>ParamsKwargs` struct that validates and builds the distribution once per call and
-      then maps the body through the shared `value_keyed_scalar` driver. Putting the driver on the kwargs struct is
-      what makes the hoist structural: a shell cannot build the distribution itself, so it cannot rebuild per row.
+      native `median`). Write one named `*_value` body per method, `fn cdf_value(dist: &Dist, v: f64) -> Option<f64>`,
+      and call it from two one-line shells: the per-row `<name>_<method>` over the distribution's own `value_keyed`
+      helper (itself one line over `value_keyed_ternary` in `src/distributions/mod.rs`, or `value_keyed_binary` for
+      one parameter, passing the coercers, `check_params` and `build_dist`), and the constant-parameter
+      `<name>_<method>_scalar` over `kwargs.value_keyed(&inputs[0], <method>_value)`, an inherent method on the
+      distribution's `<Name>Params` struct that builds once through `Self::build` and maps the body through
+      `value_keyed_scalar`. The driver's constant branch (every parameter length 1) calls the same `value_keyed_scalar`
+      with the same body, so a Python scalar and a length-1 literal or aggregate run one instantiation and agree bit
+      for bit. Putting the builder on the kwargs struct is what makes the hoist structural: a shell cannot build the
+      distribution itself, so it cannot rebuild per row.
     * When a method is an **elementary** closed form (no special function: a Normal's
       `0.5*log(2*pi*e*sigma^2)`, a Bernoulli's `1 - p` at 0, `mean = n*p`, ...), the test is **whether every row
       reaches the validator**, not whether Polars can express the arithmetic:
@@ -179,24 +180,20 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           `uniform.rs`'s `Density::pdf`); where a branch still depends on the evaluation point, the table carries an
           `Arm` type parameter and `derive` is a free function (`exponential.rs`'s and `geometric.rs`'s `derive_cdf`
           over the shared `Sides<Arm, FLOOR>` in `mod.rs`, `uniform.rs`'s `derive_cdf` / `Regions::at`). An inverse
-          needs no table at all: `derive` returns the arm and `select` is the shared `on_unit_interval`. The Polars
-          expression it replaces computed `1 - p` once on a
-          length-1 literal and broadcast it; a body that recomputes per row regressed the constant-parameter path by
-          up to 195% at 10M rows. `derive` runs once per call on the constant path and once per row when a parameter
-          is a column.
-        * A one-parameter distribution pairs those two through `value_keyed_derived_per_row` and
-          `value_keyed_derived_scalar` in `src/distributions/mod.rs`; a two-parameter one takes
-          `value_keyed_derived_pair_per_row` and `value_keyed_derived_pair_scalar`. Both plugin shells are still one
-          line and neither names a driver internal. The `_scalar` twins derive and map only; their caller owns the
-          check (`<Name>ParamsKwargs::value_keyed` for kwargs, the driver's column pass for a length-1
-          parameterisation), and both call the twin rather than spelling its two lines, so the two spellings run one
-          instantiation and cannot drift in output or in machine code. They are not `value_keyed_per_row`, which
-          builds a `statrs` distribution per row: `derive` takes plain `f64`s and hoists the parameter-only terms out
-          of the loop. Every driver nulls a row on any null parameter, before it reads the evaluation point.
+          needs no table at all: `derive` returns the arm and `select` is the shared `on_unit_interval`. `derive`
+          runs once per call on the constant path and once per row when a parameter is a column; a body that
+          recomputed the parameter-only terms per row regressed the constant-parameter path by up to 195% at 10M
+          rows.
+        * The per-row shell is one line over `value_keyed_derived_binary(inputs, &DOMAIN, derive, select)` (one
+          parameter) or `value_keyed_derived_ternary(inputs, check_params, derive, select)` (two); these wrap
+          `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so there is one row loop
+          per arity in the crate. The `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`, an inherent
+          method that checks the constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the
+          driver's constant branch makes.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
       `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
       constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its
-      parameter columns before its row loop, and every `<Name>ParamsKwargs::build` runs `check` once, so an invalid
+      parameter columns before its row loop, and every `<Name>Params::build` runs `check` once, so an invalid
       parameter raises the same `ComputeError` in both regimes whatever else its row holds. Keep a
       `build_dist(...) -> PolarsResult<Dist>` around the `statrs` constructor for the row loops; behind the pass it
       cannot fail.
@@ -218,10 +215,13 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
     * `_validated_params`, the validating plugin call the moments gate on. In Rust, a plugin returning a reused
       quantity that raises on invalid parameters and nulls on a null one (`uniform_range` returns `max - min`,
       `normal_sigma` the validated `sigma`); its suffix must be in `ParamFunction`. Cast each input, run the domain
-      pass, then return the quantity: the checked column itself for one parameter (`bernoulli_proba`), or a
-      `binary_elementwise` over both columns that nulls where either is null. It takes no output name: polars resolves
-      an expression's output name from its first input. In Python, `_validated_params` is
-      `self._validated("<suffix>", <the same quantity as a polars expr>)`, which runs the plugin per row for column
+      pass, then return the quantity: `validated_param(inputs, &DOMAIN)` returns the checked column itself for one
+      parameter (`bernoulli_proba`); `validated_pair(inputs, coerce_a, check_params)` returns the second parameter
+      where both are present (`normal_sigma`, `beta_params`); `param_keyed(inputs, coerce_a, coerce_b, check_params,
+      |a, b| ...)` returns any other per-row quantity, null where either parameter is null (`uniform_range`,
+      `beta_entropy`). It takes no output name: polars resolves an expression's output name from its first input. In
+      Python, `_validated_params` is `self._validated("<suffix>", <the same quantity as a polars expr>)`, which runs
+      the plugin per row for column
       parameters and once, on length-1 literals, for constants; or `self._param_plugin("<suffix>")` when the plugin's
       own output is the answer on both routings (`DiscreteUniform.support_size`, whose `Float64` count must not be
       recomputed in polars).

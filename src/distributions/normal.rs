@@ -1,6 +1,5 @@
 use std::f64::consts::{LN_2, SQRT_2};
 
-use polars::prelude::arity::binary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
@@ -9,11 +8,11 @@ use statrs::function::erf;
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::{
-    align_inputs, coerce_f64, value_keyed_per_row, value_keyed_scalar, ParamDomain,
+    coerce_f64, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
 };
 use crate::rng::{
-    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output, samples_per_row,
-    ternary_param_rows, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
+    sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
+    samples_per_row_ternary, SampleKwargs, SampleScalarKwargs, SamplesKwargs, SamplesScalarKwargs,
 };
 
 const MU: ParamDomain = ParamDomain::finite("mu");
@@ -24,149 +23,100 @@ fn check_params(mu: &Float64Chunked, sigma: &Float64Chunked) -> PolarsResult<()>
     SIGMA.check_column(sigma)
 }
 
-/// `statrs::Normal::new` accepts an infinite `mu` or `sigma`, so [`MU`] and [`SIGMA`] are what
-/// refuse them; behind their pass this cannot fail.
 fn build_dist(mu: f64, sigma: f64) -> PolarsResult<Normal> {
     Normal::new(mu, sigma).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
-/// Normal's constant parameters, deserialised once per call.
-///
-/// The one place this file spells `(mu, sigma)`: every fast path, sampler or value-keyed, reaches the
-/// constructor through [`Self::build`], so the order cannot drift between them.
+/// Constant parameters, deserialised once per call. Every `_scalar` twin builds through
+/// [`Self::build`], so it cannot rebuild per row.
 #[derive(serde::Deserialize)]
-struct NormalParamsKwargs {
+struct NormalParams {
     mu: f64,
     sigma: f64,
 }
 
-impl NormalParamsKwargs {
+impl NormalParams {
     fn build(&self) -> PolarsResult<Normal> {
         MU.check(self.mu)?;
         SIGMA.check(self.sigma)?;
         build_dist(self.mu, self.sigma)
     }
 
-    /// Constant-parameter twin of the per-row [`value_keyed`], sharing its `<method>_value`
-    /// bodies: build once per call, then map `f` over the evaluation-point column.
-    fn value_keyed<F>(&self, value: &Series, f: F) -> PolarsResult<Series>
+    fn value_keyed<Body>(&self, value: &Series, body: Body) -> PolarsResult<Series>
     where
-        F: Fn(&Normal, f64) -> Option<f64>,
+        Body: Fn(&Normal, f64) -> Option<f64>,
     {
-        let dist = self.build()?;
-        value_keyed_scalar(value, |v| f(&dist, v))
+        value_keyed_scalar(value, &self.build()?, body)
     }
 }
 
-/// `sigma` where both of `(mu, sigma)` are present, null elsewhere, after [`check_params`].
-///
-/// `inputs[0]` is `mu`, `inputs[1]` is `sigma`. The Python closed-form moments all derive from
-/// this single FFI round-trip, so they raise on an invalid parameterisation exactly like the
-/// value-keyed methods.
+fn value_keyed<Body>(inputs: &[Series], body: Body) -> PolarsResult<Series>
+where
+    Body: Fn(&Normal, f64) -> Option<f64>,
+{
+    value_keyed_ternary(
+        inputs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        build_dist,
+        body,
+    )
+}
+
 #[polars_expr(output_type=Float64)]
 fn normal_sigma(inputs: &[Series]) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let mu = coerce_f64(&inputs[0])?;
-    let sigma = coerce_f64(&inputs[1])?;
-    check_params(&mu, &sigma)?;
-
-    let ca: Float64Chunked =
-        binary_elementwise(&mu, &sigma, |mu: Option<f64>, sigma: Option<f64>| {
-            mu.and(sigma)
-        });
-    Ok(ca.into_series())
+    validated_pair(inputs, coerce_f64, check_params)
 }
 
-/// Apply a value-keyed `f(dist, value)` element-wise over `(value, mu, sigma)`; shared by `pdf`,
-/// `ln_pdf`, `cdf`, `sf`, `ppf`. Null and `NaN` contracts in [`value_keyed_per_row`].
-fn value_keyed<F>(inputs: &[Series], f: F) -> PolarsResult<Series>
-where
-    F: Fn(&Normal, f64) -> Option<f64>,
-{
-    value_keyed_per_row(inputs, coerce_f64, coerce_f64, check_params, build_dist, f)
-}
-
-/// One Normal draw from a `&mut` per-row RNG already seeded from `(root_seed, index)`.
-///
-/// Every Normal sampler draws through here, per-row and fast path alike, so their bit-equality is
-/// structural rather than only sampled by `sample_test.py`.
 #[inline]
 fn draw(dist: &Normal, rng: &mut impl rand::Rng) -> f64 {
     RandDistribution::sample(dist, rng)
 }
 
-/// Element-wise Normal sampler over `(mu, sigma, row_index)`, returning `Float64`.
-///
-/// Per row, `null` propagates; an invalid parameterisation raises from [`check_params`] first.
-/// Seeding and chunk-invariance follow [`sample_per_row_ternary`].
 #[polars_expr(output_type=Float64)]
 fn normal_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let mu = coerce_f64(&inputs[0])?;
-    let sigma = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&mu, &sigma)?;
-
     sample_per_row_ternary(
-        name,
-        &mu,
-        &sigma,
-        index.u64()?,
-        kwargs.seed,
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
         build_dist,
         draw,
     )
 }
 
-/// Constant-parameter fast path for [`normal_sample`].
 #[polars_expr(output_type=Float64)]
 fn normal_sample_scalar(
     inputs: &[Series],
-    kwargs: SampleScalarKwargs<NormalParamsKwargs>,
+    kwargs: SampleScalarKwargs<NormalParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build()?;
-    let name = inputs[0].name().clone();
-
-    sample_by_index(name, &inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&dist, rng))
 }
 
-/// Constant-parameter multi-draw fast path: the `samples` twin of [`normal_sample_scalar`].
-///
-/// `size` consecutive draws from each row's stream, so `samples(size=1)` matches `sample` bit for
-/// bit and the distribution is built once per call. Returns `Array(Float64, size)`.
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples_scalar(
     inputs: &[Series],
-    kwargs: SamplesScalarKwargs<NormalParamsKwargs>,
+    kwargs: SamplesScalarKwargs<NormalParams>,
 ) -> PolarsResult<Series> {
     let dist = kwargs.params.build()?;
-    let name = inputs[0].name().clone();
-
-    samples_by_index(name, &inputs[0], kwargs.seed, kwargs.size, |rng| {
-        draw(&dist, rng)
-    })
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| draw(&dist, rng))
 }
 
-/// Element-wise multi-draw Normal sampler: `size` draws per row in one call, the distribution
-/// built once per row. Returns `Array(Float64, size)`.
-///
-/// Seeding and the null/error contract follow [`samples_per_row`] and [`normal_sample`].
 #[polars_expr(output_type_func_with_kwargs=samples_f64_output)]
 fn normal_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    let inputs = align_inputs(inputs)?;
-    let mu = coerce_f64(&inputs[0])?;
-    let sigma = coerce_f64(&inputs[1])?;
-    let index = inputs[2].cast(&DataType::UInt64)?;
-    let name = inputs[0].name().clone();
-    check_params(&mu, &sigma)?;
-
-    let rows = ternary_param_rows(&mu, &sigma, index.u64()?, build_dist);
-
-    samples_per_row(name, rows, kwargs.seed, kwargs.size, draw)
+    samples_per_row_ternary(
+        inputs,
+        kwargs,
+        coerce_f64,
+        coerce_f64,
+        check_params,
+        build_dist,
+        draw,
+    )
 }
-
-// Per-method bodies, shared by the per-row plugins and their `*_scalar` twins.
 
 fn pdf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(dist.pdf(v))
@@ -184,17 +134,13 @@ fn sf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(dist.sf(v))
 }
 
-/// Point past which `erfc(t)` is close enough to underflowing (`erfc ~ 1e-274` at `t = 25`,
-/// underflow near `t = 26.6`) that we switch `ln_erfc` to the asymptotic series.
+/// Past this `erfc(t)` is close to underflowing (`~1e-274` at `t = 25`, `0` near `t = 26.6`), so
+/// [`ln_erfc`] switches to the asymptotic series. The two branches agree to `~1e-13` here.
 const LN_ERFC_ASYMPTOTIC_MIN: f64 = 25.0;
 
-/// Natural log of the complementary error function, stable in the right tail.
-///
-/// `erfc(t).ln()` returns `-inf` once `erfc(t)` rounds to `0` (`t` above ~26.6), the regime `log_cdf`
-/// / `log_sf` exist to serve. Past [`LN_ERFC_ASYMPTOTIC_MIN`] we switch to the asymptotic expansion
-/// `erfc(t) = exp(-t^2) / (t * sqrt(pi)) * (1 - 1/(2t^2) + 3/(4t^4) - 15/(8t^6) + ...)`, whose log is a
-/// large finite negative number; below it, statrs `erfc` holds full relative precision so the direct
-/// form is exact. The two branches agree to ~1e-13 at the crossover.
+/// `ln(erfc(t))`, finite in the right tail where `erfc(t).ln()` is `-inf`: the direct log below
+/// [`LN_ERFC_ASYMPTOTIC_MIN`], the log of
+/// `exp(-t^2) / (t sqrt(pi)) * (1 - 1/(2t^2) + 3/(4t^4) - 15/(8t^6) + ...)` above it.
 fn ln_erfc(t: f64) -> f64 {
     if t < LN_ERFC_ASYMPTOTIC_MIN {
         erf::erfc(t).ln()
@@ -206,10 +152,9 @@ fn ln_erfc(t: f64) -> f64 {
     }
 }
 
-/// `ln(0.5 * erfc(s))` with full relative precision on both sides: [`ln_erfc`] for the small half
-/// (`s >= 0`), `ln_1p` for the near-one half (`s < 0`, where `erfc(s) = 2 - erfc(-s)` rounds to `2`
-/// and the direct log collapses to `0` instead of the true tiny negative, e.g. `-7.6e-24` at
-/// 10 sigma; scipy's `log_ndtr` takes the same branch).
+/// `ln(0.5 * erfc(s))` with full relative precision on both sides: [`ln_erfc`] for `s >= 0`,
+/// `ln_1p(-0.5 * erfc(-s))` for `s < 0`, where `erfc(s)` rounds to `2` and the direct log collapses
+/// to `0` instead of the true tiny negative (`-7.6e-24` at 10 sigma).
 fn ln_half_erfc(s: f64) -> f64 {
     if s >= 0.0 {
         -LN_2 + ln_erfc(s)
@@ -218,33 +163,27 @@ fn ln_half_erfc(s: f64) -> f64 {
     }
 }
 
-/// Standardise `x` into the `erfc` argument `t = (x - mu) / (sigma * sqrt(2))`, so that
-/// `cdf(x) = 0.5 * erfc(-t)` and `sf(x) = 0.5 * erfc(t)` (statrs' own `cdf` / `sf` definition).
-fn erfc_arg(dist: &Normal, x: f64) -> f64 {
+fn mu_sigma(dist: &Normal) -> (f64, f64) {
     let mu = dist.mean().expect("Normal always has a mean");
     let sigma = dist.std_dev().expect("Normal always has a std_dev");
+    (mu, sigma)
+}
+
+/// `t = (x - mu) / (sigma sqrt 2)`, so that `cdf(x) = 0.5 erfc(-t)` and `sf(x) = 0.5 erfc(t)`.
+fn erfc_arg(dist: &Normal, x: f64) -> f64 {
+    let (mu, sigma) = mu_sigma(dist);
     (x - mu) / (sigma * SQRT_2)
 }
 
-/// Native log-cdf via `ln(0.5 * erfc(-t))`: finite in the left tail (no `cdf().ln()` underflow) and
-/// full relative precision in the right one (see [`ln_half_erfc`]).
-///
-/// `pub(crate)` so `LogNormal` reuses it on the underlying normal at `ln(x)` (log-normal log-cdf is
-/// the underlying normal's log-cdf composed with `ln`).
 pub(crate) fn ln_cdf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(ln_half_erfc(-erfc_arg(dist, v)))
 }
 
-/// Native log-sf via `ln(0.5 * erfc(t))`: finite in the right tail (no `sf().ln()` underflow) and
-/// full relative precision in the left one (see [`ln_half_erfc`]).
-///
-/// `pub(crate)` for the same reason as [`ln_cdf_value`].
 pub(crate) fn ln_sf_value(dist: &Normal, v: f64) -> Option<f64> {
     Some(ln_half_erfc(erfc_arg(dist, v)))
 }
 
-/// A quantile outside `[0, 1]` yields `null`; the closed endpoints map to the infinite tails
-/// (`ppf(0) = -inf`, `ppf(1) = +inf`), matching `scipy.stats.norm.ppf`.
+/// Null outside `[0, 1]`; the closed endpoints map to the infinite tails.
 fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
@@ -257,16 +196,9 @@ fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
     }
 }
 
-/// Inverse survival function, `mu + sigma * sqrt(2) * erfc_inv(2q)`, solved on `q` rather than on
-/// its complement.
-///
-/// Not `ppf(1 - q)`: that composes `statrs`' `inverse_cdf` into `erfc_inv(2 - 2q)`, whose argument
-/// resolves to `2.2e-16` absolute, so the tail mass is quantised before the inverse runs. The
-/// symmetry `z_(1-q) = -z_q` puts the sign on the scale instead, leaving the exact power-of-two `2q`
-/// as the only thing the inverse sees.
-///
-/// Contract mirrors [`ppf_value`]: `null` outside `[0, 1]`, closed endpoints to the infinite tails
-/// (`isf(0) = +inf`, `isf(1) = -inf`, the reverse of `ppf`). `pub(crate)` so `LogNormal` composes it.
+/// `mu + sigma sqrt(2) erfc_inv(2q)`, solved on `q` itself. `ppf(1 - q)` would hand `erfc_inv`
+/// the argument `2 - 2q`, which quantises the tail mass to `2.2e-16` before the inverse runs; the
+/// symmetry `z_(1-q) = -z_q` puts the sign on the scale instead. Endpoints reverse `ppf`'s.
 pub(crate) fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
@@ -275,106 +207,87 @@ pub(crate) fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
     } else if q == 1.0 {
         Some(f64::NEG_INFINITY)
     } else {
-        let mu = dist.mean().expect("Normal always has a mean");
-        let sigma = dist.std_dev().expect("Normal always has a std_dev");
+        let (mu, sigma) = mu_sigma(dist);
         Some(mu + sigma * SQRT_2 * erf::erfc_inv(2.0 * q))
     }
 }
 
-/// Element-wise pdf via `statrs` `Continuous::pdf`. See [`value_keyed`] for the null/error contract.
 #[polars_expr(output_type=Float64)]
 fn normal_pdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, pdf_value)
 }
 
-/// Element-wise log-pdf via native `Continuous::ln_pdf` (more accurate than `pdf().ln()`).
 #[polars_expr(output_type=Float64)]
 fn normal_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ln_pdf_value)
 }
 
-/// Element-wise cdf via `statrs` `ContinuousCDF::cdf`.
 #[polars_expr(output_type=Float64)]
 fn normal_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, cdf_value)
 }
 
-/// Element-wise survival function via native `ContinuousCDF::sf` (accurate in the upper tail).
 #[polars_expr(output_type=Float64)]
 fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
 }
 
-/// Element-wise log-cdf via the stable [`ln_erfc`] form (finite in the left tail, unlike `cdf().ln()`).
 #[polars_expr(output_type=Float64)]
 fn normal_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ln_cdf_value)
 }
 
-/// Element-wise log-sf via the stable [`ln_erfc`] form (finite in the right tail, unlike `sf().ln()`).
 #[polars_expr(output_type=Float64)]
 fn normal_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ln_sf_value)
 }
 
-/// Element-wise ppf (inverse cdf) via the closed-form `ContinuousCDF::inverse_cdf`.
-/// See [`ppf_value`] for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn normal_ppf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, ppf_value)
 }
 
-/// Element-wise isf (inverse survival function) via the symmetry form, not `ppf(1 - q)`.
-/// See [`isf_value`] for why, and for the endpoint and out-of-range contract.
 #[polars_expr(output_type=Float64)]
 fn normal_isf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, isf_value)
 }
 
-/// Constant-parameter fast path for [`normal_pdf`].
 #[polars_expr(output_type=Float64)]
-fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_pdf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], pdf_value)
 }
 
-/// Constant-parameter fast path for [`normal_ln_pdf`].
 #[polars_expr(output_type=Float64)]
-fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_ln_pdf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ln_pdf_value)
 }
 
-/// Constant-parameter fast path for [`normal_cdf`].
 #[polars_expr(output_type=Float64)]
-fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_cdf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], cdf_value)
 }
 
-/// Constant-parameter fast path for [`normal_sf`].
 #[polars_expr(output_type=Float64)]
-fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_sf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], sf_value)
 }
 
-/// Constant-parameter fast path for [`normal_ln_cdf`].
 #[polars_expr(output_type=Float64)]
-fn normal_ln_cdf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_ln_cdf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ln_cdf_value)
 }
 
-/// Constant-parameter fast path for [`normal_ln_sf`].
 #[polars_expr(output_type=Float64)]
-fn normal_ln_sf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_ln_sf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ln_sf_value)
 }
 
-/// Constant-parameter fast path for [`normal_ppf`].
 #[polars_expr(output_type=Float64)]
-fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_ppf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], ppf_value)
 }
 
-/// Constant-parameter fast path for [`normal_isf`].
 #[polars_expr(output_type=Float64)]
-fn normal_isf_scalar(inputs: &[Series], kwargs: NormalParamsKwargs) -> PolarsResult<Series> {
+fn normal_isf_scalar(inputs: &[Series], kwargs: NormalParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], isf_value)
 }
