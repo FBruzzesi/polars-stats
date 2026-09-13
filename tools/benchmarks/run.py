@@ -31,8 +31,8 @@ from tools.benchmarks._harness import (
     OutputFormat,
     ParamSpec,
     Sweep,
-    emit,
     measure_cases,
+    report,
     require_release_build,
 )
 
@@ -49,55 +49,57 @@ _DEFAULT_SWEEP = Sweep()
 # lambdas: a `Comparison` is pickled into the memory subprocess.
 
 
-def _normal(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Normal(mu=p.plugin("mu"), sigma=p.plugin("sigma")), norm(loc=p.scipy("mu"), scale=p.scipy("sigma"))
-
-
-def _lognormal(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return (
-        LogNormal(mu=p.plugin("mu"), sigma=p.plugin("sigma")),
-        lognorm(s=p.scipy("sigma"), scale=np.exp(p.scipy("mu"))),
+def _normal(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Normal(mu=params.plugin("mu"), sigma=params.plugin("sigma")), norm(
+        loc=params.scipy("mu"), scale=params.scipy("sigma")
     )
 
 
-def _uniform(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    low, high = p.scipy("min"), p.scipy("max")
-    return Uniform(min=p.plugin("min"), max=p.plugin("max")), uniform(loc=low, scale=high - low)
+def _lognormal(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return (
+        LogNormal(mu=params.plugin("mu"), sigma=params.plugin("sigma")),
+        lognorm(s=params.scipy("sigma"), scale=np.exp(params.scipy("mu"))),
+    )
 
 
-def _exponential(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Exponential(rate=p.plugin("rate")), expon(scale=1.0 / p.scipy("rate"))
+def _uniform(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    low, high = params.scipy("min"), params.scipy("max")
+    return Uniform(min=params.plugin("min"), max=params.plugin("max")), uniform(loc=low, scale=high - low)
 
 
-def _beta(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Beta(a=p.plugin("a"), b=p.plugin("b")), beta(a=p.scipy("a"), b=p.scipy("b"))
+def _exponential(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Exponential(rate=params.plugin("rate")), expon(scale=1.0 / params.scipy("rate"))
 
 
-def _bernoulli(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Bernoulli(p=p.plugin("p")), bernoulli(p.scipy("p"))
+def _beta(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Beta(a=params.plugin("a"), b=params.plugin("b")), beta(a=params.scipy("a"), b=params.scipy("b"))
 
 
-def _binomial(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Binomial(n=p.plugin_int("n"), p=p.plugin("p")), binom(p.scipy("n"), p.scipy("p"))
+def _bernoulli(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Bernoulli(p=params.plugin("p")), bernoulli(params.scipy("p"))
 
 
-def _discrete_uniform(p: Params) -> tuple[Distribution, ScipyFrozen]:
+def _binomial(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Binomial(n=params.plugin_int("n"), p=params.plugin("p")), binom(params.scipy("n"), params.scipy("p"))
+
+
+def _discrete_uniform(params: Params) -> tuple[Distribution, ScipyFrozen]:
     # scipy's `randint` is half-open on the right where `DiscreteUniform` is inclusive.
     return (
-        DiscreteUniform(min=p.plugin_int("min"), max=p.plugin_int("max")),
-        randint(low=p.scipy("min"), high=p.scipy("max") + 1),
+        DiscreteUniform(min=params.plugin_int("min"), max=params.plugin_int("max")),
+        randint(low=params.scipy("min"), high=params.scipy("max") + 1),
     )
 
 
-def _geometric(p: Params) -> tuple[Distribution, ScipyFrozen]:
-    return Geometric(p=p.plugin("p")), geom(p.scipy("p"))
+def _geometric(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Geometric(p=params.plugin("p")), geom(params.scipy("p"))
 
 
 # Ordered domains (`min` below `max`) are kept non-overlapping so every draw is a valid
 # parameterisation. Keyed by each comparison's own name, which is also its report file name.
 REGISTRY: dict[str, Comparison] = {
-    comp.name: comp
-    for comp in (
+    comparison.name: comparison
+    for comparison in (
         Comparison(
             name="normal",
             params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
@@ -143,7 +145,7 @@ def main(
     *,
     sweep: Annotated[Sweep, Parameter(name="*")] = _DEFAULT_SWEEP,
     memory: bool = False,
-    fmt: _ReportFormat = "rich",
+    output_format: _ReportFormat = "rich",
     output_dir: Path | None = None,
 ) -> None:
     """Compare each requested distribution's methods against scipy, in each requested regime.
@@ -158,7 +160,7 @@ def main(
             `--methods` / `--seed` and budget flags; see `Sweep` and `Budget` for the defaults.
         memory: Also measure peak RSS per contender per cell. Off by default: it spawns one
             subprocess per contender per cell, which dominates the runtime of a full sweep.
-        fmt: `rich` prints a coloured table to the terminal; `markdown` / `json` write a
+        output_format: `rich` prints a coloured table to the terminal; `markdown` / `json` write a
             file per distribution to the output directory.
         output_dir: Where the `markdown` / `json` files are written. Defaults to `tools/benchmarks/results/`.
     """
@@ -170,15 +172,15 @@ def main(
     results_dir = output_dir or (Path(__file__).parent / "results")
 
     for name in names:
-        comp = REGISTRY[name]
+        comparison = REGISTRY[name]
         results: list[Result] = []
         try:
-            for result in measure_cases(comp, sweep, memory=memory):
+            for result in measure_cases(comparison, sweep, memory=memory):
                 results.append(result)  # noqa: PERF402 - an interrupt must leave the partial list intact
         finally:
             # `finally`, so an interrupt still reports the cells already measured before it stops.
             if results:
-                emit(comp, results, sweep, fmt=fmt, output_dir=results_dir)
+                report(comparison, results, sweep, output_format=output_format, output_dir=results_dir)
 
 
 if __name__ == "__main__":

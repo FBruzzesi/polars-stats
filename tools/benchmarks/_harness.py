@@ -1,11 +1,9 @@
 """Comparison harness for the ``polars_stats`` vs ``scipy.stats`` benchmarks.
 
-Every cell is measured in one of three parameter `Regime`s. They are different code paths on both sides and
-**must never be cross-compared**: a column cell does strictly more work per row by design.
+Three jobs: the measurement engine, the CLI's option surface (`Sweep` and `Budget`), and the three
+report renderers. See `Regime` for the rule that binds all of them.
 
-The regime is part of `Case.id` and a column of every report so the two cannot be diffed by accident.
-
-This module is not runnable; run ``uv run --group tools -m tools.benchmarks.run`` instead.
+Not runnable; run ``uv run --group tools -m tools.benchmarks.run`` instead.
 """
 
 # ruff: noqa: T201
@@ -32,22 +30,22 @@ from cyclopts import Parameter
 from rich.console import Console
 from rich.table import Table
 
-from polars_stats import _internal
-from polars_stats.distributions._base import ContinuousDistribution
+from polars_stats import __version__ as polars_stats_version
+from polars_stats import _internal, is_continuous
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
-    from typing import NoReturn, TypeAlias
+    from typing import TypeAlias
 
     import numpy.typing as npt
     from scipy.stats._distn_infrastructure import rv_continuous_frozen, rv_discrete_frozen
     from typing_extensions import TypeIs
 
-    from polars_stats.distributions._base import _UnivariateDistribution
+    from polars_stats import ContinuousDistribution, DiscreteDistribution
 
     ScipyFrozen: TypeAlias = rv_continuous_frozen | rv_discrete_frozen
-    Distribution: TypeAlias = _UnivariateDistribution
+    Distribution: TypeAlias = ContinuousDistribution | DiscreteDistribution
     Array: TypeAlias = "npt.NDArray[np.float64] | npt.NDArray[np.int64]"
 
     Outcome: TypeAlias = "pl.DataFrame | Array | np.float64 | float"
@@ -58,9 +56,9 @@ if TYPE_CHECKING:
     Contender: TypeAlias = Callable[["Comparison", "Case"], "Call"]
     """Builds the zero-argument call one competitor runs for one case.
 
-    A builder, not a prepared call: input construction happens when the builder runs, so it is
-    outside the returned closure and charged to neither time nor peak memory. Registered by name in
-    `CONTENDERS`, because the name is what crosses into the memory subprocess, not the closure.
+    Input construction happens when the builder runs, outside the returned closure, so it is charged
+    to neither time nor peak memory. `CONTENDERS` keys these by name because the name, not the
+    closure, is what crosses into the memory subprocess.
     """
     MemoryReply: TypeAlias = "float | str"
     """What the memory subprocess posts back: its peak in MiB, or the `repr` of what killed it."""
@@ -132,11 +130,6 @@ _CHILD_JOIN_TIMEOUT_S = 30.0
 _Axis = TypeVar("_Axis", bound="int | str")
 
 
-def _unreachable(kind: str) -> NoReturn:
-    msg = f"unhandled MethodSpec kind: {kind!r}"
-    raise AssertionError(msg)
-
-
 @dataclass(frozen=True)
 class MethodSpec:
     """One row of the method metadata table: what to call on either side, and how to gate it.
@@ -174,13 +167,9 @@ METHOD_SPECS: Mapping[Method, MethodSpec] = {
 
 ALL_METHODS: tuple[Method, ...] = tuple(METHOD_SPECS)
 
-if set(METHOD_SPECS) != set(get_args(Method)):
-    # A token without a row would only fail deep inside a sweep.
-    _msg = (
-        "METHOD_SPECS and Method are out of step: "
-        f"{sorted(set(get_args(Method)) - set(METHOD_SPECS))} lack a row, "
-        f"{sorted(set(METHOD_SPECS) - set(get_args(Method)))} lack a token"
-    )
+if _missing := sorted(set(get_args(Method)) - set(METHOD_SPECS)):
+    # A token with no row is silently absent from ALL_METHODS, so the default sweep quietly narrows.
+    _msg = f"Method tokens with no METHOD_SPECS row: {_missing}"
     raise RuntimeError(_msg)
 
 
@@ -188,10 +177,9 @@ if set(METHOD_SPECS) != set(get_args(Method)):
 class ParamSpec:
     """How to realise one parameter: a fixed value, plus the inclusive domain `column` draws from.
 
-    `[low, high]` must be chosen so that *every* draw is a valid parameterisation, including any joint
-    constraint: an ordered pair like `min < max` is expressed as two non-overlapping domains rather
-    than as a rejection step, so realisation never has to retry. Holding `scalar` fixed is what makes
-    `broadcast` an honest comparison against `scalar`: same numbers, different path.
+    `[low, high]` must admit only valid parameterisations, joint constraints included: an ordered
+    pair like `min < max` is two non-overlapping domains, so realisation never has to retry. Holding
+    `scalar` fixed is what lets `broadcast` be compared against `scalar`: same numbers, other path.
     """
 
     scalar: float | int
@@ -296,7 +284,7 @@ class Comparison:
             raise TypeError(msg) from exc
 
         dist, _ = self.build(_draw_params(self, regime="scalar", rows=1, seed=0))
-        token: DensityToken = "pdf" if isinstance(dist, ContinuousDistribution) else "pmf"
+        token: DensityToken = "pdf" if is_continuous(dist) else "pmf"
         object.__setattr__(self, "density_token", token)
 
     def label(self, method: Method) -> str:
@@ -332,9 +320,9 @@ class Budget:
 class Case:
     """One measurable cell: which distribution, which method, which regime, at which sizes.
 
-    Frozen, hashable and picklable on purpose. Picklable is load-bearing: `_isolated_peak_mib` ships
-    a case to a spawned subprocess, which rebuilds the call there from the case plus a contender
-    *name*. A built closure could not cross that boundary.
+    Picklable is the load-bearing part: `_isolated_peak_mib` ships a case to a spawned subprocess,
+    which rebuilds the call there from the case plus a contender *name*, since a built closure could
+    not cross that boundary.
 
     `n_samples` is the draws-per-row width for the one method that has one, and `None` for the rest.
     One `seed` covers the samplers, the evaluation inputs and the parameter draws.
@@ -373,7 +361,7 @@ def _distinct(axis: str, values: tuple[_Axis, ...]) -> tuple[_Axis, ...]:
     return values
 
 
-_MULTI = Parameter(consume_multiple=True, negative_iterable="")
+_MULTI_VALUE = Parameter(consume_multiple=True, negative_iterable="")
 """`--rows 1 2 3`, not `--rows 1 --rows 2`, and no `--empty-rows` counterpart."""
 
 
@@ -388,10 +376,10 @@ class Sweep:
     defaults a bare `-m tools.benchmarks.run` uses.
     """
 
-    rows: Annotated[tuple[int, ...], _MULTI, Parameter(help="Row counts to sweep over.")] = (1_000_000,)
-    n_samples: Annotated[tuple[int, ...], _MULTI, Parameter(help="Draws-per-row widths for `samples`.")] = (10,)
-    regimes: Annotated[tuple[Regime, ...], _MULTI, Parameter(help="Parameter regimes to compare.")] = ALL_REGIMES
-    methods: Annotated[tuple[Method, ...], _MULTI, Parameter(help="Methods to compare.")] = ALL_METHODS
+    rows: Annotated[tuple[int, ...], _MULTI_VALUE, Parameter(help="Row counts to sweep over.")] = (1_000_000,)
+    n_samples: Annotated[tuple[int, ...], _MULTI_VALUE, Parameter(help="Draws-per-row widths for `samples`.")] = (10,)
+    regimes: Annotated[tuple[Regime, ...], _MULTI_VALUE, Parameter(help="Parameter regimes to compare.")] = ALL_REGIMES
+    methods: Annotated[tuple[Method, ...], _MULTI_VALUE, Parameter(help="Methods to compare.")] = ALL_METHODS
     budget: Annotated[Budget, Parameter(name="*")] = field(default_factory=Budget)
     seed: Annotated[int, Parameter(help="Seed for the samplers, evaluation inputs and parameter draws.")] = 0
 
@@ -538,21 +526,17 @@ def _peak_mib(call: Call) -> float:
     return max(0.0, (after - before) / _MIB)
 
 
-def _sized_frame(rows: int) -> pl.LazyFrame:
-    """A `rows`-long frame; the sampler expressions key off `pl.len()`, not its contents."""
-    return pl.LazyFrame({"_": pl.Boolean()}).clear(rows)
-
-
-def _draw_params(comp: Comparison, *, regime: Regime, rows: int, seed: int) -> Params:
+def _draw_params(comparison: Comparison, *, regime: Regime, rows: int, seed: int) -> Params:
     """Draw a case's parameters, deterministically from `(regime, rows, seed)` alone.
 
-    Determinism is required, not merely nice: both contenders and each isolated memory subprocess
-    call this independently and must agree on the numbers, or the two sides would be measured on
-    different distributions. The draws take their own seed stream so that widening a parameter domain
-    cannot shift the evaluation inputs.
+    Both contenders and each isolated memory subprocess call this independently and must agree on
+    the numbers, or the two sides get measured on different distributions. The draws take their own
+    seed stream, so widening a parameter domain cannot shift the evaluation inputs.
     """
     rng = np.random.default_rng([seed, _PARAM_STREAM])
-    values = {name: spec.draw(rng, rows) if regime == "column" else spec.fixed for name, spec in comp.params.items()}
+    values = {
+        name: spec.draw(rng, rows) if regime == "column" else spec.fixed for name, spec in comparison.params.items()
+    }
     return Params(regime=regime, values=values)
 
 
@@ -593,15 +577,16 @@ def _input_frame(params: Params, case: Case, points: Array | None) -> pl.LazyFra
         columns[_VALUE_COLUMN] = points
     if columns:
         return pl.LazyFrame(columns)
-    return _sized_frame(1 if case.spec.kind == "moment" else case.rows)
+    # No columns to carry, so only the height matters: the sampler expressions key off `pl.len()`.
+    return pl.LazyFrame({"_": pl.Boolean()}).clear(1 if case.spec.kind == "moment" else case.rows)
 
 
-def _polars_stats_call(comp: Comparison, case: Case) -> Call:
+def _polars_stats_call(comparison: Comparison, case: Case) -> Call:
     """One lazy `select` on the streaming engine, the path users hit at scale."""
-    params = _draw_params(comp, regime=case.regime, rows=case.rows, seed=case.seed)
-    dist, frozen = comp.build(params)
+    params = _draw_params(comparison, regime=case.regime, rows=case.rows, seed=case.seed)
+    dist, frozen = comparison.build(params)
     spec = case.spec
-    attr = spec.plugin_attr.format(d=comp.density_token)
+    attr = spec.plugin_attr.format(d=comparison.density_token)
     points = _evaluation_points(case, frozen) if spec.kind == "value" else None
     lf = _input_frame(params, case, points)
     match spec.kind:
@@ -611,17 +596,15 @@ def _polars_stats_call(comp: Comparison, case: Case) -> Call:
             expr = getattr(dist, attr)()
         case "sampler":
             expr = dist.samples(case.draws_per_row, seed=case.seed) if spec.multi_draw else dist.sample(seed=case.seed)
-        case _:
-            _unreachable(spec.kind)
     return lambda: lf.select(s=expr).collect(engine="streaming")
 
 
-def _scipy_call(comp: Comparison, case: Case) -> Call:
+def _scipy_call(comparison: Comparison, case: Case) -> Call:
     """The frozen distribution's matching method on NumPy arrays."""
-    params = _draw_params(comp, regime=case.regime, rows=case.rows, seed=case.seed)
-    _, frozen = comp.build(params)
+    params = _draw_params(comparison, regime=case.regime, rows=case.rows, seed=case.seed)
+    _, frozen = comparison.build(params)
     spec = case.spec
-    attr = spec.scipy_attr.format(d=comp.density_token)
+    attr = spec.scipy_attr.format(d=comparison.density_token)
     match spec.kind:
         case "value":
             points = _evaluation_points(case, frozen)
@@ -644,8 +627,6 @@ def _scipy_call(comp: Comparison, case: Case) -> Call:
                 return lambda: frozen.rvs(size=transposed, random_state=np.random.default_rng(seed)).T
             size = (case.rows, case.draws_per_row)
             return lambda: frozen.rvs(size=size, random_state=np.random.default_rng(seed))
-        case _:
-            _unreachable(spec.kind)
 
 
 CONTENDERS: Mapping[str, Contender] = {
@@ -724,14 +705,12 @@ def _values_agree(reference_out: pl.DataFrame, other_out: Outcome) -> bool:
 def _check_gate_can_reject() -> None:
     """Prove `_outputs_agree` both accepts a real match and rejects each way it can be wrong.
 
-    The gate is the harness's only correctness signal, and its failure mode is silent: a broken gate
-    reports `ok` for every cell forever. Nothing else in the repo exercises it, so it is checked here
-    on the same terms as the `METHOD_SPECS` table above -- at import, not mid-sweep. The positive
-    case is part of the check on purpose, since a gate stuck on `False` would satisfy the rest.
+    A broken gate reports `ok` for every cell forever, and nothing else in the repo exercises it, so
+    it is checked at import rather than mid-sweep. The matching case is one of the six because a gate
+    stuck on `False` would satisfy the five rejections.
 
-    It stays here rather than in `tests/` on purpose: a test would import this module and drag scipy,
-    cyclopts and rich into the `testing` group, which the `tools` group comment in `pyproject.toml`
-    forbids.
+    Not in `tests/`: importing this module there would drag scipy, cyclopts and rich into the
+    `testing` group, which the `tools` group comment in `pyproject.toml` forbids.
     """
     value = Case("_check", "cdf", "scalar", 3, None, 0)
     ok = pl.DataFrame({"s": [0.25, 0.5, 0.75]})
@@ -754,19 +733,19 @@ def _check_gate_can_reject() -> None:
 _check_gate_can_reject()
 
 
-def _peak_memory_worker(queue: mp.Queue[MemoryReply], comp: Comparison, case: Case, contender: str) -> None:
+def _peak_memory_worker(queue: mp.Queue[MemoryReply], comparison: Comparison, case: Case, contender: str) -> None:
     """Subprocess entrypoint: rebuild `contender`'s call from the registry and post back its peak."""
     try:
-        queue.put(_peak_mib(CONTENDERS[contender](comp, case)))
+        queue.put(_peak_mib(CONTENDERS[contender](comparison, case)))
     except BaseException as exc:  # noqa: BLE001 - surface any child failure to the parent as a message
         queue.put(repr(exc))
 
 
-def _isolated_peak_mib(comp: Comparison, case: Case, contender: str) -> float:
+def _isolated_peak_mib(comparison: Comparison, case: Case, contender: str) -> float:
     """Peak memory of one call, measured in a fresh spawned process."""
     ctx = mp.get_context("spawn")
     queue: mp.Queue[MemoryReply] = ctx.Queue()
-    proc = ctx.Process(target=_peak_memory_worker, args=(queue, comp, case, contender))
+    proc = ctx.Process(target=_peak_memory_worker, args=(queue, comparison, case, contender))
     proc.start()
     try:
         reply = queue.get(timeout=_CHILD_REPLY_TIMEOUT_S)
@@ -784,7 +763,7 @@ def _isolated_peak_mib(comp: Comparison, case: Case, contender: str) -> float:
     raise RuntimeError(msg)
 
 
-def _measure(comp: Comparison, case: Case, *, budget: Budget, memory: bool) -> Result:
+def _measure_case(comparison: Comparison, case: Case, *, budget: Budget, memory: bool) -> Result:
     """Time every registered contender on one case, gate correctness, and optionally profile memory.
 
     The correctness gate reads each timed loop's own warmup output, so no contender is called an
@@ -793,53 +772,53 @@ def _measure(comp: Comparison, case: Case, *, budget: Budget, memory: bool) -> R
     outcomes: dict[str, Outcome] = {}
     timings: dict[str, Measurement] = {}
     for name, build in CONTENDERS.items():
-        outcomes[name], timings[name] = _time_call(build(comp, case), budget)
+        outcomes[name], timings[name] = _time_call(build(comparison, case), budget)
     reference_out = outcomes[REFERENCE_CONTENDER]
     verdicts = [
         _outputs_agree(case, reference_out, out) for name, out in outcomes.items() if name != REFERENCE_CONTENDER
     ]
-    peaks = {name: _isolated_peak_mib(comp, case, name) for name in CONTENDERS} if memory else {}
+    peaks = {name: _isolated_peak_mib(comparison, case, name) for name in CONTENDERS} if memory else {}
     return Result(
         case=case,
-        label=comp.label(case.method),
+        label=comparison.label(case.method),
         measurements={name: replace(timing, peak_mib=peaks.get(name)) for name, timing in timings.items()},
         matches=bool(verdicts) and all(verdicts),
     )
 
 
-def measure_cases(comp: Comparison, sweep: Sweep, *, memory: bool = False) -> Iterator[Result]:
+def measure_cases(comparison: Comparison, sweep: Sweep, *, memory: bool = False) -> Iterator[Result]:
     """Yield one `Result` per cell of the sweep grid, in report order.
 
     A cell that raises is reported and skipped rather than discarding the cells already measured;
-    the caller can therefore still emit a partial report after an interrupt.
+    the caller can therefore still report a partial report after an interrupt.
     """
-    cases = list(sweep.cases(comp.name))
+    cases = list(sweep.cases(comparison.name))
     try:
         for index, case in enumerate(cases, start=1):
             print(f"  [{index}/{len(cases)}] {case.id}", end="\r", flush=True)
             try:
-                yield _measure(comp, case, budget=sweep.budget, memory=memory)
+                yield _measure_case(comparison, case, budget=sweep.budget, memory=memory)
             except Exception as exc:  # noqa: BLE001 - one bad cell must not abandon the sweep
                 print(f"\nSKIPPED {case.id}: {exc!r}")
     finally:
         print(" " * 100, end="\r")
 
 
-def emit(
-    comp: Comparison, results: Sequence[Result], sweep: Sweep, *, fmt: OutputFormat, output_dir: Path
+def report(
+    comparison: Comparison, results: Sequence[Result], sweep: Sweep, *, output_format: OutputFormat, output_dir: Path
 ) -> Path | None:
-    """Render `results` in `fmt`. Markdown/JSON are written to ``output_dir/<name>.<ext>``; rich prints.
+    """Render `results` in `output_format`. Markdown/JSON are written to ``output_dir/<name>.<ext>``; rich prints.
 
     Returns the written path for the file formats, or `None` for the terminal (`rich`) format.
     """
-    if fmt == "rich":
-        _render_rich(comp, results, sweep)
+    if output_format == "rich":
+        _render_rich(comparison, results, sweep)
         return None
 
-    renderer, ext = (_render_markdown, "md") if fmt == "markdown" else (_render_json, "json")
+    renderer, ext = (_render_markdown, "md") if output_format == "markdown" else (_render_json, "json")
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"{comp.name}.{ext}"
-    path.write_text(renderer(comp, results, sweep), encoding="utf-8")
+    path = output_dir / f"{comparison.name}.{ext}"
+    path.write_text(renderer(comparison, results, sweep), encoding="utf-8")
     print(f"wrote {path}")
     return path
 
@@ -923,11 +902,10 @@ def build_profile() -> BuildProfile:
 
 
 def require_release_build() -> None:
-    """Refuse to measure an unoptimised build, which is the one failure the numbers cannot show.
+    """Refuse to measure an unoptimised build.
 
-    A debug `maturin develop` runs the Rust math unoptimised and would make `polars_stats` look far
-    slower than scipy's optimised C. The resulting table looks entirely normal, so this is checked
-    rather than documented.
+    A debug `maturin develop` runs the Rust math unoptimised, which makes `polars_stats` look far
+    slower than scipy's optimised C and produces a table that looks entirely normal.
     """
     if (profile := build_profile()) == "release":
         return
@@ -963,7 +941,7 @@ def _environment() -> Environment:
         "polars": pl.__version__,
         "scipy": scipy.__version__,
         "numpy": np.__version__,
-        "polars_stats": _internal.__version__,
+        "polars_stats": polars_stats_version,
         "build": build_profile(),
     }
 
@@ -991,13 +969,13 @@ def _header_lines(sweep: Sweep, results: Sequence[Result]) -> list[str]:
     ]
 
 
-def _render_markdown(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> str:
+def _render_markdown(comparison: Comparison, results: Sequence[Result], sweep: Sweep) -> str:
     """A markdown document (heading, environment stamp, table), ready to paste into the docs."""
     memory = _memory_measured(results)
     headers = _report_headers(memory=memory)
     aligns = ["---", "---", *("---:" for _ in headers[2:-1]), ":---:"]
     lines = [
-        f"## {comp.name}: polars_stats vs scipy.stats",
+        f"## {comparison.name}: polars_stats vs scipy.stats",
         "",
         *_header_lines(sweep, results),
         "",
@@ -1038,7 +1016,7 @@ class ResultPayload(TypedDict):
     rows: int
     n_samples: int | None
     measurements: dict[str, MeasurementPayload]
-    ratios: dict[str, float]
+    ratios: dict[str, float | None]
     matches: bool
 
 
@@ -1052,11 +1030,16 @@ class ReportPayload(TypedDict):
     results: list[ResultPayload]
 
 
-def _render_json(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> str:
+def _finite_or_none(value: float) -> float | None:
+    """`None` for a value `json.dumps(allow_nan=False)` would refuse."""
+    return None if np.isnan(value) else value
+
+
+def _render_json(comparison: Comparison, results: Sequence[Result], sweep: Sweep) -> str:
     """Machine-readable report: schema, environment, sweep, and one object per cell."""
     payload: ReportPayload = {
         "schema": SCHEMA_VERSION,
-        "distribution": comp.name,
+        "distribution": comparison.name,
         "environment": _environment(),
         "sweep": {
             "rows": list(sweep.rows),
@@ -1073,7 +1056,8 @@ def _render_json(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> s
                 "rows": result.case.rows,
                 "n_samples": result.case.n_samples,
                 "measurements": {name: m.payload for name, m in result.measurements.items()},
-                "ratios": {name: result.ratio(name) for name in CHALLENGERS},
+                # `allow_nan=False` below would abort the write after the whole sweep had run.
+                "ratios": {name: _finite_or_none(result.ratio(name)) for name in CHALLENGERS},
                 "matches": result.matches,
             }
             for result in results
@@ -1082,13 +1066,13 @@ def _render_json(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> s
     return json.dumps(payload, indent=2, allow_nan=False) + "\n"
 
 
-def _render_rich(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> None:
+def _render_rich(comparison: Comparison, results: Sequence[Result], sweep: Sweep) -> None:
     """Print a coloured table to the terminal (ratio green when polars_stats wins, red otherwise)."""
     env = _environment()
     memory = _memory_measured(results)
     budget = sweep.budget
     table = Table(
-        title=f"{comp.name}: polars_stats vs scipy.stats",
+        title=f"{comparison.name}: polars_stats vs scipy.stats",
         caption=(
             f"<= {budget.max_iterations} iters / <= {budget.max_seconds:g}s per cell "
             f"| time p50 +/- std (ms){', peak RSS (MiB)' if memory else ''} "

@@ -144,8 +144,7 @@ so a saved report always says which build produced it.
   harness. Each entry is a `Comparison`: a `ParamSpec` per parameter (the fixed value the `scalar` and `broadcast`
   regimes use, plus the domain the `column` regime draws from) and a **factory** turning one regime's realised
   parameters into both sides' distributions, applying scipy's reparameterisation. A factory rather than a frozen
-  instance pair is what lets one registry serve all three regimes; there is deliberately no second registry and
-  no second entry point.
+  instance pair is what lets one registry serve all three regimes, and there is one entry point.
 * [_harness.py](_harness.py): the comparison routine. Builds the calls, times them, measures peak memory in isolated
   subprocesses, gates correctness, renders the report. Imported, never run directly. Its seams are `METHOD_SPECS` (the
   method metadata table), `Case` (one measurable cell, as frozen and picklable data carrying its own `id`),
@@ -203,9 +202,14 @@ Caveats on the memory numbers (read before quoting them):
   polars operation in a process pays once; a long-running process amortises it away. This inflates the
   `polars_stats` memory at small `--rows`, where the fixed init dominates the output size.
 * One measurement per call (not a distribution), read from the kernel's own resident-set high-water
-  mark (`getrusage` `ru_maxrss`) before and after the call, so no transient is missed. The mark before
-  the call is what the subprocess's imports left behind, so a call whose peak stays under it reads
-  `0.0`: a `scalar` moment cell is near-baseline by construction, not measured small.
+  mark (`getrusage` `ru_maxrss`) before and after the call, so no transient during the call is missed.
+* **The baseline is a high-water mark, so these are lower bounds.** `ru_maxrss` never falls, and the
+  reading before the call already covers the subprocess's imports *and* its input construction (the
+  parameter draws, the evaluation-point array, the frame). A call that peaks below that mark reads
+  `0.0`, and one above it is understated by however far the construction transient rose. A `scalar`
+  moment cell is near-baseline by construction rather than measured small, and a large value-keyed
+  cell is understated by roughly the size of its own input. Read a figure as "at least this much",
+  and compare two contenders on the same cell rather than one cell against another.
 
 ## Keeping the scipy side native
 
@@ -231,7 +235,10 @@ and **~700x** faster on `beta.entropy`, where the frozen path falls back to a pe
 So read every ratio as *against the classic frozen API*, and never quote one as "faster than scipy" without that
 qualifier.
 
-A `scipy-new` contender would be one registration in `CONTENDERS`, but it would not be a like-for-like baseline *today*:
+A `scipy-new` contender would be one registration in `CONTENDERS` plus a second factory per `REGISTRY`
+entry: `Comparison.build` returns exactly one `(polars_stats, frozen scipy)` pair, so a third side has
+nowhere to come from until `build` widens into a factory per contender. Nor would it be a like-for-like
+baseline *today*:
 the new API ships native classes for only a few families (`Normal`, `Uniform`, `Binomial`), so most of the registry
 would have to go through `make_distribution`, and the location-scale families do not accept `loc` / `scale` there at all.
 The frozen API therefore stays the baseline.

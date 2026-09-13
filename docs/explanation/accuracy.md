@@ -26,8 +26,9 @@ for a discrete `ppf` resolved by binary search.
 
 One honesty note for this release: an unfiltered sweep does not run to completion, because the
 `Beta.ppf` / `isf` extreme-tail probes land in the `statrs` non-termination band documented below.
-Those two methods have to be skipped at the CLI (`--skip`) until the upstream fix lands; a skip is
-recorded in the report with its reason rather than dropped.
+`make audit` therefore skips those two by default until the upstream fix lands, and records each skip
+in the report with its reason rather than dropping it. `--skip` replaces that default set, so a bare
+`--skip` runs the full sweep and will not return.
 
 ## Use the log methods in the tails, where they are log methods
 
