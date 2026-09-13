@@ -54,9 +54,6 @@ impl UniformParams {
     }
 }
 
-/// Where both inverses switch which bound they interpolate from.
-const MEDIAN_QUANTILE: f64 = 0.5;
-
 /// `min + range / 2` rather than `(min + max) / 2`: `min + max` can overflow where `range` is
 /// already known finite.
 fn midpoint(min: f64, range: f64) -> f64 {
@@ -200,7 +197,7 @@ fn derive_ln_sf(min: f64, max: f64) -> Regions<impl Fn(f64) -> f64> {
 
 /// `ppf` (`ascending`) and `isf`, interpolating from whichever bound the answer is nearest:
 /// `min + q * range` is a difference of nearly equal numbers once the result lands near `max`, so
-/// above [`MEDIAN_QUANTILE`] the answer anchors to the far bound through `1 - q`, which Sterbenz
+/// above the median the answer anchors to the far bound through `1 - q`, which Sterbenz
 /// makes exact there. Mirroring rather than `ppf(1 - q)`: below `q ~ 1.1e-16` that complement rounds
 /// to `1.0`.
 fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
@@ -211,7 +208,7 @@ fn derive_inverse(min: f64, max: f64, ascending: bool) -> impl Fn(f64) -> f64 {
         (max, min, -range)
     };
     move |quantile: f64| {
-        if quantile <= MEDIAN_QUANTILE {
+        if quantile <= 0.5 {
             at_zero + quantile * step
         } else {
             at_one - (1.0 - quantile) * step

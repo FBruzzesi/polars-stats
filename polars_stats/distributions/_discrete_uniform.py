@@ -4,14 +4,10 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from polars_stats.distributions._base import DiscreteDistribution, coerce_int, scalar_int, scalar_kwargs
+from polars_stats.distributions._base import ONE_TWELFTH, DiscreteDistribution, coerce_int, scalar_int, scalar_kwargs
 
 if TYPE_CHECKING:
     from polars_stats._typing import DistributionName, IntoExprColumn
-
-_ONE_TWELFTH = 1 / 12
-"""Multiplied by rather than divided against: polars spells ``column / 12`` as a division up to eight rows and
-as a reciprocal multiply above, which would make ``variance`` row-count dependent."""
 
 
 class DiscreteUniform(DiscreteDistribution):
@@ -80,7 +76,7 @@ class DiscreteUniform(DiscreteDistribution):
 
     def variance(self) -> pl.Expr:
         """Variance, ``(N**2 - 1) / 12``."""
-        return (self.support_size**2 - 1) * _ONE_TWELFTH
+        return (self.support_size**2 - 1) * ONE_TWELFTH
 
     def median(self) -> pl.Expr:
         """Median, the midpoint ``(min + max) / 2``, which for an even support size is not a support point.

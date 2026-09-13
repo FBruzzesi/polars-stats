@@ -169,18 +169,25 @@ fn mu_sigma(dist: &Normal) -> (f64, f64) {
     (mu, sigma)
 }
 
-/// `t = (x - mu) / (sigma sqrt 2)`, so that `cdf(x) = 0.5 erfc(-t)` and `sf(x) = 0.5 erfc(t)`.
-fn erfc_arg(dist: &Normal, x: f64) -> f64 {
+/// `ln(cdf(x))` as `ln(0.5 erfc(-t))`, `t = (x - mu) / (sigma sqrt 2)`; on plain parameters, as are
+/// [`ln_sf_at`] and [`isf_at`], so `LogNormal` reaches them at `ln(v)` without building a `Normal`.
+pub(crate) fn ln_cdf_at(mu: f64, sigma: f64, x: f64) -> f64 {
+    ln_half_erfc(-((x - mu) / (sigma * SQRT_2)))
+}
+
+/// `ln(sf(x))` as `ln(0.5 erfc(t))`.
+pub(crate) fn ln_sf_at(mu: f64, sigma: f64, x: f64) -> f64 {
+    ln_half_erfc((x - mu) / (sigma * SQRT_2))
+}
+
+fn ln_cdf_value(dist: &Normal, v: f64) -> Option<f64> {
     let (mu, sigma) = mu_sigma(dist);
-    (x - mu) / (sigma * SQRT_2)
+    Some(ln_cdf_at(mu, sigma, v))
 }
 
-pub(crate) fn ln_cdf_value(dist: &Normal, v: f64) -> Option<f64> {
-    Some(ln_half_erfc(-erfc_arg(dist, v)))
-}
-
-pub(crate) fn ln_sf_value(dist: &Normal, v: f64) -> Option<f64> {
-    Some(ln_half_erfc(erfc_arg(dist, v)))
+fn ln_sf_value(dist: &Normal, v: f64) -> Option<f64> {
+    let (mu, sigma) = mu_sigma(dist);
+    Some(ln_sf_at(mu, sigma, v))
 }
 
 /// Null outside `[0, 1]`; the closed endpoints map to the infinite tails.
@@ -199,7 +206,7 @@ fn ppf_value(dist: &Normal, q: f64) -> Option<f64> {
 /// `mu + sigma sqrt(2) erfc_inv(2q)`, solved on `q` itself. `ppf(1 - q)` would hand `erfc_inv`
 /// the argument `2 - 2q`, which quantises the tail mass to `2.2e-16` before the inverse runs; the
 /// symmetry `z_(1-q) = -z_q` puts the sign on the scale instead. Endpoints reverse `ppf`'s.
-pub(crate) fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
+pub(crate) fn isf_at(mu: f64, sigma: f64, q: f64) -> Option<f64> {
     if !(0.0..=1.0).contains(&q) {
         None
     } else if q == 0.0 {
@@ -207,9 +214,13 @@ pub(crate) fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
     } else if q == 1.0 {
         Some(f64::NEG_INFINITY)
     } else {
-        let (mu, sigma) = mu_sigma(dist);
         Some(mu + sigma * SQRT_2 * erf::erfc_inv(2.0 * q))
     }
+}
+
+fn isf_value(dist: &Normal, q: f64) -> Option<f64> {
+    let (mu, sigma) = mu_sigma(dist);
+    isf_at(mu, sigma, q)
 }
 
 #[polars_expr(output_type=Float64)]

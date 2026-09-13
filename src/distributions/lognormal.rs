@@ -1,7 +1,7 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
-use statrs::distribution::{Continuous, ContinuousCDF, LogNormal, Normal};
+use statrs::distribution::{Continuous, ContinuousCDF, LogNormal};
 
 use crate::distributions::{
     coerce_f64, normal, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
@@ -58,13 +58,6 @@ where
         build_dist,
         body,
     )
-}
-
-/// The `Normal(mu, sigma)` under a built `LogNormal`; infallible because the parameters passed
-/// [`build_dist`].
-fn underlying_normal(dist: &LogNormal) -> Normal {
-    Normal::new(dist.location(), dist.scale())
-        .expect("Normal::new accepts every (location, scale) a built LogNormal carries")
 }
 
 #[polars_expr(output_type=Float64)]
@@ -142,7 +135,7 @@ fn ln_cdf_value(dist: &LogNormal, v: f64) -> Option<f64> {
     if v <= 0.0 {
         Some(f64::NEG_INFINITY)
     } else {
-        normal::ln_cdf_value(&underlying_normal(dist), v.ln())
+        Some(normal::ln_cdf_at(dist.location(), dist.scale(), v.ln()))
     }
 }
 
@@ -151,7 +144,7 @@ fn ln_sf_value(dist: &LogNormal, v: f64) -> Option<f64> {
     if v <= 0.0 {
         Some(0.0)
     } else {
-        normal::ln_sf_value(&underlying_normal(dist), v.ln())
+        Some(normal::ln_sf_at(dist.location(), dist.scale(), v.ln()))
     }
 }
 
@@ -164,11 +157,11 @@ fn ppf_value(dist: &LogNormal, q: f64) -> Option<f64> {
     }
 }
 
-/// The normal's [`normal::isf_value`] exponentiated, so the tail is solved on `q` itself rather than
+/// The normal's [`normal::isf_at`] exponentiated, so the tail is solved on `q` itself rather than
 /// through `ppf(1 - q)`. `exp` turns the normal's absolute error at the quantile into a relative one
 /// here, so a large `sigma` amplifies it.
 fn isf_value(dist: &LogNormal, q: f64) -> Option<f64> {
-    normal::isf_value(&underlying_normal(dist), q).map(f64::exp)
+    normal::isf_at(dist.location(), dist.scale(), q).map(f64::exp)
 }
 
 #[polars_expr(output_type=Float64)]
