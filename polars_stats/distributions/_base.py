@@ -3,13 +3,12 @@ from __future__ import annotations
 import inspect
 import math
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeGuard
 
 import polars as pl
 from polars.exceptions import PolarsError
 from polars.plugins import register_plugin_function
-
-from polars_stats._lib import LIB
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -28,6 +27,13 @@ if TYPE_CHECKING:
 
 _LITERAL_LEN_IN_AGG = tuple(int(part) for part in pl.__version__.split(".", 2)[:2]) >= (1, 35)
 """Whether `pl.lit(...).len()` survives inside `over` / `group_by().agg()`."""
+
+_LIB = Path(__file__).parents[1]
+"""The `polars_stats` package directory, where `maturin develop` places the plugin library."""
+
+ONE_TWELFTH = 1 / 12
+"""Multiplied by rather than divided against: polars spells `column / 12` as a division on some engine and row-count
+combinations and as a reciprocal multiply on others, which would make a `variance` depend on the frame's height."""
 
 _ROW_INDEX_NAME = "__polars_stats_row_index__"
 ROW_INDEX_EXPR = pl.int_range(0, pl.len(), dtype=pl.UInt64).alias(_ROW_INDEX_NAME)
@@ -218,7 +224,7 @@ def register_plugin(
     `seed`, a draw count `size`, and the constant parameters of a `_scalar` twin.
     """
     return register_plugin_function(
-        plugin_path=LIB,
+        plugin_path=_LIB,
         function_name=f"{distribution}_{function}_scalar" if scalar else f"{distribution}_{function}",
         args=args,
         kwargs=None if kwargs is None else dict(kwargs),

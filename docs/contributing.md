@@ -56,7 +56,6 @@ polars-stats/
 │   └── distributions/        # one Rust file per distribution
 ├── polars_stats/
 │   ├── __init__.py           # public exports
-│   ├── _lib.py               # plugin path resolution
 │   └── distributions/
 │       ├── _base.py          # ABCs + coercion helpers
 │       └── _<name>.py        # one Python class per distribution

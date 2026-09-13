@@ -3,7 +3,13 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, scalar_float, scalar_kwargs
+from polars_stats.distributions._base import (
+    ONE_TWELFTH,
+    ContinuousDistribution,
+    coerce_param,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
     import polars as pl
@@ -57,7 +63,7 @@ class Uniform(ContinuousDistribution):
 
     def variance(self) -> pl.Expr:
         """Variance, ``(max - min)^2 / 12``."""
-        return self.range**2 / 12
+        return self.range**2 * ONE_TWELFTH
 
     def std(self) -> pl.Expr:
         """Standard deviation, ``(max - min) / sqrt(12)``.
