@@ -476,12 +476,6 @@ fn discreteuniform_isf_scalar(
 }
 
 /// The support count `N = max - min + 1` as `Float64`, which the Python moments divide by.
-///
-/// Callers that need one count per row rather than a broadcast scalar append a third input whose
-/// height the bounds broadcast up to; the body never reads it. `_ppf` and `_isf` need that: their
-/// step-boundary correction divides by the count and compares against the quantile with no slack,
-/// and a length-1 count makes the in-memory engine evaluate the division as a reciprocal multiply,
-/// one ulp from the true division and exactly at the steps where that flips a support point.
 #[polars_expr(output_type=Float64)]
 fn discreteuniform_range(inputs: &[Series]) -> PolarsResult<Series> {
     param_keyed(

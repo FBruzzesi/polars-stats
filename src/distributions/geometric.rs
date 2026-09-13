@@ -1,7 +1,6 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
-use statrs::distribution::Geometric;
 
 use crate::distributions::{
     expm1, ln_abs_expm1, on_unit_interval, validated_param, value_keyed_derived_binary,
@@ -19,10 +18,6 @@ const P: ParamDomain = ParamDomain {
     accepts: |p| p.is_finite() && p > 0.0 && p <= 1.0,
 };
 
-fn build_dist(p: f64) -> PolarsResult<Geometric> {
-    Geometric::new(p).map_err(|e| polars_err!(ComputeError: "{e}"))
-}
-
 /// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` and
 /// collapses to `0.0` below `p ~ 1.1e-16`. `-inf` at `p = 1`.
 #[inline]
@@ -30,9 +25,8 @@ fn ln_failure(p: f64) -> f64 {
     (-p).ln_1p()
 }
 
-/// The samplers' per-row state, behind [`build_dist`]'s check.
+/// The samplers' per-row state; every caller has already run [`P`]'s check on `p`.
 fn build_sampler(p: f64) -> PolarsResult<f64> {
-    build_dist(p)?;
     Ok(ln_failure(p))
 }
 

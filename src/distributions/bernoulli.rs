@@ -1,7 +1,6 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
-use rand::distr::Distribution;
-use statrs::distribution::Bernoulli;
+use rand::RngExt;
 
 use crate::distributions::{
     on_unit_interval, validated_param, value_keyed_derived_binary, value_keyed_scalar, ParamDomain,
@@ -13,10 +12,6 @@ use crate::rng::{
 
 const P: ParamDomain = ParamDomain::probability("p");
 
-fn build_dist(p: f64) -> PolarsResult<Bernoulli> {
-    Bernoulli::new(p).map_err(|e| polars_err!(ComputeError: "{e}"))
-}
-
 /// Constant parameter, deserialised once per call; every `_scalar` twin checks it once here.
 #[derive(serde::Deserialize)]
 struct BernoulliParams {
@@ -24,11 +19,6 @@ struct BernoulliParams {
 }
 
 impl BernoulliParams {
-    fn build(&self) -> PolarsResult<Bernoulli> {
-        P.check(self.p)?;
-        build_dist(self.p)
-    }
-
     fn value_keyed<Branches>(
         &self,
         value: &Series,
@@ -253,14 +243,16 @@ fn bernoulli_isf_scalar(inputs: &[Series], kwargs: BernoulliParams) -> PolarsRes
     kwargs.value_keyed(&inputs[0], derive_isf, on_unit_interval)
 }
 
+/// The samplers' per-row state is the bare `p`: `statrs`' `Bernoulli` draw is exactly this call, so
+/// the seeded stream is unchanged by not building one.
 #[inline]
-fn draw(dist: &Bernoulli, rng: &mut impl rand::Rng) -> bool {
-    <Bernoulli as Distribution<bool>>::sample(dist, rng)
+fn draw(p: &f64, rng: &mut impl rand::Rng) -> bool {
+    rng.random_bool(*p)
 }
 
 #[polars_expr(output_type=Boolean)]
 fn bernoulli_sample(inputs: &[Series], kwargs: SampleKwargs) -> PolarsResult<Series> {
-    sample_per_row_binary(inputs, kwargs, &P, build_dist, draw)
+    sample_per_row_binary(inputs, kwargs, &P, Ok, draw)
 }
 
 #[polars_expr(output_type=Boolean)]
@@ -268,8 +260,8 @@ fn bernoulli_sample_scalar(
     inputs: &[Series],
     kwargs: SampleScalarKwargs<BernoulliParams>,
 ) -> PolarsResult<Series> {
-    let dist = kwargs.params.build()?;
-    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&dist, rng))
+    P.check(kwargs.params.p)?;
+    sample_by_index(&inputs[0], kwargs.seed, |rng| draw(&kwargs.params.p, rng))
 }
 
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
@@ -277,11 +269,13 @@ fn bernoulli_samples_scalar(
     inputs: &[Series],
     kwargs: SamplesScalarKwargs<BernoulliParams>,
 ) -> PolarsResult<Series> {
-    let dist = kwargs.params.build()?;
-    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| draw(&dist, rng))
+    P.check(kwargs.params.p)?;
+    samples_by_index(&inputs[0], kwargs.seed, kwargs.size, |rng| {
+        draw(&kwargs.params.p, rng)
+    })
 }
 
 #[polars_expr(output_type_func_with_kwargs=samples_bool_output)]
 fn bernoulli_samples(inputs: &[Series], kwargs: SamplesKwargs) -> PolarsResult<Series> {
-    samples_per_row_binary(inputs, kwargs, &P, build_dist, draw)
+    samples_per_row_binary(inputs, kwargs, &P, Ok, draw)
 }
