@@ -50,19 +50,19 @@ See "Keeping the scipy side native" below before reading anything into those num
 
 ## Running
 
-There is one runnable entrypoint, [run.py](run.py). Run it with `uv` and the `benchmarks` dependency
-group, which provides the extra tooling (`cyclopts`, `rich`, `psutil`, plus `scipy` / `numpy`):
+There is one runnable entrypoint, [run.py](run.py). Run it as a module with `uv` and the `tools` dependency
+group, which provides the extra tooling (`cyclopts`, `rich`, plus `scipy` / `numpy`):
 
 ```bash
-uv run --group benchmarks benchmarks/run.py  # all distributions, rich table in the terminal
-uv run --group benchmarks benchmarks/run.py normal binomial  # a subset of distributions
-uv run --group benchmarks benchmarks/run.py --methods sample density ppf  # a subset of methods
-uv run --group benchmarks benchmarks/run.py --regimes scalar column  # a subset of regimes
-uv run --group benchmarks benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20  # sweep a grid
-uv run --group benchmarks benchmarks/run.py --memory  # also measure peak RSS (slow: a subprocess per cell per side)
-uv run --group benchmarks benchmarks/run.py --format markdown  # write benchmarks/results/<dist>.md
-uv run --group benchmarks benchmarks/run.py --format json  # write benchmarks/results/<dist>.json
-uv run --group benchmarks benchmarks/run.py --help
+uv run --group tools -m tools.benchmarks.run  # all distributions, rich table in the terminal
+uv run --group tools -m tools.benchmarks.run normal binomial  # a subset of distributions
+uv run --group tools -m tools.benchmarks.run --methods sample density ppf  # a subset of methods
+uv run --group tools -m tools.benchmarks.run --regimes scalar column  # a subset of regimes
+uv run --group tools -m tools.benchmarks.run normal --rows 1_000_000 10_000_000 --n-samples 5 10 20  # sweep a grid
+uv run --group tools -m tools.benchmarks.run --memory  # also measure peak RSS (slow: a subprocess per cell per side)
+uv run --group tools -m tools.benchmarks.run --format markdown  # write tools/benchmarks/results/<dist>.md
+uv run --group tools -m tools.benchmarks.run --format json  # write tools/benchmarks/results/<dist>.json
+uv run --group tools -m tools.benchmarks.run --help
 ```
 
 | argument | default | meaning |
@@ -78,9 +78,9 @@ uv run --group benchmarks benchmarks/run.py --help
 | `--memory` | off | also measure peak RSS per cell per side, in an isolated subprocess |
 | `--seed` | `0` | seed for the samplers, the evaluation inputs and the parameter draws (reproducible) |
 | `--format` | `rich` | `rich` (coloured terminal table), `markdown`, or `json` |
-| `--output-dir` | `benchmarks/results/` | where `markdown` / `json` files are written |
+| `--output-dir` | `tools/benchmarks/results/` | where `markdown` / `json` files are written |
 
-(see `uv run --group benchmarks benchmarks/run.py --help`).
+(see `uv run --group tools -m tools.benchmarks.run --help`).
 
 Everything above `--memory` is a field of `Sweep` (and its nested `Budget`) in [_harness.py](_harness.py),
 which the CLI flattens: the dataclass owns the defaults, the help text and the validation, so there is one declaration
@@ -114,19 +114,19 @@ measured. A long sweep therefore cannot lose an hour of completed work to one ba
 Output formats:
 
 * `rich`: a coloured table on the terminal (ratio green when `polars_stats` wins). Nothing is written.
-* `markdown`: a `## <dist>` document with an environment stamp and table. Written to `benchmarks/results/<dist>.md`.
+* `markdown`: a `## <dist>` document with an environment stamp and table. Written to `tools/benchmarks/results/<dist>.md`.
 * `json`: machine-readable (schema version, environment, sweep config, per-cell timing and memory).
-  Written to `benchmarks/results/<dist>.json`.
+  Written to `tools/benchmarks/results/<dist>.json`.
 
 Both file formats stamp the rows, methods, regimes and budget the run actually used, so a narrower re-run cannot be
-mistaken for a wider one. `benchmarks/results/` is git-ignored: the files are machine-specific, and a run overwrites
+mistaken for a wider one. `tools/benchmarks/results/` is git-ignored: the files are machine-specific, and a run overwrites
 the previous file for the same distribution.
 
 If numbers are ever published, commit a curated table rather than the raw per-run output.
 
 ## Build mode (enforced)
 
-`uv run --group benchmarks` measures whatever `polars_stats` is installed in the project environment.
+`uv run --group tools` measures whatever `polars_stats` is installed in the project environment.
 
 Build it in **release** mode first (`make install-release`, i.e. `maturin develop --release`).
 A debug `maturin develop` build runs the Rust extension unoptimised and would make `polars_stats` look far slower than
@@ -144,8 +144,7 @@ so a saved report always says which build produced it.
   harness. Each entry is a `Comparison`: a `ParamSpec` per parameter (the fixed value the `scalar` and `broadcast`
   regimes use, plus the domain the `column` regime draws from) and a **factory** turning one regime's realised
   parameters into both sides' distributions, applying scipy's reparameterisation. A factory rather than a frozen
-  instance pair is what lets one registry serve all three regimes; there is deliberately no second registry and
-  no second entry point.
+  instance pair is what lets one registry serve all three regimes, and there is one entry point.
 * [_harness.py](_harness.py): the comparison routine. Builds the calls, times them, measures peak memory in isolated
   subprocesses, gates correctness, renders the report. Imported, never run directly. Its seams are `METHOD_SPECS` (the
   method metadata table), `Case` (one measurable cell, as frozen and picklable data carrying its own `id`),
@@ -202,9 +201,15 @@ Caveats on the memory numbers (read before quoting them):
 * The `polars_stats` figures include **one-time query-engine init** (thread pool, etc.) that the first
   polars operation in a process pays once; a long-running process amortises it away. This inflates the
   `polars_stats` memory at small `--rows`, where the fixed init dominates the output size.
-* One measurement per call (not a distribution); allocation sizes are deterministic, but the sampled
-  peak can miss a very short transient. The sampler polls every 0.5 ms, which is coarser than the whole
-  call on a `scalar` moment cell, so those readings are near-baseline rather than a real peak.
+* One measurement per call (not a distribution), read from the kernel's own resident-set high-water
+  mark (`getrusage` `ru_maxrss`) before and after the call, so no transient during the call is missed.
+* **The baseline is a high-water mark, so these are lower bounds.** `ru_maxrss` never falls, and the
+  reading before the call already covers the subprocess's imports *and* its input construction (the
+  parameter draws, the evaluation-point array, the frame). A call that peaks below that mark reads
+  `0.0`, and one above it is understated by however far the construction transient rose. A `scalar`
+  moment cell is near-baseline by construction rather than measured small, and a large value-keyed
+  cell is understated by roughly the size of its own input. Read a figure as "at least this much",
+  and compare two contenders on the same cell rather than one cell against another.
 
 ## Keeping the scipy side native
 
@@ -213,7 +218,7 @@ choices are invisible in the output.
 
 **RNG family (samplers)**: scipy's samplers are handed a `numpy.random.Generator`, not an int seed.
 `random_state=<int>` makes scipy build a legacy `RandomState` and draw from **MT19937**, while our Rust side draws from
-`Pcg64Mcg` ([src/rng.rs](../src/rng.rs)) - so an int seed compares a modern PCG generator against a 1997 Mersenne Twister.
+`Pcg64Mcg` ([src/rng.rs](../../src/rng.rs)) - so an int seed compares a modern PCG generator against a 1997 Mersenne Twister.
 That is an artefact of the seed's *type*, not of the API a scipy user writes, and it was worth 1.1x to 2.4x depending on
 the distribution. Worse, it was not a uniform offset: it reordered the distributions, flattering `sample` on `normal`
 (measured 6.2x before, 2.4x after) and `discrete_uniform` (2.6x before, 1.3x after) while *understating* `uniform`.
@@ -230,7 +235,10 @@ and **~700x** faster on `beta.entropy`, where the frozen path falls back to a pe
 So read every ratio as *against the classic frozen API*, and never quote one as "faster than scipy" without that
 qualifier.
 
-A `scipy-new` contender would be one registration in `CONTENDERS`, but it would not be a like-for-like baseline *today*:
+A `scipy-new` contender would be one registration in `CONTENDERS` plus a second factory per `REGISTRY`
+entry: `Comparison.build` returns exactly one `(polars_stats, frozen scipy)` pair, so a third side has
+nowhere to come from until `build` widens into a factory per contender. Nor would it be a like-for-like
+baseline *today*:
 the new API ships native classes for only a few families (`Normal`, `Uniform`, `Binomial`), so most of the registry
 would have to go through `make_distribution`, and the location-scale families do not accept `loc` / `scale` there at all.
 The frozen API therefore stays the baseline.

@@ -3,7 +3,7 @@ SHELL=/bin/bash
 .PHONY: audit lint test benchmark typing install install-release
 
 audit:
-	uv run --group audit tools/accuracy_audit.py
+	uv run --group tools -m tools.accuracy.audit
 
 lint:
 	uvx prek run --all-files ruff-format ruff-check rumdl ryl
@@ -14,7 +14,7 @@ test:
 	POLARS_MAX_THREADS=4 uv run --group testing pytest tests
 
 benchmark:
-	uv run --group benchmarks benchmarks/run.py
+	uv run --group tools -m tools.benchmarks.run
 
 typing:
 	uv run --group typing pyrefly check . --min-severity info

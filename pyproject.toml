@@ -51,10 +51,12 @@ dev = [
     "numpy>=2.2.6",
     "scipy>=1.15.3",
 ]
-# `tools/accuracy_audit.py` only (`make audit`). Deliberately not in `testing`: the suite proper must not
-# grow a dependency for a tool that is run by hand.
-audit = [
+# The hand-run tooling under `tools/` (`make audit`, `make benchmark`).
+# Deliberately not in `testing` as these are only run by hand.
+tools = [
+    "cyclopts>=4.16.1",
     "mpmath>=1.3.0",
+    "rich>=15.0.0",
 ]
 testing = [
     "covdefaults>=2.3.0",
@@ -63,19 +65,13 @@ testing = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
 ]
-benchmarks = [
-    "cyclopts>=4.16.1",
-    "psutil>=5.9",
-    "rich>=15.0.0",
-]
 typing = [
     "mypy>=1.14.1",
     "pyrefly>=0.62.0",
     "pyright>=1.1.409",
     "scipy-stubs>=1.15.3.0",
     "typing-extensions>=4.16.0",
-    {include-group = "audit"},
-    {include-group = "benchmarks"},
+    {include-group = "tools"},
     {include-group = "testing"},
 ]
 docs = [
@@ -169,10 +165,10 @@ warn_unused_ignores = true
 pretty = true
 strict = true
 files = ["polars_stats", "tests"]
-# `make typing` passes `.` explicitly, which would otherwise pull in `tools/`. That directory is
-# hand-run operator tooling on top of `mpmath`, which ships no stubs, so `disallow_any_unimported`
-# reports every oracle as returning `Any`. pyright and pyrefly already scope themselves to the
-# same two packages below; this keeps mypy consistent with them.
+# `make typing` passes `.` explicitly, which would otherwise pull in `tools/`. That tree is hand-run
+# operator tooling (the accuracy audit and the benchmark harness) on top of `mpmath`, which ships no
+# stubs, so `disallow_any_unimported` reports every oracle as returning `Any`. pyright and pyrefly
+# already scope themselves to the same two packages below; this keeps mypy consistent with them.
 exclude = ["^tools/"]
 
 [tool.pyright]
@@ -202,11 +198,11 @@ search_path = ["."]
 line-length = 120
 flavor = "mkdocs"
 include = [
-  "benchmarks/**",
   "docs/**",
   "polars_stats/**",
   "src/**",
   "tests/**",
+  "tools/**",
   "README.md",
   "AGENTS.md",
 ]
