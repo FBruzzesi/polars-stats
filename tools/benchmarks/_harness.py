@@ -5,13 +5,13 @@ Every cell is measured in one of three parameter `Regime`s. They are different c
 
 The regime is part of `Case.id` and a column of every report so the two cannot be diffed by accident.
 
-This module is not runnable; run ``uv run --group benchmarks benchmarks/run.py`` instead.
+This module is not runnable; run ``uv run --group tools -m tools.benchmarks.run`` instead.
 """
 
 # ruff: noqa: T201
 # pyright: reportUnknownParameterType=false
 # `ScipyFrozen` aliases scipy-stubs' generic frozen types, whose own arguments are partly Unknown.
-# `[tool.pyright] include` keeps benchmarks/ out of `make typing`, but an editor still checks it.
+# `[tool.pyright] include` keeps tools/ out of `make typing`, but an editor still checks it.
 from __future__ import annotations
 
 import gc
@@ -19,14 +19,14 @@ import json
 import multiprocessing as mp
 import pickle
 import platform
-import threading
+import resource
+import sys
 import time
-from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple, Protocol, TypedDict, TypeVar, cast, get_args
+from dataclasses import asdict, dataclass, field, replace
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple, TypedDict, TypeVar, cast, get_args
 
 import numpy as np
 import polars as pl
-import psutil  # type: ignore[import-untyped]
 import scipy
 from cyclopts import Parameter
 from rich.console import Console
@@ -55,7 +55,15 @@ if TYPE_CHECKING:
 
     Call: TypeAlias = Callable[[], "Outcome"]
     DistFactory: TypeAlias = Callable[["Params"], tuple[Distribution, ScipyFrozen]]
-    MemoryReply: TypeAlias = "_PeakMiB | _ChildFailure"
+    Contender: TypeAlias = Callable[["Comparison", "Case"], "Call"]
+    """Builds the zero-argument call one competitor runs for one case.
+
+    A builder, not a prepared call: input construction happens when the builder runs, so it is
+    outside the returned closure and charged to neither time nor peak memory. Registered by name in
+    `CONTENDERS`, because the name is what crosses into the memory subprocess, not the closure.
+    """
+    MemoryReply: TypeAlias = "float | str"
+    """What the memory subprocess posts back: its peak in MiB, or the `repr` of what killed it."""
 
 
 Method = Literal[
@@ -106,9 +114,10 @@ _PARAM_STREAM = 0x9E37
 REFERENCE_CONTENDER = "polars_stats"
 """The contender every ratio is taken against, and the one `matches` compares the others to."""
 
-SCHEMA_VERSION = 3
-"""`json` report schema. 3 nested the per-contender numbers under `measurements` and stamps
-`methods`; 2 added the regime axis, per-cell iteration counts and nullable peak memory."""
+SCHEMA_VERSION = 4
+"""`json` report schema. 4 replaced the single `ratio` with a `ratios` map keyed by challenger; 3
+nested the per-contender numbers under `measurements` and stamps `methods`; 2 added the regime axis,
+per-cell iteration counts and nullable peak memory."""
 
 # statrs and scipy implement the same special functions with different algorithms, so agreement is to
 # high relative precision, not bit-equality. The scipy-parity suite owns the tight per-method bounds.
@@ -116,9 +125,6 @@ _MATCH_RTOL = 1e-5
 _MATCH_ATOL = 1e-12
 
 _MIB = 1024.0 * 1024.0
-
-_POLL_INTERVAL_S = 5e-4
-"""Short enough to catch the transient peak of `samples`, long enough not to peg a core."""
 
 _CHILD_REPLY_TIMEOUT_S = 600.0
 _CHILD_JOIN_TIMEOUT_S = 30.0
@@ -379,7 +385,7 @@ class Sweep:
     benchmarked once per `rows` value; `samples` runs the full `rows` x `n_samples` product.
 
     This is also the CLI's option surface: `run.py` flattens it, so the defaults here are the
-    defaults a bare `benchmarks/run.py` uses.
+    defaults a bare `-m tools.benchmarks.run` uses.
     """
 
     rows: Annotated[tuple[int, ...], _MULTI, Parameter(help="Row counts to sweep over.")] = (1_000_000,)
@@ -425,14 +431,6 @@ class Sweep:
                         )
 
 
-class Timing(NamedTuple):
-    """Median and sample standard deviation (ms) of a timed loop, and how many runs it managed."""
-
-    p50_ms: float
-    std_ms: float
-    iterations: int
-
-
 class MeasurementPayload(TypedDict):
     """One contender's numbers as they appear in a `json` report."""
 
@@ -470,7 +468,7 @@ class Result:
     """One case's outcome: a `Measurement` per contender, plus the correctness verdict.
 
     Keyed by contender name rather than holding a fixed pair of fields, so a ratio is always taken
-    explicitly against a named reference.
+    explicitly against `REFERENCE_CONTENDER`.
     """
 
     case: Case
@@ -479,24 +477,13 @@ class Result:
     measurements: Mapping[str, Measurement]
     matches: bool
 
-    def ratio(self, contender: str, *, reference: str = REFERENCE_CONTENDER) -> float:
-        """`contender`'s median time over `reference`'s: > 1 means the reference is faster."""
-        base = self.measurements[reference].p50_ms
+    def ratio(self, contender: str) -> float:
+        """`contender`'s median time over the reference's: > 1 means the reference is faster."""
+        base = self.measurements[REFERENCE_CONTENDER].p50_ms
         return self.measurements[contender].p50_ms / base if base > 0 else float("nan")
 
 
-class Contender(Protocol):
-    """Builds the zero-argument call that one competitor runs for one case.
-
-    A builder, not a prepared call: input construction happens when the builder runs, so it is
-    outside the returned closure and charged to neither time nor peak memory. Registered by name in
-    `CONTENDERS`, because the name is what crosses into the memory subprocess, not the closure.
-    """
-
-    def __call__(self, comp: Comparison, case: Case, /) -> Call: ...
-
-
-def _time_call(call: Call, budget: Budget) -> tuple[Outcome, Timing]:
+def _time_call(call: Call, budget: Budget) -> tuple[Outcome, Measurement]:
     """Time `call` under `budget`, returning the warmup's output for the correctness gate.
 
     The warmup is excluded from the reported numbers, and its duration plans the iteration count. A
@@ -526,39 +513,29 @@ def _time_call(call: Call, budget: Budget) -> tuple[Outcome, Timing]:
 
     timed_s = durations_s[:measured]
     std_s = float(np.std(timed_s, ddof=1)) if measured > 1 else float("nan")
-    return outcome, Timing(float(np.median(timed_s)) * 1_000.0, std_s * 1_000.0, measured)
+    return outcome, Measurement(float(np.median(timed_s)) * 1_000.0, std_s * 1_000.0, measured)
+
+
+def _rss_peak_bytes() -> int:
+    """The process's resident-set high-water mark so far. macOS reports it in bytes, Linux in KiB."""
+    peak: int = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak if sys.platform == "darwin" else peak * 1024
 
 
 def _peak_mib(call: Call) -> float:
-    """Peak resident-set growth in MiB during a single `call()`, over a gc-collected baseline.
+    """Peak resident-set growth in MiB during a single `call()`, from the kernel's own high-water mark.
 
-    The result is held alive until the final reading so the output buffer counts toward the peak.
-    Same-machine relative numbers, not absolute footprints: the allocator may not release pages
-    between contenders.
+    Runs in a fresh subprocess, so the mark before the call is what the imports left behind and the
+    mark after it is the call's true peak, with no sampling gap. A call whose peak stays under the
+    import mark reads `0.0`. The result is held alive until the final reading so the output buffer
+    counts toward the peak. Same-machine relative numbers, not absolute footprints.
     """
-    proc = psutil.Process()
     gc.collect()
-    baseline: int = proc.memory_info().rss
-    peak: int = baseline
-    stop = threading.Event()
-
-    def poll() -> None:
-        nonlocal peak
-        while not stop.is_set():
-            peak = max(peak, proc.memory_info().rss)
-            time.sleep(_POLL_INTERVAL_S)
-
-    sampler = threading.Thread(target=poll, daemon=True)
-    sampler.start()
-    try:
-        result = call()
-    finally:
-        stop.set()
-        sampler.join()
-    peak = max(peak, proc.memory_info().rss)
+    before = _rss_peak_bytes()
+    result = call()
+    after = _rss_peak_bytes()
     del result
-    gc.collect()
-    return max(0.0, (peak - baseline) / _MIB)
+    return max(0.0, (after - before) / _MIB)
 
 
 def _sized_frame(rows: int) -> pl.LazyFrame:
@@ -586,9 +563,9 @@ def _evaluation_points(case: Case, frozen: ScipyFrozen) -> Array:
     own seeded draws. Feeding an inverse the support draws instead puts almost every row on the
     null-outside-``[0, 1]`` path, which measures the guard rather than the algorithm.
 
-    These take the plain int seed rather than `_scipy_generator`: this is input construction, outside
-    every timed closure, so only its reproducibility matters. The length is asserted because scipy
-    requires the evaluation point to broadcast against `column` parameters.
+    `rvs` takes the plain int seed here, unlike the timed samplers in `_scipy_call`: this is input
+    construction, outside every timed closure, so only its reproducibility matters. The length is
+    asserted because scipy requires the evaluation point to broadcast against `column` parameters.
     """
     match case.spec.value_input:
         case "quantile":
@@ -639,20 +616,6 @@ def _polars_stats_call(comp: Comparison, case: Case) -> Call:
     return lambda: lf.select(s=expr).collect(engine="streaming")
 
 
-def _scipy_generator(seed: int) -> np.random.Generator:
-    """The RNG scipy's samplers are handed, which is what keeps the sampler cells comparable.
-
-    Passing `random_state=<int>` instead makes scipy build a legacy `RandomState` per call and draw
-    from MT19937, while our Rust side draws from `Pcg64Mcg` (`src/rng.rs`). That is a 1.1x to 2.4x
-    handicap depending on the distribution, and it is an artefact of the seed's *type*, not of the
-    API a scipy user writes. A `Generator` puts both sides on the same PCG family.
-
-    Built per call, not once per cell, so scipy pays the same construct-from-seed cost our side does
-    and every timed iteration still draws identical values. Construction is ~3 us.
-    """
-    return np.random.default_rng(seed)
-
-
 def _scipy_call(comp: Comparison, case: Case) -> Call:
     """The frozen distribution's matching method on NumPy arrays."""
     params = _draw_params(comp, regime=case.regime, rows=case.rows, seed=case.seed)
@@ -667,18 +630,20 @@ def _scipy_call(comp: Comparison, case: Case) -> Call:
         case "moment":
             return cast("Call", getattr(frozen, attr))
         case "sampler":
+            # A `Generator` per call, never `random_state=<int>`: an int makes scipy draw from a legacy
+            # MT19937 `RandomState`, a 1.1x to 2.4x handicap against our `Pcg64Mcg` (README, "RNG family").
             seed = case.seed
             if not spec.multi_draw:
                 rows = case.rows
-                return lambda: frozen.rvs(size=rows, random_state=_scipy_generator(seed))
+                return lambda: frozen.rvs(size=rows, random_state=np.random.default_rng(seed))
             if case.regime == "column":
                 # `(rows, draws)` cannot broadcast against length-`rows` parameters, only
                 # `(draws, rows)` can. The transpose back is a view, so scipy never materialises the
                 # row-major layout the polars_stats side returns.
                 transposed = (case.draws_per_row, case.rows)
-                return lambda: frozen.rvs(size=transposed, random_state=_scipy_generator(seed)).T
+                return lambda: frozen.rvs(size=transposed, random_state=np.random.default_rng(seed)).T
             size = (case.rows, case.draws_per_row)
-            return lambda: frozen.rvs(size=size, random_state=_scipy_generator(seed))
+            return lambda: frozen.rvs(size=size, random_state=np.random.default_rng(seed))
         case _:
             _unreachable(spec.kind)
 
@@ -763,6 +728,10 @@ def _check_gate_can_reject() -> None:
     reports `ok` for every cell forever. Nothing else in the repo exercises it, so it is checked here
     on the same terms as the `METHOD_SPECS` table above -- at import, not mid-sweep. The positive
     case is part of the check on purpose, since a gate stuck on `False` would satisfy the rest.
+
+    It stays here rather than in `tests/` on purpose: a test would import this module and drag scipy,
+    cyclopts and rich into the `testing` group, which the `tools` group comment in `pyproject.toml`
+    forbids.
     """
     value = Case("_check", "cdf", "scalar", 3, None, 0)
     ok = pl.DataFrame({"s": [0.25, 0.5, 0.75]})
@@ -785,20 +754,12 @@ def _check_gate_can_reject() -> None:
 _check_gate_can_reject()
 
 
-class _PeakMiB(NamedTuple):
-    value: float
-
-
-class _ChildFailure(NamedTuple):
-    detail: str
-
-
 def _peak_memory_worker(queue: mp.Queue[MemoryReply], comp: Comparison, case: Case, contender: str) -> None:
     """Subprocess entrypoint: rebuild `contender`'s call from the registry and post back its peak."""
     try:
-        queue.put(_PeakMiB(_peak_mib(CONTENDERS[contender](comp, case))))
+        queue.put(_peak_mib(CONTENDERS[contender](comp, case)))
     except BaseException as exc:  # noqa: BLE001 - surface any child failure to the parent as a message
-        queue.put(_ChildFailure(repr(exc)))
+        queue.put(repr(exc))
 
 
 def _isolated_peak_mib(comp: Comparison, case: Case, contender: str) -> float:
@@ -817,9 +778,9 @@ def _isolated_peak_mib(comp: Comparison, case: Case, contender: str) -> float:
         if proc.is_alive():
             proc.kill()
             proc.join(timeout=_CHILD_JOIN_TIMEOUT_S)
-    if isinstance(reply, _PeakMiB):
-        return reply.value
-    msg = f"memory subprocess for {case.id} ({contender}) failed: {reply.detail}"
+    if isinstance(reply, float):
+        return reply
+    msg = f"memory subprocess for {case.id} ({contender}) failed: {reply}"
     raise RuntimeError(msg)
 
 
@@ -830,7 +791,7 @@ def _measure(comp: Comparison, case: Case, *, budget: Budget, memory: bool) -> R
     extra time to produce it.
     """
     outcomes: dict[str, Outcome] = {}
-    timings: dict[str, Timing] = {}
+    timings: dict[str, Measurement] = {}
     for name, build in CONTENDERS.items():
         outcomes[name], timings[name] = _time_call(build(comp, case), budget)
     reference_out = outcomes[REFERENCE_CONTENDER]
@@ -841,7 +802,7 @@ def _measure(comp: Comparison, case: Case, *, budget: Budget, memory: bool) -> R
     return Result(
         case=case,
         label=comp.label(case.method),
-        measurements={name: Measurement(*timing, peak_mib=peaks.get(name)) for name, timing in timings.items()},
+        measurements={name: replace(timing, peak_mib=peaks.get(name)) for name, timing in timings.items()},
         matches=bool(verdicts) and all(verdicts),
     )
 
@@ -1077,7 +1038,7 @@ class ResultPayload(TypedDict):
     rows: int
     n_samples: int | None
     measurements: dict[str, MeasurementPayload]
-    ratio: float
+    ratios: dict[str, float]
     matches: bool
 
 
@@ -1093,7 +1054,6 @@ class ReportPayload(TypedDict):
 
 def _render_json(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> str:
     """Machine-readable report: schema, environment, sweep, and one object per cell."""
-    challenger = CHALLENGERS[0]
     payload: ReportPayload = {
         "schema": SCHEMA_VERSION,
         "distribution": comp.name,
@@ -1113,7 +1073,7 @@ def _render_json(comp: Comparison, results: Sequence[Result], sweep: Sweep) -> s
                 "rows": result.case.rows,
                 "n_samples": result.case.n_samples,
                 "measurements": {name: m.payload for name, m in result.measurements.items()},
-                "ratio": result.ratio(challenger),
+                "ratios": {name: result.ratio(name) for name in CHALLENGERS},
                 "matches": result.matches,
             }
             for result in results

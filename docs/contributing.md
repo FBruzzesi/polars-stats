@@ -21,7 +21,7 @@ Prefer the `Makefile` targets so flags stay consistent with CI:
 make test       # POLARS_MAX_THREADS=4 uv run --group testing pytest tests
 make typing     # pyrefly + pyright + mypy (all three, as in CI)
 make lint       # prek hooks (ruff, rumdl, ryl) + cargo fmt (nightly) + clippy
-make benchmark  # polars_stats vs scipy comparison report (benchmarks/)
+make benchmark  # polars_stats vs scipy comparison report (tools/benchmarks/)
 ```
 
 `make test` caps `POLARS_MAX_THREADS=4` on purpose: it forces multi-thread, multi-chunk execution so the chunk- and
@@ -63,9 +63,9 @@ polars-stats/
 │   ├── distributions/<name>/ # one folder per distribution, one file per method
 │   ├── property/             # hypothesis-based invariant tests
 │   └── scipy_parity/         # scipy reference-oracle tests
-├── tools/
-│   └── accuracy_audit.py     # the mpmath tail-accuracy audit (`make audit`)
-├── benchmarks/               # internal benchmark harness (not part of the docs)
+├── tools/                    # hand-run tooling, outside the package and the test suite
+│   ├── accuracy/audit.py     # the mpmath tail-accuracy audit (`make audit`)
+│   └── benchmarks/           # the polars_stats vs scipy harness (`make benchmark`)
 └── docs/                     # this documentation, one directory per Diataxis quadrant
 ```
 
@@ -96,10 +96,10 @@ Only `polars>=1.15`. No other runtime dependencies.
 
 ### Dev and CI tooling
 
-* Dev dependencies are grouped in `pyproject.toml` (`testing`, `benchmarks`, `typing`, `docs`) and installed with
+* Dev dependencies are grouped in `pyproject.toml` (`testing`, `tools`, `typing`, `docs`) and installed with
     `uv sync --group ...`.
 * Tests run under `pytest` with `scipy` + `numpy` as the parity oracle (`tests/scipy_parity/`) and `hypothesis` for
-    property tests; the `benchmarks/` comparison report measures wall-clock time and peak memory against `scipy.stats`.
+    property tests; the `tools/benchmarks/` comparison report measures wall-clock time and peak memory against `scipy.stats`.
 * Python is checked by `ruff` (lint + format) and three type checkers in CI (`mypy`, `pyright`, `pyrefly`);
     Rust by `cargo fmt` (nightly) and `cargo clippy --all-features --all-targets -- -D warnings`.
     Prose and config are linted by `rumdl` (Markdown), `ryl` (YAML), `codespell`, `typos`, and `blacken-docs`, wired
@@ -305,7 +305,7 @@ tolerance is the search's convergence rather than a formula's: state the `1e-6` 
 low-quantile tail, and panicking, hanging *and* saturating for `Beta`. A bounded solve with every Newton proposal
 clamped into a bisection bracket is the pattern to copy.
 
-**Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy_audit.py`. A
+**Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy/audit.py`. A
 distribution absent from the audit is unaudited, exactly as one absent from `tests/property/_specs.py` is untested.
 Never bound the sweep by what the implementation is known to be bad at: that is the defect's own shape used as a bound
 on the instrument. Sweep extreme *parameters* too, not only extreme inputs.

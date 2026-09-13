@@ -1,8 +1,8 @@
 """Tail-accuracy audit of the shipped distributions against an `mpmath` oracle at 50 digits.
 
     make audit                                                        # full sweep + report
-    uv run --group audit tools/accuracy_audit.py beta binomial        # a subset of distributions
-    uv run --group audit tools/accuracy_audit.py --samples 200        # deeper random sampling
+    uv run --group tools -m tools.accuracy.audit beta binomial        # a subset of distributions
+    uv run --group tools -m tools.accuracy.audit --samples 200        # deeper random sampling
 
 The test suite cannot find what this looks for, by construction: parity grids are finite and
 "reasonable", `scipy` is not a valid oracle in the tails (its own `logcdf` / `logsf` are naive for
@@ -37,22 +37,24 @@ sigma)`, `t / rate`), so the evaluation point is representable at full precision
 measures the library's arithmetic rather than the rounding of a badly-chosen literal.
 """
 
-# ruff: noqa: T201, S311, INP001
+# ruff: noqa: T201, S311
 
 from __future__ import annotations
 
-import argparse
 import math
 import random
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import mpmath as mp
 import polars as pl
+from cyclopts import App, Parameter
+from rich.console import Console
+from rich.table import Table
 
 from polars_stats import (
     Bernoulli,
@@ -91,6 +93,7 @@ SUBNORMAL_ULPS = 2
 
 DEFAULT_SEED = 20260807
 DEFAULT_SAMPLES = 40
+DEFAULT_OUTPUT = Path("audit-findings.md")
 
 CLOSED_FORM_RTOL = 1e-12
 """Elementary closed forms: arithmetic, `exp` / `log` of a well-scaled argument."""
@@ -755,6 +758,11 @@ def _discrete_uniform_n(params: Params) -> int:
     return int(params[1]) - int(params[0]) + 1
 
 
+def discrete_uniform_midpoint(params: Params, _x: float) -> mp.mpf:
+    """`(min + max) / 2` in exact arithmetic: the mean and the median alike."""
+    return (mp.mpf(int(params[0])) + mp.mpf(int(params[1]))) / 2
+
+
 def discrete_uniform_pmf(params: Params, x: float) -> mp.mpf:
     """`1 / N` on the inclusive integer support `{min, ..., max}`, `0` off it."""
     lo, hi = int(params[0]), int(params[1])
@@ -820,16 +828,7 @@ def discrete_uniform_points(params: Params, rng: random.Random, count: int) -> l
     return points
 
 
-# Shared moment oracles, lifted into the standard signature.
-
-
-def constant(value: Callable[[Params], mp.mpf]) -> Oracle:
-    """Lift a parameter-only closed form into the `(params, x)` oracle signature."""
-
-    def oracle(params: Params, _x: float) -> mp.mpf:
-        return value(params)
-
-    return oracle
+# Shared moment oracles. A parameter-only closed form is spelled `lambda p, _x: ...` inline.
 
 
 def sqrt_of(oracle: Oracle) -> Oracle:
@@ -1029,7 +1028,6 @@ class DistributionSpec:
     name: str
     build: Callable[[Sequence[pl.Expr]], _UnivariateDistribution]
     param_names: tuple[str, ...]
-    param_dtypes: tuple[pl.DataType, ...]
     params: tuple[Params, ...]
     methods: tuple[MethodSpec, ...]
 
@@ -1094,15 +1092,13 @@ def build_registry() -> tuple[DistributionSpec, ...]:
     A distribution missing from here is not audited, in exactly the same way a distribution missing
     from `tests/property/_specs.py` is silently untested.
     """
-    f64 = (pl.Float64(), pl.Float64())
     # Shared between the DiscreteUniform spec and its Int64-edge twin below, which audits the same
     # closed forms at bounds where `min + max` overflows.
-    discrete_uniform_midpoint = constant(lambda p: (mp.mpf(int(p[0])) + mp.mpf(int(p[1]))) / 2)
     discrete_uniform_moments = moments(
         discrete_uniform_midpoint,
-        constant(lambda p: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12),
+        lambda p, _x: (mp.mpf(_discrete_uniform_n(p)) ** 2 - 1) / 12,
         discrete_uniform_midpoint,
-        constant(lambda p: mp.log(_discrete_uniform_n(p))),
+        lambda p, _x: mp.log(_discrete_uniform_n(p)),
         CLOSED_FORM_RTOL,
     )
     return (
@@ -1110,7 +1106,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Normal",
             build=lambda p: Normal(mu=p[0], sigma=p[1]),
             param_names=("mu", "sigma"),
-            param_dtypes=f64,
             params=((0.0, 1.0), (0.0, 1e-8), (0.0, 1e8), (5.0, 2.0), (-3.0, 0.5), (1e6, 1e3)),
             methods=(
                 MethodSpec("pdf", normal_pdf, SPECIAL_RTOL, normal_points),
@@ -1122,9 +1117,9 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", normal_ppf, SPECIAL_RTOL, quantile_points),
                 MethodSpec("isf", normal_isf, SPECIAL_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: mp.mpf(p[0])),
-                    constant(lambda p: mp.mpf(p[1]) ** 2),
-                    constant(lambda p: mp.mpf(p[0])),
+                    lambda p, _x: mp.mpf(p[0]),
+                    lambda p, _x: mp.mpf(p[1]) ** 2,
+                    lambda p, _x: mp.mpf(p[0]),
                     normal_entropy,
                     CLOSED_FORM_RTOL,
                 ),
@@ -1134,7 +1129,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="LogNormal",
             build=lambda p: LogNormal(mu=p[0], sigma=p[1]),
             param_names=("mu", "sigma"),
-            param_dtypes=f64,
             # `(0.0, 1e-4)` is here because the moments cancel there, not because the tails do: the
             # literal `exp(sigma^2) - 1` in `variance` was only good to `1.1e-08` relative at that
             # sigma, and no parameter set in this list was small enough to see it. A sweep that only
@@ -1150,12 +1144,10 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", lognormal_ppf, SPECIAL_RTOL, quantile_points),
                 MethodSpec("isf", lognormal_isf, SPECIAL_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: mp.e ** (mp.mpf(p[0]) + mp.mpf(p[1]) ** 2 / 2)),
-                    constant(
-                        lambda p: (mp.e ** mp.mpf(p[1]) ** 2 - 1) * mp.e ** (2 * mp.mpf(p[0]) + mp.mpf(p[1]) ** 2)
-                    ),
-                    constant(lambda p: mp.e ** mp.mpf(p[0])),
-                    constant(lambda p: mp.mpf(p[0]) + mp.log(2 * mp.pi * mp.e * mp.mpf(p[1]) ** 2) / 2),
+                    lambda p, _x: mp.e ** (mp.mpf(p[0]) + mp.mpf(p[1]) ** 2 / 2),
+                    lambda p, _x: (mp.e ** mp.mpf(p[1]) ** 2 - 1) * mp.e ** (2 * mp.mpf(p[0]) + mp.mpf(p[1]) ** 2),
+                    lambda p, _x: mp.e ** mp.mpf(p[0]),
+                    lambda p, _x: mp.mpf(p[0]) + mp.log(2 * mp.pi * mp.e * mp.mpf(p[1]) ** 2) / 2,
                     CLOSED_FORM_RTOL,
                 ),
             ),
@@ -1164,7 +1156,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Exponential",
             build=lambda p: Exponential(rate=p[0]),
             param_names=("rate",),
-            param_dtypes=(pl.Float64(),),
             params=((1.0,), (1e-8,), (1e8,), (0.3,), (100.0,)),
             methods=(
                 MethodSpec("pdf", exponential_pdf, CLOSED_FORM_RTOL, exponential_points),
@@ -1176,10 +1167,10 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", exponential_ppf, CLOSED_FORM_RTOL, quantile_points),
                 MethodSpec("isf", exponential_isf, CLOSED_FORM_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: 1 / mp.mpf(p[0])),
-                    constant(lambda p: cast("mp.mpf", 1 / mp.mpf(p[0]) ** 2)),
-                    constant(lambda p: mp.log(2) / mp.mpf(p[0])),
-                    constant(lambda p: 1 - mp.log(mp.mpf(p[0]))),
+                    lambda p, _x: 1 / mp.mpf(p[0]),
+                    lambda p, _x: cast("mp.mpf", 1 / mp.mpf(p[0]) ** 2),
+                    lambda p, _x: mp.log(2) / mp.mpf(p[0]),
+                    lambda p, _x: 1 - mp.log(mp.mpf(p[0])),
                     CLOSED_FORM_RTOL,
                 ),
             ),
@@ -1188,7 +1179,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Uniform",
             build=lambda p: Uniform(min=p[0], max=p[1]),
             param_names=("lo", "hi"),
-            param_dtypes=f64,
             # `(-1.0, 0.0)` and `(-1e10, 1.0)` are here for `isf`, and only for `isf`: they are the
             # spans where the upper end of the answer sits at or near *zero*, so an absolutely
             # quantised quantile becomes a relatively wrong result. `Uniform(-1, 0).isf(1e-17)`
@@ -1212,10 +1202,10 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", uniform_ppf, CLOSED_FORM_RTOL, quantile_points),
                 MethodSpec("isf", uniform_isf, CLOSED_FORM_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: (mp.mpf(p[0]) + mp.mpf(p[1])) / 2),
-                    constant(lambda p: (mp.mpf(p[1]) - mp.mpf(p[0])) ** 2 / 12),
-                    constant(lambda p: (mp.mpf(p[0]) + mp.mpf(p[1])) / 2),
-                    constant(lambda p: mp.log(mp.mpf(p[1]) - mp.mpf(p[0]))),
+                    lambda p, _x: (mp.mpf(p[0]) + mp.mpf(p[1])) / 2,
+                    lambda p, _x: (mp.mpf(p[1]) - mp.mpf(p[0])) ** 2 / 12,
+                    lambda p, _x: (mp.mpf(p[0]) + mp.mpf(p[1])) / 2,
+                    lambda p, _x: mp.log(mp.mpf(p[1]) - mp.mpf(p[0])),
                     CLOSED_FORM_RTOL,
                 ),
             ),
@@ -1224,7 +1214,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Bernoulli",
             build=lambda p: Bernoulli(p=p[0]),
             param_names=("p",),
-            param_dtypes=(pl.Float64(),),
             # `1e-17` sits in the one gap the rest of this list leaves: small enough that `1 - p`
             # rounds to exactly `1.0` (which `1e-16` does not), yet large enough that the quantile
             # grid can get *below* it (which `1e-300` does not). Both conditions are needed to see
@@ -1250,8 +1239,8 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", bernoulli_ppf, CLOSED_FORM_RTOL, quantile_points),
                 MethodSpec("isf", bernoulli_isf, CLOSED_FORM_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: mp.mpf(p[0])),
-                    constant(lambda p: mp.mpf(p[0]) * (1 - mp.mpf(p[0]))),
+                    lambda p, _x: mp.mpf(p[0]),
+                    lambda p, _x: mp.mpf(p[0]) * (1 - mp.mpf(p[0])),
                     at_median(bernoulli_ppf),
                     bernoulli_entropy,
                     CLOSED_FORM_RTOL,
@@ -1262,7 +1251,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Beta",
             build=lambda p: Beta(a=p[0], b=p[1]),
             param_names=("a", "b"),
-            param_dtypes=f64,
             params=(
                 (2.0, 3.0),
                 (200.0, 2.0),
@@ -1285,15 +1273,13 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("isf", beta_isf, SPECIAL_RTOL, survival_points, seeded_oracle=True),
                 *override(
                     moments(
-                        constant(lambda p: mp.mpf(p[0]) / (mp.mpf(p[0]) + mp.mpf(p[1]))),
-                        constant(
-                            lambda p: (
-                                mp.mpf(p[0])
-                                * mp.mpf(p[1])
-                                / ((mp.mpf(p[0]) + mp.mpf(p[1])) ** 2 * (mp.mpf(p[0]) + mp.mpf(p[1]) + 1))
-                            )
+                        lambda p, _x: mp.mpf(p[0]) / (mp.mpf(p[0]) + mp.mpf(p[1])),
+                        lambda p, _x: (
+                            mp.mpf(p[0])
+                            * mp.mpf(p[1])
+                            / ((mp.mpf(p[0]) + mp.mpf(p[1])) ** 2 * (mp.mpf(p[0]) + mp.mpf(p[1]) + 1))
                         ),
-                        constant(lambda _p: mp.mpf(0)),
+                        lambda _p, _x: mp.mpf(0),
                         beta_entropy,
                         SPECIAL_RTOL,
                     ),
@@ -1305,21 +1291,20 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Binomial",
             build=lambda p: Binomial(n=p[0], p=p[1]),
             param_names=("n", "p"),
-            param_dtypes=(pl.Int64(), pl.Float64()),
             # `n` tops out at 5000 because the *oracle* does: `betainc` at balanced huge shapes is
             # where mpmath's hypergeometric evaluation blows up (0.04 s at `n = 5000`, 2.9 s at
             # 10000, 10 s at 20000, no return in useful time at 100000), and an audit that cannot
             # finish is an audit nobody runs. Every qualitative regime is still covered: tiny `p`,
             # `p` near 1, both degenerate endpoints, and a large `n` with a small `p`.
             params=(
-                (10.0, 0.5),
-                (1000.0, 0.5),
-                (5000.0, 0.001),
-                (50.0, 1e-8),
-                (1000.0, 0.999),
-                (10.0, 0.0),
-                (10.0, 1.0),
-                (5000.0, 0.5),
+                (10, 0.5),
+                (1000, 0.5),
+                (5000, 0.001),
+                (50, 1e-8),
+                (1000, 0.999),
+                (10, 0.0),
+                (10, 1.0),
+                (5000, 0.5),
             ),
             methods=(
                 MethodSpec("pmf", binomial_pmf, SPECIAL_RTOL, discrete_points),
@@ -1332,8 +1317,8 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("isf", binomial_isf, DISCRETE_PPF_RTOL, survival_points),
                 *override(
                     moments(
-                        constant(lambda p: mp.mpf(p[0]) * mp.mpf(p[1])),
-                        constant(lambda p: mp.mpf(p[0]) * mp.mpf(p[1]) * (1 - mp.mpf(p[1]))),
+                        lambda p, _x: mp.mpf(p[0]) * mp.mpf(p[1]),
+                        lambda p, _x: mp.mpf(p[0]) * mp.mpf(p[1]) * (1 - mp.mpf(p[1])),
                         at_median(binomial_ppf),
                         binomial_entropy,
                         SPECIAL_RTOL,
@@ -1346,7 +1331,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="Geometric",
             build=lambda p: Geometric(p=p[0]),
             param_names=("p",),
-            param_dtypes=(pl.Float64(),),
             # `0.5` makes every power-of-two quantile boundary (`q = 0.75` against `p = 0.5`) land
             # exactly at oracle precision, which is where a discrete inverse most wants to slip an
             # off-by-one; `1e-8` is the smallest audited `p` because smaller values push the inverse
@@ -1371,8 +1355,8 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 MethodSpec("ppf", geometric_ppf, DISCRETE_PPF_RTOL, quantile_points),
                 MethodSpec("isf", geometric_isf, DISCRETE_PPF_RTOL, survival_points),
                 *moments(
-                    constant(lambda p: 1 / mp.mpf(p[0])),
-                    constant(lambda p: (1 - mp.mpf(p[0])) / mp.mpf(p[0]) ** 2),
+                    lambda p, _x: 1 / mp.mpf(p[0]),
+                    lambda p, _x: (1 - mp.mpf(p[0])) / mp.mpf(p[0]) ** 2,
                     at_median(geometric_ppf),
                     geometric_entropy,
                     CLOSED_FORM_RTOL,
@@ -1383,7 +1367,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="DiscreteUniform",
             build=lambda p: DiscreteUniform(min=p[0], max=p[1]),
             param_names=("min", "max"),
-            param_dtypes=(pl.Int64(), pl.Int64()),
             # Both bounds inclusive. The regimes cover negative bounds, a one-point mass (`min ==
             # max`), a two-point support, a wide span that stresses the inverse searches, and a
             # support large enough that the log methods have a tail to lose (`1 / N ~ 1e-9`).
@@ -1433,7 +1416,6 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             name="DiscreteUniformI64Edge",
             build=lambda p: DiscreteUniform(min=p[0], max=p[1]),
             param_names=("min", "max"),
-            param_dtypes=(pl.Int64(), pl.Int64()),
             params=(
                 # Narrow and wide on each side. Every pair overflows `min + max` while keeping the
                 # width `max - min + 1` inside `i64::MAX`, which is what the validator itself checks:
@@ -1549,10 +1531,9 @@ def run_query(spec: DistributionSpec, method: MethodSpec, params: Params, xs: Se
     `value_keyed_test.py::test_value_keyed_scalar_fast_path_matches_per_row` pins.
     """
     rows = max(len(xs), 1)
-    columns = {
-        name: pl.Series(name, [int(value) if dtype.is_integer() else value] * rows, dtype=dtype)
-        for name, value, dtype in zip(spec.param_names, params, spec.param_dtypes, strict=True)
-    }
+    # `pl.Series` infers `Int64` for an `int` parameter and `Float64` for a `float`, so the sweep spells
+    # integer parameters (`Binomial.n`, the `DiscreteUniform` bounds) as `int`.
+    columns = {name: pl.Series(name, [value] * rows) for name, value in zip(spec.param_names, params, strict=True)}
     dist = spec.build([pl.col(name) for name in spec.param_names])
     if method.points is None:
         return pl.DataFrame(columns).select(result=getattr(dist, method.name)())["result"].to_list()
@@ -1631,7 +1612,7 @@ def audit_method(spec: DistributionSpec, method: MethodSpec, rng: random.Random,
 # Instrument controls.
 
 
-@dataclass
+@dataclass(frozen=True)
 class ControlResult:
     """One instrument self-test and what it observed."""
 
@@ -1639,11 +1620,11 @@ class ControlResult:
     expected_category: str
     observed: Category
     detail: str
-    passed: bool = field(init=False)
 
-    def __post_init__(self) -> None:
-        """Derive `passed` from the observed category, so a caller cannot set the two out of step."""
-        self.passed = self.observed == self.expected_category
+    @property
+    def passed(self) -> bool:
+        """Whether the observed category is the one the control expects."""
+        return self.observed == self.expected_category
 
 
 def run_controls() -> list[ControlResult]:
@@ -1694,8 +1675,11 @@ def worst_relative(probes: Iterable[Probe]) -> str:
     return f"{max(finite):.3g}" if finite else "-"
 
 
-def summarise(probes: Sequence[Probe]) -> list[str]:
-    """The per-(distribution, method) summary table: category counts and worst relative error.
+SUMMARY_HEADERS = ("Distribution", "Method", "Probes", "Worst rel. error", "Excused (worst)", *CATEGORIES)
+
+
+def summary_rows(probes: Sequence[Probe]) -> list[tuple[str, ...]]:
+    """One row per (distribution, method): probe count, worst relative error, excused count, category counts.
 
     The worst-error column counts only probes the *relative* check judged. A correctly-rounded
     subnormal keeps a huge relative number (a subnormal has one or two significant digits left), so
@@ -1703,10 +1687,7 @@ def summarise(probes: Sequence[Probe]) -> list[str]:
     a reader scanning for trouble finds it in a method that is exact. Those probes get their own
     column instead, where the number means "excused, and here is how far off it looks".
     """
-    lines = [
-        "| Distribution | Method | Probes | Worst rel. error | Excused (worst) | " + " | ".join(CATEGORIES),
-        "| --- | --- | --- | --- | --- | " + " | ".join("---" for _ in CATEGORIES),
-    ]
+    rows: list[tuple[str, ...]] = []
     groups: dict[tuple[str, str], list[Probe]] = {}
     for probe in probes:
         groups.setdefault((probe.distribution, probe.method), []).append(probe)
@@ -1714,9 +1695,32 @@ def summarise(probes: Sequence[Probe]) -> list[str]:
         excused = [p for p in group if p.excused]
         judged = worst_relative(p for p in group if not p.excused)
         absolved = f"{len(excused)} ({worst_relative(excused)})" if excused else "-"
-        counts = [str(sum(p.category == c for p in group)) for c in CATEGORIES]
-        lines.append(f"| {distribution} | `{method}` | {len(group)} | {judged} | {absolved} | " + " | ".join(counts))
+        counts = tuple(str(sum(p.category == c for p in group)) for c in CATEGORIES)
+        rows.append((distribution, method, str(len(group)), judged, absolved, *counts))
+    return rows
+
+
+def summarise(probes: Sequence[Probe]) -> list[str]:
+    """[`summary_rows`] as the report's markdown table."""
+    lines = ["| " + " | ".join(SUMMARY_HEADERS), "| " + " | ".join("---" for _ in SUMMARY_HEADERS)]
+    for distribution, method, *cells in summary_rows(probes):
+        lines.append(f"| {distribution} | `{method}` | " + " | ".join(cells))
     return lines
+
+
+def print_summary(probes: Sequence[Probe]) -> None:
+    """[`summary_rows`] on the terminal, defect counts in red. Nothing for an empty sweep."""
+    if not probes:
+        return
+    table = Table(title="Accuracy audit summary")
+    table.add_column(SUMMARY_HEADERS[0], style="magenta")
+    table.add_column(SUMMARY_HEADERS[1], style="bold cyan")
+    for header in SUMMARY_HEADERS[2:]:
+        table.add_column(header, justify="right")
+    plain = SUMMARY_HEADERS.index("OK") + 1
+    for row in summary_rows(probes):
+        table.add_row(*row[:plain], *(f"[red]{count}[/]" if count != "0" else count for count in row[plain:]))
+    Console().print(table)
 
 
 def worst_per_group(probes: Sequence[Probe], limit: int) -> list[Probe]:
@@ -1754,7 +1758,7 @@ def write_report(path: Path, run: Run) -> int:
     lines = [
         "# Accuracy audit findings",
         "",
-        f"Generated by `make audit` (`tools/accuracy_audit.py`), oracle `mpmath` at {DPS} digits, ",
+        f"Generated by `make audit` (`tools/accuracy/audit.py`), oracle `mpmath` at {DPS} digits, ",
         f"seed `{run.seed}`, `{run.samples}` random probes per (method, parameter set).",
         "",
         f"**{len(probes)} probes, {len(defects)} non-`OK`.**",
@@ -1785,53 +1789,65 @@ def write_report(path: Path, run: Run) -> int:
     return len(defects)
 
 
-KNOWN_HANGS: dict[str, str] = {}
+_STATRS_435 = "statrs #435, inverse_cdf does not terminate in the deep tail"
+
+# `beta.rs` still delegates to statrs' `ContinuousCDF::inverse_cdf`, which does not return for a
+# deep-tail quantile at a large shape (`Beta(200, 2).ppf(1e-100)`, confirmed 2026-09-13 on `main`).
+KNOWN_HANGS: dict[str, str] = {"Beta.ppf": _STATRS_435, "Beta.isf": _STATRS_435}
 """Probes the sweep cannot run because the *library* does not return, keyed `<Distribution>.<method>`.
-
-Empty, and it should stay that way. It held `Beta.ppf` and `Beta.isf` while `statrs`'
-`ContinuousCDF::inverse_cdf` failed to terminate for a deep-tail quantile (>15 s for a *single* row
-at `(a, b) = (200, 2)`, `q` in ~`[1e-150, 1e-60]`); `beta.rs::inverse_cdf` replaced it and the
-entries came out. Anything listed here is recorded in the report with its reason rather than dropped,
-because a silent cap reads as "covered everything". `--skip` overrides the default at the CLI.
-"""
+Recorded in the report with their reason rather than dropped; `--skip` replaces them at the CLI."""
 
 
-def main() -> int:
+app = App(name="audit", help="Tail-accuracy audit of the shipped distributions against an mpmath oracle.")
+
+_MULTI = Parameter(consume_multiple=True, negative_iterable="")
+"""`--skip Beta.ppf Beta.isf`, not one flag per value, and no `--empty-skip` counterpart."""
+
+
+@app.default
+def main(
+    distributions: list[str] | None = None,
+    *,
+    samples: int = DEFAULT_SAMPLES,
+    seed: int = DEFAULT_SEED,
+    output: Path = DEFAULT_OUTPUT,
+    controls: bool = True,
+    skip: Annotated[tuple[str, ...] | None, _MULTI] = None,
+) -> int:
     """Run the audit and write the report.
 
     Exits non-zero if a control misbehaved, if the sweep produced no probes at all, or if any probe
     came back non-`OK`. A gate that always exits `0` is not a gate: the README accuracy notes claim
     this sweep is clean, and that claim is only worth something if a defective run can fail a job.
-    """
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("distributions", nargs="*", help="restrict the sweep (default: all)")
-    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="random probes per method and params")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="RNG seed, so a finding can be re-probed")
-    parser.add_argument("--output", type=Path, default=Path("audit-findings.md"), help="report path")
-    parser.add_argument("--no-controls", action="store_true", help="skip the instrument self-tests")
-    parser.add_argument("--skip", nargs="*", default=None, help="`Dist.method` pairs to skip, replacing the defaults")
-    args = parser.parse_args()
 
-    controls: list[ControlResult] = []
-    if not args.no_controls:
-        controls = run_controls()
-        for control in controls:
+    Arguments:
+        distributions: Restrict the sweep to these distributions, case-insensitive. Defaults to all.
+        samples: Random probes per (method, parameter set).
+        seed: RNG seed, so a finding can be re-probed.
+        output: Report path.
+        controls: Run the two instrument self-tests first; `--no-controls` skips them.
+        skip: `Dist.method` pairs to skip, replacing the `KNOWN_HANGS` defaults.
+    """
+    control_results: list[ControlResult] = []
+    if controls:
+        control_results = run_controls()
+        for control in control_results:
             status = "PASS" if control.passed else "FAIL"
             print(f"[{status}] control {control.name}: {control.observed} ({control.detail})")
-        if not all(c.passed for c in controls):
+        if not all(c.passed for c in control_results):
             print("\nThe instrument is not calibrated; every clean result below would be worthless.")
             return 1
 
     registry = build_registry()
-    if args.distributions:
-        wanted = {name.lower() for name in args.distributions}
+    if distributions:
+        wanted = {name.lower() for name in distributions}
         registry = tuple(spec for spec in registry if spec.name.lower() in wanted)
         if not registry:
             print(f"no distribution matched {sorted(wanted)}")
             return 1
 
-    skipped = KNOWN_HANGS if args.skip is None else dict.fromkeys(args.skip, "requested on the command line")
-    rng = random.Random(args.seed)
+    skipped = KNOWN_HANGS if skip is None else dict.fromkeys(skip, "requested on the command line")
+    rng = random.Random(seed)
     probes: list[Probe] = []
     for spec in registry:
         for method in spec.methods:
@@ -1839,18 +1855,19 @@ def main() -> int:
             if key in skipped:
                 print(f"{spec.name:<12} {method.name:<9} SKIPPED: {skipped[key]}")
                 continue
-            found = audit_method(spec, method, rng, args.samples)
+            found = audit_method(spec, method, rng, samples)
             probes.extend(found)
             defects = sum(p.category != "OK" for p in found)
             flag = f"  <-- {defects} defect rows" if defects else ""
             print(f"{spec.name:<12} {method.name:<9} {len(found):>5} probes{flag}")
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
     covered = {f"{spec.name}.{method.name}" for spec in registry for method in spec.methods}
     total = write_report(
-        args.output, Run(probes, controls, {k: v for k, v in skipped.items() if k in covered}, args.seed, args.samples)
+        output, Run(probes, control_results, {k: v for k, v in skipped.items() if k in covered}, seed, samples)
     )
-    print(f"\n{len(probes)} probes, {total} non-OK. Report written to {args.output}")
+    print_summary(probes)
+    print(f"\n{len(probes)} probes, {total} non-OK. Report written to {output}")
     if not probes:
         print("no probes ran, which is a broken sweep and not a clean one")
         return 1
@@ -1858,4 +1875,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(app())

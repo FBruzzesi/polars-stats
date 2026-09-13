@@ -13,7 +13,7 @@ knowing.
 
 ## How it is checked
 
-`make audit` (`tools/accuracy_audit.py`) sweeps every distribution, every public method and every
+`make audit` (`tools/accuracy/audit.py`) sweeps every distribution, every public method and every
 parameter regime against an [`mpmath`](https://mpmath.org) oracle at 50 digits, including inputs
 many decades past where `scipy` itself saturates. Each probe is *classified* rather than merely
 measured, because a single relative-error number says nothing about the case that matters most: a

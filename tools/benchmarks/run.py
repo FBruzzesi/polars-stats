@@ -1,13 +1,13 @@
 """Entrypoint for the ``polars_stats`` vs ``scipy.stats`` benchmarks.
 
 ```terminal
-uv run --group benchmarks benchmarks/run.py                                   # all distributions and methods
-uv run --group benchmarks benchmarks/run.py normal binomial                   # a subset of distributions
-uv run --group benchmarks benchmarks/run.py --methods sample density ppf      # a subset of methods
-uv run --group benchmarks benchmarks/run.py --regimes scalar column           # a subset of regimes
-uv run --group benchmarks benchmarks/run.py normal --rows 1_000_000 10_000_000 --n-samples 5 10 20
-uv run --group benchmarks benchmarks/run.py --memory                          # also measure peak RSS
-uv run --group benchmarks benchmarks/run.py --format markdown                 # write benchmarks/results/<dist>.md
+uv run --group tools -m tools.benchmarks.run                               # all distributions and methods
+uv run --group tools -m tools.benchmarks.run normal binomial               # a subset of distributions
+uv run --group tools -m tools.benchmarks.run --methods sample density ppf  # a subset of methods
+uv run --group tools -m tools.benchmarks.run --regimes scalar column       # a subset of regimes
+uv run --group tools -m tools.benchmarks.run normal --rows 1_000_000 10_000_000 --n-samples 5 10 20
+uv run --group tools -m tools.benchmarks.run --memory                      # also measure peak RSS
+uv run --group tools -m tools.benchmarks.run --format markdown             # write tools/benchmarks/results/<dist>.md
 ```
 
 The harness does the work; each distribution is one `Comparison` in the registry below.
@@ -25,11 +25,19 @@ import numpy as np
 from cyclopts import App, Parameter
 from scipy.stats import bernoulli, beta, binom, expon, geom, lognorm, norm, randint, uniform
 
-from benchmarks._harness import Comparison, OutputFormat, ParamSpec, Sweep, emit, measure_cases, require_release_build
 from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, Geometric, LogNormal, Normal, Uniform
+from tools.benchmarks._harness import (
+    Comparison,
+    OutputFormat,
+    ParamSpec,
+    Sweep,
+    emit,
+    measure_cases,
+    require_release_build,
+)
 
 if TYPE_CHECKING:
-    from benchmarks._harness import Distribution, Params, Result, ScipyFrozen
+    from tools.benchmarks._harness import Distribution, Params, Result, ScipyFrozen
 
 _ReportFormat = Annotated[OutputFormat, Parameter(name="--format")]
 
@@ -86,59 +94,45 @@ def _geometric(p: Params) -> tuple[Distribution, ScipyFrozen]:
 
 
 # Ordered domains (`min` below `max`) are kept non-overlapping so every draw is a valid
-# parameterisation.
+# parameterisation. Keyed by each comparison's own name, which is also its report file name.
 REGISTRY: dict[str, Comparison] = {
-    "normal": Comparison(
-        name="normal",
-        params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
-        build=_normal,
-    ),
-    "lognormal": Comparison(
-        name="lognormal",
-        params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
-        build=_lognormal,
-    ),
-    "uniform": Comparison(
-        name="uniform",
-        params={"min": ParamSpec(0.0, -1.0, 0.0), "max": ParamSpec(1.0, 0.5, 1.5)},
-        build=_uniform,
-    ),
-    "exponential": Comparison(
-        name="exponential",
-        params={"rate": ParamSpec(1.0, 0.5, 2.0)},
-        build=_exponential,
-    ),
-    "beta": Comparison(
-        name="beta",
-        params={"a": ParamSpec(2.0, 1.0, 4.0), "b": ParamSpec(3.0, 1.0, 4.0)},
-        build=_beta,
-    ),
-    "bernoulli": Comparison(
-        name="bernoulli",
-        params={"p": ParamSpec(0.3, 0.1, 0.9)},
-        build=_bernoulli,
-    ),
-    "binomial": Comparison(
-        name="binomial",
-        params={"n": ParamSpec(10, 5, 20, integer=True), "p": ParamSpec(0.3, 0.1, 0.9)},
-        build=_binomial,
-    ),
-    "discrete_uniform": Comparison(
-        name="discrete_uniform",
-        params={"min": ParamSpec(-2, -5, -1, integer=True), "max": ParamSpec(9, 5, 12, integer=True)},
-        build=_discrete_uniform,
-    ),
-    "geometric": Comparison(
-        name="geometric",
-        params={"p": ParamSpec(0.3, 0.1, 0.9)},
-        build=_geometric,
-    ),
+    comp.name: comp
+    for comp in (
+        Comparison(
+            name="normal",
+            params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
+            build=_normal,
+        ),
+        Comparison(
+            name="lognormal",
+            params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
+            build=_lognormal,
+        ),
+        Comparison(
+            name="uniform",
+            params={"min": ParamSpec(0.0, -1.0, 0.0), "max": ParamSpec(1.0, 0.5, 1.5)},
+            build=_uniform,
+        ),
+        Comparison(name="exponential", params={"rate": ParamSpec(1.0, 0.5, 2.0)}, build=_exponential),
+        Comparison(
+            name="beta",
+            params={"a": ParamSpec(2.0, 1.0, 4.0), "b": ParamSpec(3.0, 1.0, 4.0)},
+            build=_beta,
+        ),
+        Comparison(name="bernoulli", params={"p": ParamSpec(0.3, 0.1, 0.9)}, build=_bernoulli),
+        Comparison(
+            name="binomial",
+            params={"n": ParamSpec(10, 5, 20, integer=True), "p": ParamSpec(0.3, 0.1, 0.9)},
+            build=_binomial,
+        ),
+        Comparison(
+            name="discrete_uniform",
+            params={"min": ParamSpec(-2, -5, -1, integer=True), "max": ParamSpec(9, 5, 12, integer=True)},
+            build=_discrete_uniform,
+        ),
+        Comparison(name="geometric", params={"p": ParamSpec(0.3, 0.1, 0.9)}, build=_geometric),
+    )
 }
-
-if mismatched := {key: comp.name for key, comp in REGISTRY.items() if key != comp.name}:
-    # A key that disagrees with its own name would write to the wrong report file.
-    _msg = f"REGISTRY keys must equal their Comparison.name; mismatched: {mismatched}"
-    raise RuntimeError(_msg)
 
 app = App(name="bench", help="Benchmark polars_stats against scipy.stats.")
 
@@ -166,7 +160,7 @@ def main(
             subprocess per contender per cell, which dominates the runtime of a full sweep.
         fmt: `rich` prints a coloured table to the terminal; `markdown` / `json` write a
             file per distribution to the output directory.
-        output_dir: Where the `markdown` / `json` files are written. Defaults to `benchmarks/results/`.
+        output_dir: Where the `markdown` / `json` files are written. Defaults to `tools/benchmarks/results/`.
     """
     require_release_build()
     names = distributions or list(REGISTRY)

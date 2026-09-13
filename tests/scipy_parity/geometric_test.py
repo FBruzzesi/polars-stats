@@ -80,7 +80,7 @@ def test_linear_tail_underflows_where_the_log_tail_stays_exact(p: float) -> None
     """Past `ln(2**-1074) / log1p(-p)` the linear `sf` is exactly `0.0` and only `log_sf` has digits.
 
     `0.0` is the correctly rounded `sf` there, which is what leaves `log_sf` as the only method that
-    can answer. `tools/accuracy_audit.py::geometric_points` straddles the same crossing; this pins it
+    can answer. `tools/accuracy/audit.py::geometric_points` straddles the same crossing; this pins it
     in CI, which does not run the audit.
     """
     log_failure = math.log1p(-p)
