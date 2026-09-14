@@ -102,6 +102,11 @@ pip install polars-stats
 
 Runtime needs `polars>=1.15` and Python `>=3.10`.
 
+Wheels are `abi3`, so one wheel per platform serves every Python from 3.10 up: manylinux `x86_64` and
+`aarch64`, macOS `x86_64` and `arm64`, Windows `x64`, plus an sdist. Alpine (musl) and Windows on ARM have
+no wheel today even though `polars` publishes one for both; there `pip` falls back to the sdist and needs a
+Rust toolchain. Open an issue if you need either target and it gets added.
+
 ## Documentation
 
 Full docs at [fbruzzesi.github.io/polars-stats](https://fbruzzesi.github.io/polars-stats/): the
