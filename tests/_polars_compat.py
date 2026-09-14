@@ -40,6 +40,13 @@ supported version. When the polars floor reaches 1.36.1 this constant and its ga
 """
 
 
+ENGINE_SELECTABLE = Version("1.36.0") <= PL_VERSION
+"""Whether `LazyFrame.collect` takes an `engine=` argument.
+
+Below this, `collect` ignores it and the engine comes from `POLARS_ENGINE_AFFINITY` alone, so a test
+that needs one specific engine has to fall back to the ambient default.
+"""
+
 PARTITIONED_BROADCAST_AVAILABLE = Version("1.34.0") <= PL_VERSION
 """Whether polars handles a length-1 input *inside* `over` / `group_by().agg()` correctly.
 

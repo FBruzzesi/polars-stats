@@ -14,7 +14,8 @@ from polars_stats import LogNormal
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
 # Parameter and evaluation grids for the parity sweep.
-# Owned by this test category and independent of the per-method functional tests under `tests/distributions/lognormal`.
+# Owned by this test category and independent of the shared behavioural contracts under
+# `tests/distributions/`.
 # `sigma` is kept moderate: the mean / variance grow exponentially in `sigma` and
 # lose absolute precision against scipy past `sigma > 5`.
 _PARAMS = [(0.0, 1.0), (0.5, 0.5), (-1.0, 0.25), (1.0, 0.75), (0.0, 0.1)]

@@ -20,15 +20,14 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import assert_series_equal, linear_space
-from tests.property._specs import ALL_SPECS
+from tests._registry import ALL_SPECS, density, log_density
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _GRID_SIZE = 64
 
@@ -39,24 +38,14 @@ A null or NaN in the value column must propagate on both paths.
 """
 
 
-def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
-    """`log_pdf` / `log_pmf` by family; the method lives on the family subclass, hence the narrowing."""
-    if isinstance(dist, ContinuousDistribution):
-        return dist.log_pdf(value)
-    if isinstance(dist, DiscreteDistribution):
-        return dist.log_pmf(value)
-    msg = f"unsupported distribution family: {type(dist)}"  # pragma: no cover
-    raise TypeError(msg)  # pragma: no cover
-
-
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataObject) -> None:
     """Constant scalar parameters, length-1 literals and the equivalent per-row columns evaluate identically."""
-    params = data.draw(spec.params)
-    scalar = spec.make(params)
-    per_row = spec.make_columns(params)
-    literal = spec.make_literals(params)
+    params = data.draw(spec.param_strategy)
+    scalar = spec.build("scalar", params)
+    per_row = spec.build("column", params)
+    literal = spec.build("literal", params)
 
     lo, hi = spec.eval_range(params)
     values = pl.DataFrame({"x": [*linear_space(lo, hi, _GRID_SIZE), None, float("nan")]}, schema={"x": pl.Float64})
@@ -67,8 +56,8 @@ def test_value_keyed_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.D
 
     x, q = pl.col("x"), pl.col("q")
     cases: list[tuple[pl.DataFrame, Callable[[_UnivariateDistribution], pl.Expr]]] = [
-        (values, lambda d: spec.density(d, x)),
-        (values, lambda d: _log_density(d, x)),
+        (values, lambda d: density(d, x)),
+        (values, lambda d: log_density(d, x)),
         (values, lambda d: d.cdf(x)),
         (values, lambda d: d.log_cdf(x)),
         (values, lambda d: d.sf(x)),

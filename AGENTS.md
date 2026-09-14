@@ -13,7 +13,7 @@ wrong that reading the code does not prevent.
 
 | You need | Read |
 |---|---|
-| to add a distribution: the steps, the test registries, the conventions | [Contributing](./docs/contributing.md) |
+| to add a distribution: the steps, the test registry, the conventions | [Contributing](./docs/contributing.md) |
 | which methods go in Rust, and how to parameterise the class | [Design notes](./docs/explanation/design.md#one-rust-file-per-distribution-one-plugin-function-per-method-that-needs-rust) |
 | to touch any `log_*`, `ppf` or `isf` hook | [Contributing > Numerical stability](./docs/contributing.md#numerical-stability) |
 | how the system is wired | [Architecture](./docs/explanation/architecture.md) |
@@ -45,8 +45,9 @@ Two things `make test` alone will not catch:
 
 * **The strict docs build**, after any `docs/` edit: `uv run --group docs zensical build --strict`.
 
-Fast loop after a Rust change: `make install-release && uv run pytest --no-cov tests/distributions/bernoulli/ -x`.
-Bernoulli exercises the whole pipeline, and `--no-cov` keeps the 95% floor from failing a deliberately partial run.
+Fast loop after a Rust change: `make install-release && uv run pytest --no-cov tests/distributions -x`.
+That tree is the behavioural suite, parametrised over every distribution, and `--no-cov` keeps the 95% floor from
+failing a deliberately partial run.
 Run `prek` through `make lint`, and do not pass `--no-verify` unless asked.
 
 ## Non-negotiables
@@ -54,8 +55,9 @@ Run `prek` through `make lint`, and do not pass `--no-verify` unless asked.
 * **Row-alignment belongs to Rust.** Any new `#[polars_expr]` with more than one input calls `align_inputs` first,
   before the casts. Polars broadcasts nothing into a plugin and `try_*_elementwise` truncates to its shortest input,
   so skipping it silently drops rows. `tests/distributions/broadcast_test.py` catches a missed one.
-* **Every distribution needs a row in all five shared test registries.** Miss one and that suite silently skips your
-  distribution while CI stays green. It is the only failure mode here with no signal at all. The five are listed in
+* **Every distribution needs a row in `tests/_registry.py`**, and its name in `DistributionName`. It is the one
+  registry, and every shared contract reads it. `tests/distributions/registry_test.py` cross-checks it against
+  `polars_stats.__all__` and fails when the two disagree, so the row cannot be forgotten quietly. Adding one is
   [Contributing > Adding a distribution](./docs/contributing.md#adding-a-distribution), step 3.
 * **Write the scipy-parity test first**, then the implementation, then iterate until it passes within a tolerance you
   can justify.

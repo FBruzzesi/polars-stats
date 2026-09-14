@@ -23,36 +23,36 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests._polars_compat import assert_series_equal
-from tests.property._specs import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL, ULP_TOLERANT_MOMENT_SPECS
+from tests._registry import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL, compares_bit_exactly
 
 if TYPE_CHECKING:
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec, Moment
 
 _N_ROWS = 64
 
 # Every distribution exposes these as closed forms (or, for Binomial entropy, a Rust support sum)
 # derived from the validated parameters; `median` is excluded as it routes through `ppf` for the
 # discrete families (covered by the value-keyed suite) rather than the moment validator.
-_MOMENTS = ("mean", "variance", "std", "entropy")
+_MOMENTS: tuple[Moment, ...] = ("mean", "variance", "std", "entropy")
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize("moment", _MOMENTS)
 @given(data=st.data())
-def test_moment_scalar_fast_path_matches_per_row(spec: DistSpec, moment: str, data: st.DataObject) -> None:
+def test_moment_scalar_fast_path_matches_per_row(spec: DistSpec, moment: Moment, data: st.DataObject) -> None:
     """Constant scalar parameters and the equivalent per-row columns evaluate each moment identically."""
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
-    fast = getattr(spec.make(params), moment)()
-    per_row = getattr(spec.make_columns(params), moment)()
+    fast = getattr(spec.build("scalar", params), moment)()
+    per_row = getattr(spec.build("column", params), moment)()
 
     # The scalar path is a scalar column: length 1 on its own, whatever the frame height.
     assert frame.select(r=fast).height == 1
     # Selected beside the per-row column, polars broadcasts it, and then every row must agree.
     both = frame.select(fast=fast, per_row=per_row)
     assert both.height == _N_ROWS
-    exact = spec.name not in ULP_TOLERANT_MOMENT_SPECS
+    exact = compares_bit_exactly(spec.name, moment)
     assert_series_equal(
         both["fast"], both["per_row"], check_names=False, check_exact=exact, rel_tol=ULP_REL_TOL, abs_tol=ULP_ABS_TOL
     )

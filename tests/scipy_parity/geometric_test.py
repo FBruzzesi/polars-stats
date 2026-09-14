@@ -10,8 +10,7 @@ from polars_stats import Geometric
 from tests._polars_compat import assert_series_equal
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
-# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
-# of the per-method functional tests under `tests/distributions/geometric`.
+# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent.
 # The support is `0 < p <= 1`; scipy accepts `p = 0` (degenerate answers) but this crate rejects it,
 # so the grid holds only valid parameters. `p = 1` is excluded because scipy's generic discrete
 # entropy does not answer there (see the divergence note below).

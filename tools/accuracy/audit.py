@@ -41,6 +41,7 @@ measures the library's arithmetic rather than the rounding of a badly-chosen lit
 
 from __future__ import annotations
 
+import inspect
 import math
 import random
 import sys
@@ -56,10 +57,13 @@ from cyclopts import App, Parameter
 from rich.console import Console
 from rich.table import Table
 
+import polars_stats as ps
 from polars_stats import (
     Bernoulli,
     Beta,
     Binomial,
+    ContinuousDistribution,
+    DiscreteDistribution,
     DiscreteUniform,
     Exponential,
     Geometric,
@@ -70,8 +74,6 @@ from polars_stats import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
-
-    from polars_stats import ContinuousDistribution, DiscreteDistribution
 
 DPS = 50
 """Oracle working precision. Every reference value, and every logarithm of one, is computed here."""
@@ -1089,7 +1091,7 @@ def build_registry() -> tuple[DistributionSpec, ...]:
     """Every (distribution, method) pair the audit covers, with its oracle and claimed tolerance.
 
     A distribution missing from here is not audited, in exactly the same way a distribution missing
-    from `tests/property/_specs.py` is silently untested.
+    from `tests/_registry.py` is silently untested.
     """
     # Shared between the DiscreteUniform spec and its Int64-edge twin below, which audits the same
     # closed forms at bounds where `min + max` overflows.
@@ -1859,6 +1861,25 @@ KNOWN_HANGS: dict[str, str] = {"Beta.ppf": _STATRS_435, "Beta.isf": _STATRS_435}
 Recorded in the report with their reason rather than dropped; `--skip` replaces them at the CLI."""
 
 
+def unaudited_distributions(registry: tuple[DistributionSpec, ...]) -> list[str]:
+    """Exported concrete distributions with no oracle in `registry`.
+
+    The completeness guard for this tool's registry, and the reason it lives here rather than under
+    `tests/`: the oracles need `mpmath`, which is in the `tools` dependency group and not `testing`,
+    so a check from the test suite would degrade to a skip in CI and assert nothing. Here it fails
+    `make audit`, which `docs/contributing.md` already requires for a new distribution.
+    """
+    audited = {spec.name for spec in registry}
+    exported = {
+        name
+        for name in ps.__all__
+        if isinstance(obj := getattr(ps, name), type)
+        and issubclass(obj, (ContinuousDistribution, DiscreteDistribution))
+        and not inspect.isabstract(obj)
+    }
+    return sorted(exported - audited)
+
+
 app = App(name="audit", help="Tail-accuracy audit of the shipped distributions against an mpmath oracle.")
 
 _MULTI_VALUE = Parameter(consume_multiple=True, negative_iterable="")
@@ -1901,6 +1922,9 @@ def main(
             return 1
 
     registry = build_registry()
+    if unaudited := unaudited_distributions(registry):
+        print(f"exported but absent from the audit registry: {', '.join(unaudited)}")
+        return 1
     auditable = method_keys(registry)
     if distributions:
         wanted = {name.lower() for name in distributions}

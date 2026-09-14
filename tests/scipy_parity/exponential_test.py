@@ -9,8 +9,7 @@ from scipy.stats import expon as scipy_expon
 from polars_stats import Exponential
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
-# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
-# of the per-method functional tests under `tests/distributions/exponential`.
+# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent.
 _PARAMS = [0.1, 0.5, 1.0, 2.0, 5.0]
 # Endpoints excluded: `ppf(1) = +inf` (the unbounded right tail) is asserted in `ppf_test.py`.
 _QUANTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]

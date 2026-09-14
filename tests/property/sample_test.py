@@ -10,10 +10,10 @@ from packaging.version import Version
 from polars.testing import assert_series_equal
 
 from tests._polars_compat import PL_VERSION
-from tests.property._specs import ALL_SPECS
+from tests._registry import ALL_SPECS, DRIVER_REGIMES, Regime
 
 if TYPE_CHECKING:
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _N_ROWS = 64
 _SEED = 12345
@@ -28,8 +28,8 @@ _STREAMING_CHUNK_ROWS = 256
 @given(data=st.data())
 def test_sample_seeded_is_reproducible(spec: DistSpec, data: st.DataObject) -> None:
     """`sample(seed=N)` returns identical draws across two calls in the same process."""
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
     first = frame.select(s=dist.sample(seed=_SEED))["s"]
@@ -49,11 +49,11 @@ def test_sample_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataOb
     paths must agree bit for bit. This is the correctness contract that lets the fast path exist, so a
     divergence (e.g. a parameter order or off-by-one in the fast path) must fail here.
     """
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
-    fast = frame.select(s=spec.make(params).sample(seed=_SEED))["s"]
-    per_row = frame.select(s=spec.make_columns(params).sample(seed=_SEED))["s"]
+    fast = frame.select(s=spec.build("scalar", params).sample(seed=_SEED))["s"]
+    per_row = frame.select(s=spec.build("column", params).sample(seed=_SEED))["s"]
 
     assert_series_equal(fast, per_row)
 
@@ -73,11 +73,11 @@ def test_samples_scalar_fast_path_matches_per_row(spec: DistSpec, data: st.DataO
     `test_sample_scalar_fast_path_matches_per_row`. A divergence (a transposed row/draw layout in the
     flat buffer, or a parameter mix-up in the kwargs) must fail here.
     """
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
-    fast = frame.select(s=spec.make(params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
-    per_row = frame.select(s=spec.make_columns(params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
+    fast = frame.select(s=spec.build("scalar", params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
+    per_row = frame.select(s=spec.build("column", params).samples(size=_SAMPLES_SIZE, seed=_SEED))["s"]
 
     assert_series_equal(fast, per_row)
 
@@ -92,8 +92,8 @@ def test_samples_size_one_matches_sample(spec: DistSpec, data: st.DataObject) ->
     This pins the multi-draw plugins to the single-draw ones: a divergence in seeding or in the draw
     call must fail here.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
     first = frame.select(s=dist.samples(size=1, seed=_SEED))["s"].arr.first()
@@ -112,8 +112,8 @@ def test_samples_prefix_is_stable_in_size(spec: DistSpec, data: st.DataObject) -
     user-facing consequence of the per-row stream design; a sampler that re-keyed draws on `size`
     would fail here.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     frame = pl.DataFrame({"_": range(_N_ROWS)})
 
     small = frame.select(s=dist.samples(size=2, seed=_SEED))["s"]
@@ -130,9 +130,9 @@ _PARALLEL_ROWS = 2048
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
-@pytest.mark.parametrize("builder", ["make", "make_columns"])
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
 @given(data=st.data())
-def test_samples_prefix_is_stable_in_length(spec: DistSpec, builder: str, data: st.DataObject) -> None:
+def test_samples_prefix_is_stable_in_length(spec: DistSpec, regime: Regime, data: st.DataObject) -> None:
     """Row `i`'s array depends only on `(seed, i)`: growing the frame leaves existing rows unchanged.
 
     Doubles as the serial/parallel equivalence pin for both plugin paths: the small frame's total
@@ -140,8 +140,8 @@ def test_samples_prefix_is_stable_in_length(spec: DistSpec, builder: str, data: 
     branch, so the two implementations of the fill must agree bit for bit or this fails. A fill
     that depended on chunk-local position, buffer offset, or visit order would also fail here.
     """
-    params = data.draw(spec.params)
-    dist = getattr(spec, builder)(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build(regime, params)
     expr = dist.samples(size=_SAMPLES_SIZE, seed=_SEED)
 
     small = pl.DataFrame({"_": range(_N_ROWS)}).select(s=expr)["s"]
@@ -168,12 +168,12 @@ def test_samples_null_rows_null_both_layers_and_do_not_perturb_valid_rows(
     * every valid row draws exactly what it draws without any nulls present: a row's stream is
       keyed `(seed, row_index)`, so null neighbours cannot shift or consume its draws.
     """
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"i": range(_PARALLEL_ROWS)})
     mask = (pl.col("i") % 5 == 0) | (pl.col("i") == _PARALLEL_ROWS - 1)
 
-    out = frame.select(s=spec.make_masked(params, mask).samples(size=size, seed=_SEED), m=mask)
-    unmasked = frame.select(s=spec.make_columns(params).samples(size=size, seed=_SEED))["s"]
+    out = frame.select(s=spec.build("masked", params, mask=mask).samples(size=size, seed=_SEED), m=mask)
+    unmasked = frame.select(s=spec.build("column", params).samples(size=size, seed=_SEED))["s"]
 
     assert_series_equal(out["s"].is_null(), out["m"], check_names=False)
     for j in range(size):
@@ -191,10 +191,10 @@ def test_samples_all_null_and_empty_frames(spec: DistSpec, data: st.DataObject) 
     different dtype); an empty frame must yield an empty `Array` column of the right width for
     both plugin paths (the multi-draw reshape divides by `size`, so zero rows is its edge).
     """
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
 
     all_null = pl.DataFrame({"i": range(8)}).select(
-        s=spec.make_masked(params, pl.lit(value=True)).samples(size=_SAMPLES_SIZE, seed=_SEED)
+        s=spec.build("masked", params, mask=pl.lit(value=True)).samples(size=_SAMPLES_SIZE, seed=_SEED)
     )["s"]
     assert isinstance(all_null.dtype, pl.Array)
     assert all_null.dtype.size == _SAMPLES_SIZE
@@ -202,8 +202,8 @@ def test_samples_all_null_and_empty_frames(spec: DistSpec, data: st.DataObject) 
     assert all_null.arr.first().is_null().all()
 
     empty = pl.DataFrame({"_": []}, schema={"_": pl.Int64})
-    for builder in ("make", "make_columns"):
-        dist = getattr(spec, builder)(params)
+    for regime in DRIVER_REGIMES:
+        dist = spec.build(regime, params)
         out = empty.select(s=dist.samples(size=_SAMPLES_SIZE, seed=_SEED))
         assert out.height == 0
         dtype = out.schema["s"]
@@ -227,8 +227,8 @@ def test_sample_seeded_matches_across_engines(spec: DistSpec, data: st.DataObjec
     `max_examples` is capped below the suite default: each example runs two full `collect`s, and engine
     invariance does not need a wide parameter sweep to falsify.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
 
     frame = pl.concat(
         [pl.DataFrame({"_": range(_STREAMING_CHUNK_ROWS)}) for _ in range(_STREAMING_CHUNKS)],
@@ -245,20 +245,21 @@ def test_sample_seeded_matches_across_engines(spec: DistSpec, data: st.DataObjec
 
 @settings(max_examples=10)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
-@pytest.mark.parametrize("builder", ["make", "make_columns"])
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
 @given(data=st.data())
 @pytest.mark.skipif(Version("1.36.0") > PL_VERSION, reason="Arbitrary cut for when both engine's are available")
-def test_samples_seeded_matches_across_engines(spec: DistSpec, builder: str, data: st.DataObject) -> None:
+def test_samples_seeded_matches_across_engines(spec: DistSpec, regime: Regime, data: st.DataObject) -> None:
     """`samples(size=k, seed=N)` is invariant to the execution engine (in-memory vs streaming).
 
     The multi-draw counterpart of `test_sample_seeded_matches_across_engines`, run for both plugin
-    paths (`make`: the scalar fast path, whose sole input is the injected row index; `make_columns`:
-    the per-row path, where the parameter columns must stay aligned with that index across morsels).
+    paths (`build("scalar")`: the fast path, whose sole input is the injected row index;
+    `build("column")`: the per-row path, whose parameter columns stay aligned with that index
+    across morsels).
     Each row's stream is keyed on the global `(seed, row_index)`, so a per-chunk row index would
     collide sub-streams across chunks and the engines would diverge.
     """
-    params = data.draw(spec.params)
-    dist = getattr(spec, builder)(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build(regime, params)
 
     frame = pl.concat(
         [pl.DataFrame({"_": range(_STREAMING_CHUNK_ROWS)}) for _ in range(_STREAMING_CHUNKS)],

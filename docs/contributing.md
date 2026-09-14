@@ -60,7 +60,9 @@ polars-stats/
 │       ├── _base.py          # ABCs + coercion helpers
 │       └── _<name>.py        # one Python class per distribution
 ├── tests/
-│   ├── distributions/<name>/ # one folder per distribution, one file per method
+│   ├── _registry.py          # one DistSpec row per distribution, plus the shared contract frame
+│   ├── conftest.py           # the fixtures that deliver it
+│   ├── distributions/        # flat, one file per behavioural contract, parametrised over the rows
 │   ├── property/             # hypothesis-based invariant tests
 │   └── scipy_parity/         # scipy reference-oracle tests
 ├── tools/                    # hand-run tooling, outside the package and the test suite
@@ -231,29 +233,39 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 
     **Never override the public `pdf` / `cdf` / ... methods**, nor the base-owned `sample` / `samples` /
     `_value_plugin` / `_param_plugin` / `_validated` / `_moment`. Export the class from `polars_stats/__init__.py`.
-3. **Tests.** A new distribution touches its own files **and** several shared registries.
+3. **Tests.** A new distribution touches its own files **and** the shared registry.
 
-    !!! warning "Missing a shared registry is silent, and CI stays green"
+    !!! note "The registry row is the one thing that cannot be forgotten quietly"
 
-        The suite does not know your distribution exists, so it cannot report that it skipped it. The run passes, the
-        diff looks complete, and the contract that registry exists to pin is simply not checked. It is the only
-        failure mode here with no signal at all, and the most common concrete mistake.
+        Missing it used to be the only failure mode here with no signal at all: the suite did not know your
+        distribution existed, so it could not report that it had skipped it. `tests/distributions/registry_test.py`
+        now cross-checks `polars_stats.__all__` against the rows and fails when they disagree.
 
     All of:
 
-    * `tests/distributions/<name>/`: one file per method, mirroring `tests/distributions/bernoulli/`, including a
-      `validation_test.py` asserting an invalid parameter raises `ComputeError` (not a null) for both scalar and column
-      inputs.
+    * `tests/_registry.py`: **one `DistSpec` row**, and it is the only registry there is. The row carries `name`,
+      `cls`, `continuous`, `parameters` (each with its constructor keyword, its column in the shared contract
+      frame, and its type), a `param_strategy`, an `example`, `eval_range`, `bounds`, `on_support_point`,
+      `sample_dtype`, the finite out-of-domain `invalid` table, and `integration_bounds` (continuous) or
+      `support` (discrete). Add a column per parameter to `CONTRACT_FRAME` in the same file; no two parameters
+      of one distribution may share one. Add the name to `DistributionName` in `polars_stats/_typing.py`, which
+      is what types the row and the three sparse tables below. Every shared contract reads the row, and
+      `tests/distributions/registry_test.py` fails if a distribution is exported without one, so this is the one
+      place the old silent-skip cannot happen.
+    * Possibly a row in one of the three **sparse** tables, which a `DistSpec` field cannot hold because most
+      distributions have no entry. `support_test.py::_DENSITY_AT_ENDPOINT` (the density *at* a finite support
+      endpoint, whose value is the distribution's own rather than a saturated constant) is **required** when the
+      support has a finite endpoint, and fails red when missing. `_registry.py::DEGENERATE` (parameterisations
+      where the mass collapses onto one point) and `_registry.py::ULP_TOLERANT_MOMENTS` (moments that are not
+      bit-exact across the two parameter routings) are both opt-in; add to the latter only from a failing
+      bit-exactness assertion, never to quiet one.
+    * Any **bespoke** facts, appended to the file that owns their subject in `tests/distributions/`: an algebraic
+      reduction to another distribution goes in `identities_test.py`, a numerical-regime fact with no scipy oracle
+      in `precision_test.py`. Everything a shared contract already states needs no new test at all; see
+      [`tests/README.md`](https://github.com/FBruzzesi/polars-stats/blob/main/tests/README.md) for the file-by-file map.
     * `tests/scipy_parity/<name>_test.py`: one `Case` per method against `scipy.stats.<name>` through the shared
       `_harness.py` (default absolute tolerance `1e-12`, relaxed per `Case` to `1e-9` / `1e-6` for erf-based or
       binary-search-`ppf` methods).
-    * Shared registries, one entry each: `tests/property/_specs.py` (`ALL_SPECS`: a `DistSpec` with
-      `make` / `make_columns` / `make_masked` plus `density`, `eval_range`, and `integration_bounds` (continuous) or
-      `support` (discrete), which drives the whole property suite), `tests/distributions/output_name_test.py` (the
-      `sample` / `samples` output-naming contract), `tests/distributions/value_arg_str_test.py` (a `str` value
-      argument means `pl.col(name)`), and, for distributions with the corresponding fast path,
-      `tests/distributions/value_keyed_fast_path_test.py` and `tests/distributions/moment_fast_path_test.py`
-      (scalar-vs-column validation contracts, including invalid-parameter cases).
 4. **Update the umbrella issue** when the change merges.
 
 ## Numerical stability
@@ -306,7 +318,8 @@ low-quantile tail, and panicking, hanging *and* saturating for `Beta`. A bounded
 clamped into a bisection bracket is the pattern to copy.
 
 **Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy/audit.py`. A
-distribution absent from the audit is unaudited, exactly as one absent from `tests/property/_specs.py` is untested.
+distribution absent from the audit is unaudited, exactly as one absent from `tests/_registry.py` is untested;
+`make audit` now fails outright on a distribution with no oracle.
 Never bound the sweep by what the implementation is known to be bad at: that is the defect's own shape used as a bound
 on the instrument. Sweep extreme *parameters* too, not only extreme inputs.
 

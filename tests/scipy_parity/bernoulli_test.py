@@ -10,7 +10,7 @@ from polars_stats import Bernoulli
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
 # Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
-# of the per-method functional tests under `tests/distributions/bernoulli`.
+# of the shared behavioural contracts under `tests/distributions/`.
 _PROBS = [0.0, 0.25, 0.5, 0.75, 1.0]
 # Interior quantiles only: scipy's discrete ppf/isf return the below-support sentinel -1 at the
 # exact endpoints q in {0, 1}, which the support-clamped `ppf` here (range {0.0, 1.0}) does not
