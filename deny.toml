@@ -1,0 +1,10 @@
+# `cargo deny check advisories`. cargo-deny resolves the real feature graph, so crates that only
+# exist in Cargo.lock behind features we do not enable are never flagged here.
+# Re-check this ignore on every dependency bump and drop it once upstream moves.
+
+[advisories]
+ignore = [
+    # Unmaintained, no vulnerability, no upgrade path. Reachable: polars-utils -> bincode 2.0.1.
+    # Clears when polars moves off bincode.
+    { id = "RUSTSEC-2025-0141", reason = "unmaintained only; transitive through polars-utils, no fix published" },
+]
