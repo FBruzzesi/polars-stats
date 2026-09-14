@@ -13,8 +13,21 @@ real, take the [tutorial](tutorial.md) instead.
 pip install polars-stats
 ```
 
-Requires Python `>=3.10` and `polars>=1.15`. Wheels cover Linux, macOS, and Windows; there is nothing to
-compile. To build from source instead, see [Contributing](contributing.md#build-from-source).
+Requires Python `>=3.10` and `polars>=1.15`. On the platforms below there is nothing to compile: the wheels are
+`abi3`, so a single wheel per platform serves every Python from 3.10 up.
+
+| Platform | Targets |
+| --- | --- |
+| Linux (glibc, manylinux 2.17) | `x86_64`, `aarch64` |
+| macOS | `x86_64`, `arm64` (Apple silicon) |
+| Windows | `x64` |
+| Source | sdist, built on install and needs a Rust toolchain |
+
+Alpine (musl) and Windows on ARM are the two gaps: `polars` itself publishes wheels for both, `polars-stats` does
+not yet, so `pip` falls back to the sdist there. [Open an issue](https://github.com/FBruzzesi/polars-stats/issues)
+if you need one and it gets added.
+
+To build from source deliberately, see [Contributing](contributing.md#build-from-source).
 
 ## Evaluate a distribution
 
