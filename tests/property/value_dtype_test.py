@@ -25,13 +25,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from polars_stats import Normal, Uniform
-from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import assert_series_equal, available_dtypes
-from tests.property._specs import ALL_SPECS
+from tests._registry import ALL_SPECS, density, log_density
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _VALUE_DTYPES = (
     pl.Int64(),
@@ -60,16 +59,6 @@ def _int_grid(lo: float, hi: float, dtype: pl.DataType) -> list[int | None]:
     return [*range(lo_i, hi_i + 1, step), None]
 
 
-def _log_density(dist: _UnivariateDistribution, value: pl.Expr) -> pl.Expr:
-    """`log_pdf` / `log_pmf` by family; the method lives on the family subclass, hence the narrowing."""
-    if isinstance(dist, ContinuousDistribution):
-        return dist.log_pdf(value)
-    if isinstance(dist, DiscreteDistribution):
-        return dist.log_pmf(value)
-    msg = f"unsupported distribution family: {type(dist)}"  # pragma: no cover
-    raise TypeError(msg)  # pragma: no cover
-
-
 @pytest.mark.parametrize("dtype", _VALUE_DTYPES, ids=str)
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
@@ -79,8 +68,8 @@ def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType,
     Every grid value is exactly representable in every dtype here, so a mismatch is a misread buffer,
     not a hook computing at the column's width.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     lo, hi = spec.eval_range(params)
     values = pl.Series("x", _int_grid(lo, hi, dtype)).cast(dtype).to_frame()
     q_grid = [0, 1, None] if dtype.is_integer() else [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, None]
@@ -88,8 +77,8 @@ def test_narrow_value_column_matches_float64(spec: DistSpec, dtype: pl.DataType,
 
     x, q = pl.col("x"), pl.col("q")
     cases = [
-        (values, spec.density(dist, x), spec.density(dist, x.cast(pl.Float64()))),
-        (values, _log_density(dist, x), _log_density(dist, x.cast(pl.Float64()))),
+        (values, density(dist, x), density(dist, x.cast(pl.Float64()))),
+        (values, log_density(dist, x), log_density(dist, x.cast(pl.Float64()))),
         (values, dist.cdf(x), dist.cdf(x.cast(pl.Float64()))),
         (values, dist.log_cdf(x), dist.log_cdf(x.cast(pl.Float64()))),
         (values, dist.sf(x), dist.sf(x.cast(pl.Float64()))),
@@ -109,8 +98,8 @@ def test_integer_scalar_value_matches_float_scalar(spec: DistSpec, data: st.Data
     One method suffices: the `as_expr` coercion this scalar routes through, and the plugin gate that
     casts it, are shared by every value-keyed method.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     frame = pl.DataFrame({"rows": [0.0, 0.0, 0.0]})
     assert_series_equal(frame.select(r=dist.cdf(1))["r"], frame.select(r=dist.cdf(1.0))["r"], check_exact=True)
 

@@ -6,9 +6,8 @@ from scipy.stats import beta as scipy_beta
 from polars_stats import Beta
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
-# Parameter and evaluation grids for the parity sweep. Owned by this test category and independent
-# of the per-method functional tests under `tests/distributions/beta`. The grid covers the distinct
-# shape regimes: unimodal, U-shaped (both shapes < 1), uniform (1, 1), J-shaped, skewed, and the
+# Parameter and evaluation grids for the parity sweep, owned by this test category. The grid covers
+# the distinct shape regimes: unimodal, U-shaped (both shapes < 1), uniform (1, 1), J-shaped, skewed, and the
 # large-shape regime where statrs switches its pdf to `ln_pdf().exp()`.
 _PARAMS = [(2.0, 3.0), (0.5, 0.5), (1.0, 1.0), (5.0, 1.0), (2.0, 8.0), (90.0, 100.0)]
 _QUANTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]

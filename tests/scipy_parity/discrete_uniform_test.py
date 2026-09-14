@@ -47,7 +47,10 @@ _CASES: list[Case[DiscreteUniform]] = [
 @pytest.mark.parametrize("bounds", _BOUNDS, ids=[f"bounds={b}" for b in _BOUNDS])
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
 def test_method_matches_scipy(case: Case[DiscreteUniform], bounds: tuple[int, int]) -> None:
-    """Every closed form matches `randint(low=min, high=max + 1)`; `median` diverges by design, see `median_test.py`."""
+    """Every closed form matches `randint(low=min, high=max + 1)`.
+
+    `median` diverges by design; see `tests/distributions/precision_test.py`.
+    """
     lo, hi = bounds
     assert_case_matches_scipy(
         case,

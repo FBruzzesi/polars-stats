@@ -10,7 +10,7 @@ since a parameter sweep alone would miss the boundary:
   distribution solves it in its own Rust body, so the contract is asserted, not deduced.
 
 Null and `NaN` propagation belong to the shared value-keyed contract, `value_keyed_test.py` and
-`plugin_nan_test.py`.
+`tests/distributions/validation_test.py`.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tests.property._specs import ALL_SPECS
+from tests._registry import ALL_SPECS
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _OUT_OF_RANGE = [-float("inf"), -1e300, -1.5, -0.5, -1e-12, 1.0 + 1e-12, 1.5, 1e300, float("inf")]
 """Just outside on both sides, and far outside. `-1e-12` and `1 + 1e-12` are the interesting ones:
@@ -38,14 +38,14 @@ _ENDPOINTS = [0.0, 1.0]
 
 def _both_regimes(spec: DistSpec, params: tuple[float, ...]) -> list[tuple[str, _UnivariateDistribution]]:
     """The same parameterisation as constants (fast path) and as column exprs (per-row path)."""
-    return [("scalar", spec.make(params)), ("columns", spec.make_columns(params))]
+    return [("scalar", spec.build("scalar", params)), ("columns", spec.build("column", params))]
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @given(data=st.data())
 def test_ppf_and_isf_are_null_outside_the_unit_interval(spec: DistSpec, data: st.DataObject) -> None:
     """`q` outside `[0, 1]` yields null, for every distribution and both parameter regimes."""
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"q": _OUT_OF_RANGE}, schema={"q": pl.Float64})
 
     for regime, dist in _both_regimes(spec, params):
@@ -58,7 +58,7 @@ def test_ppf_and_isf_are_null_outside_the_unit_interval(spec: DistSpec, data: st
 @given(data=st.data())
 def test_ppf_and_isf_are_not_null_at_the_closed_endpoints(spec: DistSpec, data: st.DataObject) -> None:
     """`q` of exactly `0` or `1` is in range: the result is a support bound, never null."""
-    params = data.draw(spec.params)
+    params = data.draw(spec.param_strategy)
     frame = pl.DataFrame({"q": _ENDPOINTS}, schema={"q": pl.Float64})
 
     for regime, dist in _both_regimes(spec, params):

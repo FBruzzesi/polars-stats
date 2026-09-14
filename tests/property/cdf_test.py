@@ -9,12 +9,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests._polars_compat import assert_series_equal, linear_space
-from tests.property._specs import ALL_SPECS, CONTINUOUS_SPECS
+from tests._registry import ALL_SPECS, CONTINUOUS_SPECS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _GRID_SIZE = 64
 # cdf/ppf on the normal go through `erf`/`erfc` and a closed-form `inverse_cdf`, so the round-trip
@@ -36,8 +36,8 @@ def test_cdf_bounded_and_monotone(spec: DistSpec, data: st.DataObject) -> None:
     A trailing `NaN` evaluation point must propagate as `NaN` (scipy semantics) rather than collapse
     into a bounds branch; the finite-grid assertions exclude it.
     """
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
     lo, hi = spec.eval_range(params)
     xs = linear_space(lo, hi, _GRID_SIZE)
 
@@ -55,8 +55,8 @@ def test_cdf_bounded_and_monotone(spec: DistSpec, data: st.DataObject) -> None:
 @given(q=st.floats(min_value=1e-3, max_value=1.0 - 1e-3), data=st.data())
 def test_cdf_ppf_round_trip(spec: DistSpec, q: float, data: st.DataObject) -> None:
     """`cdf(ppf(q)) ~= q` for `q` in the open unit interval (continuous distributions)."""
-    params = data.draw(spec.params)
-    dist = spec.make(params)
+    params = data.draw(spec.param_strategy)
+    dist = spec.build("scalar", params)
 
     recovered = _eval(dist.cdf(dist.ppf(pl.col("x"))), [q])
     assert_series_equal(recovered, pl.Series([q]), rel_tol=0.0, abs_tol=_ROUNDTRIP_TOL, check_names=False)

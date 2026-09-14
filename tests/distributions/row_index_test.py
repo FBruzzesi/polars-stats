@@ -1,3 +1,11 @@
+"""`row_index_expr`: the per-row seed index, on both sides of the polars gate that picks its form.
+
+`row_index_expr` has two implementations of one idea, chosen by `_LITERAL_LEN_IN_AGG`. From polars
+1.35 a literal's length can be asked for inside a partition context; below it the frame-free lengths
+are resolved eagerly instead. Only one runs on any installed polars, so the gate is parametrised and
+every case asserts the same index on both arms, which is the agreement the gate assumes.
+"""
+
 from __future__ import annotations
 
 import polars as pl
@@ -5,11 +13,6 @@ import pytest
 
 from polars_stats.distributions import _base
 from polars_stats.distributions._base import row_index_expr
-
-# `row_index_expr` has two implementations of one idea, chosen by `_LITERAL_LEN_IN_AGG`. From polars
-# 1.35 a literal's length can be asked for inside a partition context; below it the frame-free lengths
-# are resolved eagerly instead. Only one runs on any installed polars, so the gate is parametrised and
-# every case asserts the same index on both arms, which is the agreement the gate assumes.
 
 _FRAME = pl.DataFrame({"x": [1.0, 2.0, 3.0]})
 _FRAME_INDEX = [0, 1, 2]

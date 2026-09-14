@@ -8,20 +8,19 @@ import polars as pl
 import pytest
 
 from polars_stats import Binomial, DiscreteUniform, Exponential, Normal, Uniform
-from polars_stats.distributions._base import ContinuousDistribution, DiscreteDistribution
 from tests._polars_compat import (
     PARTITIONED_BROADCAST_AVAILABLE,
     arr_explode,
     assert_series_equal,
     linear_space,
 )
-from tests.property._specs import ALL_SPECS, SERIES_ROWS, ULP_ABS_TOL, ULP_REL_TOL
+from tests._registry import ALL_SPECS, SERIES_ROWS, ULP_ABS_TOL, ULP_REL_TOL, density, log_density
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 _ROWS = 4096
 _GROUPS = 4
@@ -67,19 +66,14 @@ _needs_partitioned_broadcast = pytest.mark.skipif(
 """Gate for the two partition suites below. The plain-`select` suites run on every supported version."""
 
 
-def _call(spec: DistSpec, dist: _UnivariateDistribution, method: str, value: pl.Expr | float | None) -> pl.Expr:
+def _call(dist: _UnivariateDistribution, method: str, value: pl.Expr | float | None) -> pl.Expr:
     """One public method by name: a value-keyed call on `value`, or a seeded draw when `value` is `None`."""
     if value is None:
         return dist.sample(seed=0) if method == "sample" else dist.samples(size=3, seed=0)
     if method == "density":
-        return spec.density(dist, value)
+        return density(dist, value)
     if method == "log_density":
-        if isinstance(dist, ContinuousDistribution):
-            return dist.log_pdf(value)
-        if isinstance(dist, DiscreteDistribution):
-            return dist.log_pmf(value)
-        msg = f"unsupported distribution family: {type(dist)}"  # pragma: no cover
-        raise TypeError(msg)  # pragma: no cover
+        return log_density(dist, value)
     call: Callable[[pl.Expr | float], pl.Expr] = getattr(dist, method)
     return call(value)
 
@@ -107,40 +101,37 @@ def _assert_same_partitions(frame: pl.DataFrame, got: pl.Expr, want: pl.Expr, *,
     )
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize(("method", "column"), _ALL_METHODS)
 def test_length_one_parameters_broadcast(spec: DistSpec, method: str, column: str | None) -> None:
     """Length-1 parameters give the same rows as the same constants at full length, on every method."""
     frame = _FRAMES[spec.name]
     value = None if column is None else pl.col(column)
-    broadcast, full_length = spec.make_literals(spec.example), spec.make_columns(spec.example)
+    broadcast, full_length = spec.build("literal", spec.example), spec.build("column", spec.example)
 
     _assert_same_rows(
         frame,
-        _call(spec, broadcast, method, value),
-        _call(spec, full_length, method, value),
+        _call(broadcast, method, value),
+        _call(full_length, method, value),
         height=_ROWS,
         exact=column is None,
     )
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize(("method", "column"), _VALUE_METHODS)
 def test_length_one_value_broadcasts(spec: DistSpec, method: str, column: str) -> None:
     """A length-1 *value* gives the same rows as the same value at full length, on every method."""
     frame = _FRAMES[spec.name]
-    dist = spec.make_columns(spec.example)
+    dist = spec.build("column", spec.example)
     scalar = frame[column][0]
 
     _assert_same_rows(
         frame,
-        _call(spec, dist, method, pl.lit(scalar)),
-        _call(spec, dist, method, pl.repeat(scalar, n=pl.len())),
+        _call(dist, method, pl.lit(scalar)),
+        _call(dist, method, pl.repeat(scalar, n=pl.len())),
         height=_ROWS,
     )
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize(("method", "column"), _VALUE_METHODS)
 def test_a_scalar_point_broadcasts_to_the_frame_height(spec: DistSpec, method: str, column: str) -> None:
     """A Python scalar point with all-scalar parameters is full height under `with_columns`, as `Float64`.
@@ -150,16 +141,15 @@ def test_a_scalar_point_broadcasts_to_the_frame_height(spec: DistSpec, method: s
     Under `select` the same expression is one row, which is `pl.lit`'s own semantics.
     """
     frame = _FRAMES[spec.name]
-    dist = spec.make_literals(spec.example)
+    dist = spec.build("literal", spec.example)
     point = float(frame[column][0])
 
-    widened = frame.with_columns(r=_call(spec, dist, method, point))["r"]
+    widened = frame.with_columns(r=_call(dist, method, point))["r"]
     assert widened.len() == _ROWS, f"{method} collapsed a scalar point to {widened.len()} rows"
     assert widened.dtype == pl.Float64, f"{method} returned {widened.dtype}"
-    assert frame.select(r=_call(spec, dist, method, point)).height == 1
+    assert frame.select(r=_call(dist, method, point)).height == 1
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_sampler_draws_differ_per_row_under_literals(spec: DistSpec) -> None:
     """All-literal parameters still draw *per row*, and draw what the fast path draws.
 
@@ -167,18 +157,17 @@ def test_sampler_draws_differ_per_row_under_literals(spec: DistSpec) -> None:
     would return a constant column at the right height and pass everything else here.
     """
     frame = _FRAMES[spec.name]
-    drawn = frame.select(r=spec.make_literals(spec.example).sample(seed=0))["r"]
+    drawn = frame.select(r=spec.build("literal", spec.example).sample(seed=0))["r"]
     assert drawn.n_unique() > 1, "a broadcast result would make every row identical"
     _assert_same_rows(
         frame,
-        spec.make_literals(spec.example).sample(seed=0),
-        spec.make(spec.example).sample(seed=0),
+        spec.build("literal", spec.example).sample(seed=0),
+        spec.build("scalar", spec.example).sample(seed=0),
         height=_ROWS,
         exact=True,
     )
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize("method", ["sample", "samples"])
 def test_sampler_reseeds_when_a_parameter_outruns_the_frame(spec: DistSpec, method: str) -> None:
     """A parameter longer than the frame sets the row count, and every row still gets its own seed.
@@ -190,7 +179,7 @@ def test_sampler_reseeds_when_a_parameter_outruns_the_frame(spec: DistSpec, meth
         (lambda d: d.sample(seed=0)) if method == "sample" else (lambda d: d.samples(size=2, seed=0))
     )
     one_row = pl.DataFrame({"a": [0]})
-    drawn = one_row.select(r=call(spec.make_series(spec.example)))["r"]
+    drawn = one_row.select(r=call(spec.build("series", spec.example)))["r"]
 
     assert drawn.len() == SERIES_ROWS
     # `samples` returns `Array`, whose `n_unique` the oldest supported polars does not implement.
@@ -199,7 +188,7 @@ def test_sampler_reseeds_when_a_parameter_outruns_the_frame(spec: DistSpec, meth
 
     # Bit-equal to the frame-shaped spelling, so the index really is `0..n` and not merely non-constant.
     full_length = pl.DataFrame({"a": range(SERIES_ROWS)})
-    expected = full_length.select(r=call(spec.make_columns(spec.example)))["r"]
+    expected = full_length.select(r=call(spec.build("column", spec.example)))["r"]
     assert_series_equal(drawn, expected, check_exact=True)
 
 
@@ -276,7 +265,6 @@ def test_length_one_parameter_beside_a_column_moment(moment: str) -> None:
     _assert_same_rows(_FRAMES["normal"], getattr(mixed, moment)(), getattr(full_length, moment)(), height=_ROWS)
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize(("method", "column"), _ALL_METHODS)
 def test_zero_row_frame_stays_empty(spec: DistSpec, method: str, column: str | None) -> None:
     """A length-1 input over a 0-row frame yields 0 rows, not 1.
@@ -287,7 +275,7 @@ def test_zero_row_frame_stays_empty(spec: DistSpec, method: str, column: str | N
     empty = _FRAMES[spec.name].head(0)
     value = None if column is None else pl.col(column)
 
-    assert empty.select(_call(spec, spec.make_literals(spec.example), method, value).alias("r")).height == 0
+    assert empty.select(_call(spec.build("literal", spec.example), method, value).alias("r")).height == 0
 
 
 def test_mismatched_lengths_raise() -> None:
@@ -311,35 +299,30 @@ def test_mismatched_lengths_raise() -> None:
 
 
 @_needs_partitioned_broadcast
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_partition_contexts_broadcast_length_one_parameters(spec: DistSpec) -> None:
     """Under `over` and `group_by().agg()`, length-1 parameters broadcast to the *partition* length."""
     x = pl.col("x")
     _assert_same_partitions(
         _FRAMES[spec.name],
-        spec.density(spec.make_literals(spec.example), x),
-        spec.density(spec.make_columns(spec.example), x),
+        density(spec.build("literal", spec.example), x),
+        density(spec.build("column", spec.example), x),
     )
 
 
 @_needs_partitioned_broadcast
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_partition_contexts_broadcast_a_partition_local_value(spec: DistSpec) -> None:
     """A value reduced *within* the partition is the case a fix written against whole-frame length survives."""
-    dist = spec.make_columns(spec.example)
+    dist = spec.build("column", spec.example)
     reduced = pl.col("x").max()
-    _assert_same_partitions(
-        _FRAMES[spec.name], spec.density(dist, reduced), spec.density(dist, pl.repeat(reduced, n=pl.len()))
-    )
+    _assert_same_partitions(_FRAMES[spec.name], density(dist, reduced), density(dist, pl.repeat(reduced, n=pl.len())))
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_partition_contexts_keep_sampler_bit_equality(spec: DistSpec) -> None:
     """The sampler funnel keeps its per-row seed under partitioning, where the row index is partition-local."""
     _assert_same_partitions(
         _FRAMES[spec.name],
-        spec.make_literals(spec.example).sample(seed=0),
-        spec.make_columns(spec.example).sample(seed=0),
+        spec.build("literal", spec.example).sample(seed=0),
+        spec.build("column", spec.example).sample(seed=0),
         exact=True,
     )
 

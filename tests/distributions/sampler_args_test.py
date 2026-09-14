@@ -11,13 +11,12 @@ from polars.exceptions import ComputeError
 
 import polars_stats as ps
 from polars_stats.distributions._base import _MAX_WIRE_INT, ROW_INDEX_EXPR, register_plugin
-from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
     SamplingCallable = Callable[[_UnivariateDistribution, int | None], pl.Expr]
 
@@ -72,14 +71,13 @@ def test_the_message_names_the_seed_it_rejected() -> None:
         ps.Normal(0.0, 1.0).sample(seed=-1)
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 @pytest.mark.parametrize("call", _CALLS.values(), ids=_CALLS.keys())
 @pytest.mark.parametrize("path", ["scalar", "column"])
 def test_the_largest_accepted_seed_reaches_every_sampler_plugin(
     spec: DistSpec, path: str, call: SamplingCallable
 ) -> None:
     """`_MAX_WIRE_INT` passes the guard *and* decodes on the wire, on all four plugin shapes."""
-    dist = spec.make(spec.example) if path == "scalar" else spec.make_columns(spec.example)
+    dist = spec.build("scalar", spec.example) if path == "scalar" else spec.build("column", spec.example)
 
     out = _FRAME.select(s=call(dist, _MAX_WIRE_INT))["s"]
 

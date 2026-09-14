@@ -283,7 +283,7 @@ class _UnivariateDistribution(ABC):
         """The coerced parameters in plugin-input order.
 
         The order is the contract: the Rust side reads the inputs positionally, and the output is
-        named after the first expression (polars root-name semantics, pinned by `output_name_test.py`).
+        named after the first expression (polars root-name semantics, pinned by `tests/distributions/naming_test.py`).
         """
 
     @property

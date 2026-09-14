@@ -9,16 +9,14 @@ import pytest
 
 import polars_stats as ps
 from tests._polars_compat import LITERAL_DISPLAYS_AS_VALUE
-from tests.property._specs import ALL_SPECS
 
 if TYPE_CHECKING:
-    from tests.property._specs import DistSpec
+    from tests._registry import DistSpec
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_scalar_parameters_repr_as_their_values(spec: DistSpec) -> None:
     """`ClassName(name=value, ...)`, one line, one `name=value` per constant parameter."""
-    dist = spec.make(spec.example)
+    dist = spec.build("scalar", spec.example)
     got = repr(dist)
 
     assert "\n" not in got
@@ -30,14 +28,13 @@ def test_scalar_parameters_repr_as_their_values(spec: DistSpec) -> None:
         assert f"{name}={value}" in got
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
 def test_column_parameters_repr_without_an_address(spec: DistSpec) -> None:
     """A column-valued parameter defers to the expression's own one-line form.
 
     `repr(pl.Expr)` carries the object's memory address, so the `0x` assertion keeps a
     column-parameterised distribution's repr deterministic.
     """
-    dist = spec.make_columns(spec.example)
+    dist = spec.build("column", spec.example)
     got = repr(dist)
 
     assert "\n" not in got
