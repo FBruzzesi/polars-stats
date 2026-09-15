@@ -31,6 +31,10 @@ print(df.with_columns(draws=dist.samples(3, seed=42)))
 `samples(size=1)` matches `sample` bit for bit for the same seed, and increasing `size` extends each row's array
 without changing the draws already there.
 
+`size` has no maximum, and the whole `rows * size` result is materialised at once: a million rows at
+`size=10_000` asks for 74.5 GiB. Too large to allocate raises `ComputeError`; too large for the machine
+to back is an OS kill, as the equivalent `numpy` array would be. Draw in batches of rows instead.
+
 ## Reduce or expand the draws
 
 Stay in the array to summarise per row:
