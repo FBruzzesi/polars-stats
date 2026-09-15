@@ -66,8 +66,9 @@ match against SciPy cannot see:
 `repr_test.py`, `sampler_args_test.py` and `type_guard_test.py` are registry-parametrised too, on a
 single subject each.
 `row_index_test.py` and `std_representable_range_test.py` sit outside the registry axis, and
-[`plugin_boundary_dtype_test.py`](plugin_boundary_dtype_test.py) runs a subprocess per case because the
-abort it guards against would take pytest down with it. A new distribution adds nothing to the latter.
+[`plugin_boundary_dtype_test.py`](plugin_boundary_dtype_test.py) and
+[`samples_allocation_test.py`](samples_allocation_test.py) run a subprocess per case because the abort
+each guards against would take pytest down with it. A new distribution adds nothing to those two.
 
 **Where a new distribution's bespoke facts go:** an algebraic identity to `identities_test.py`, a
 numerical-regime fact to `precision_test.py`, anything else to the file that owns its subject. A fact

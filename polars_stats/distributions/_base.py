@@ -202,7 +202,7 @@ def _checked_seed(seed: object) -> int | None:
 
 
 def _checked_size(size: object) -> int:
-    """A positive draw count. No maximum: an oversized one dies in the allocator, not here."""
+    """A positive draw count. No maximum: the plugin refuses what it cannot allocate, as only it knows the rows."""
     if (size := _checked_int(size, name="size")) <= 0:
         msg = f"size must be a positive integer, got {size}"
         raise ValueError(msg)

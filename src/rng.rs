@@ -12,6 +12,8 @@
 //! `build` (a row's draw state from its parameters) and `draw` (one value from that state); the output
 //! dtype follows the drawn value through [`DrawValue`]. A null in any input nulls the row.
 
+use std::mem::MaybeUninit;
+
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise};
 use polars::prelude::*;
 use polars_arrow::array::ArrayFromIter;
@@ -231,25 +233,57 @@ where
 /// than this few draws, and elementwise plugins run once per `group_by` / `over` partition.
 const PARALLEL_FILL_MIN_DRAWS: usize = 4096;
 
-/// Fill the row-major multi-draw buffer: `fill_row(i, slot)` writes row `i`'s `size` draws into its
-/// own slice. Rows fill in parallel when the total justifies it, which is deterministic because a
-/// row's draws depend only on `(root_seed, row_index)`.
-fn fill_rows<V, F>(flat: &mut [V], size: usize, fill_row: F)
+/// Allocate the flat row-major `rows * size` draw buffer and fill it: `fill_row(i, slot)` writes row
+/// `i`'s `size` draws into its own slice. Rows fill in parallel when the total justifies it, which is
+/// deterministic because a row's draws depend only on `(root_seed, row_index)`.
+///
+/// `rows` is only known here, so this is where an oversized `size` is refused: the product is checked
+/// and the reserve fallible, and either failing is a `ComputeError`. A request the allocator accepts
+/// but the machine cannot back is still killed by the OS. The slots arrive uninitialised because a
+/// fallible reserve cannot come zeroed, and zeroing them first would be an extra full pass over a
+/// buffer that reaches gigabytes.
+///
+/// # Safety
+///
+/// `fill_row` must initialise every element of every slice it is handed.
+unsafe fn fill_draw_buffer<V, F>(rows: usize, size: usize, fill_row: F) -> PolarsResult<Vec<V>>
 where
     V: Send,
-    F: Fn(usize, &mut [V]) + Sync,
+    F: Fn(usize, &mut [MaybeUninit<V>]) + Sync,
 {
-    if flat.len() >= PARALLEL_FILL_MIN_DRAWS {
+    polars_ensure!(size > 0, InvalidOperation: "samples requires a positive size");
+    let draw_count = rows.checked_mul(size).ok_or_else(|| {
+        polars_err!(
+            ComputeError:
+            "samples with size={size} over {rows} rows is more values than this platform can address; lower size"
+        )
+    })?;
+    let mut draws: Vec<V> = Vec::new();
+    draws.try_reserve_exact(draw_count).map_err(|_| {
+        let gib = draw_count as f64 * size_of::<V>() as f64 / 1_073_741_824.0;
+        polars_err!(
+            ComputeError:
+            "samples with size={size} over {rows} rows needs {gib:.1} GiB, which cannot be allocated; lower size"
+        )
+    })?;
+
+    let uninit = &mut draws.spare_capacity_mut()[..draw_count];
+    if draw_count >= PARALLEL_FILL_MIN_DRAWS {
         RAYON.install(|| {
-            flat.par_chunks_mut(size)
+            uninit
+                .par_chunks_mut(size)
                 .enumerate()
                 .for_each(|(row, slot)| fill_row(row, slot));
         });
     } else {
-        for (row, slot) in flat.chunks_mut(size).enumerate() {
+        for (row, slot) in uninit.chunks_mut(size).enumerate() {
             fill_row(row, slot);
         }
     }
+    // SAFETY: `size > 0` and `draw_count == rows * size`, so the chunks partition the reserved
+    // prefix exactly, and the caller guarantees `fill_row` initialised every element.
+    unsafe { draws.set_len(draw_count) };
+    Ok(draws)
 }
 
 /// Constant-parameter multi-draw driver: one call returns the `Array(width=size)` column. Row `i`'s
@@ -263,23 +297,24 @@ pub(crate) fn samples_by_index<V, Draw>(
     draw: Draw,
 ) -> PolarsResult<Series>
 where
-    V: DrawValue + Default + Clone + Send,
+    V: DrawValue + Send,
     ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
     Draw: Fn(&mut Pcg64Mcg) -> V + Sync,
 {
-    polars_ensure!(size > 0, InvalidOperation: "samples requires a positive size");
     let indices: Vec<u64> = coerce_index(index)?.into_no_null_iter().collect();
     let rngs = RowRngs::new(seed)?;
 
-    let mut flat = vec![V::default(); indices.len() * size];
-    fill_rows(&mut flat, size, |row, slot| {
-        let mut rng = rngs.row_rng(indices[row]);
-        for value in slot {
-            *value = draw(&mut rng);
-        }
-    });
+    // SAFETY: every slot of the row's slice is written.
+    let draws = unsafe {
+        fill_draw_buffer(indices.len(), size, |row, slot| {
+            let mut rng = rngs.row_rng(indices[row]);
+            for value in slot {
+                value.write(draw(&mut rng));
+            }
+        })
+    }?;
 
-    ChunkedArray::<V::Data>::from_iter_values(index.name().clone(), flat.into_iter())
+    ChunkedArray::<V::Data>::from_iter_values(index.name().clone(), draws.into_iter())
         .into_series()
         .reshape_array(&[ReshapeDimension::Infer, ReshapeDimension::new(size as i64)])
 }
@@ -296,42 +331,48 @@ fn samples_per_row<V, State, Rows, Draw>(
     draw: Draw,
 ) -> PolarsResult<Series>
 where
-    V: DrawValue + Default + Clone + Send,
+    V: DrawValue + Default + Send,
     ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
     State: Sync,
     Rows: Iterator<Item = PolarsResult<Option<(u64, State)>>>,
     Draw: Fn(&State, &mut Pcg64Mcg) -> V + Sync,
 {
-    polars_ensure!(size > 0, InvalidOperation: "samples requires a positive size");
     // Materialising the states first separates the part that can raise (building) from the draw
-    // loop, whose rows then fill independently. A null row keeps its `V::default()` slice, masked by
-    // the validity bitmaps below and never read.
+    // loop, whose rows then fill independently.
     let states: Vec<Option<(u64, State)>> = rows.collect::<PolarsResult<_>>()?;
     let rngs = RowRngs::new(seed)?;
 
-    let mut flat = vec![V::default(); states.len() * size];
-    fill_rows(&mut flat, size, |row, slot| {
-        if let Some((index, state)) = &states[row] {
-            let mut rng = rngs.row_rng(*index);
-            for value in slot {
-                *value = draw(state, &mut rng);
-            }
-        }
-    });
+    // SAFETY: both arms write every slot of the row's slice; a null row's `V::default()` slice is
+    // masked by the validity bitmaps below and never read.
+    let draws = unsafe {
+        fill_draw_buffer(states.len(), size, |row, slot| match &states[row] {
+            Some((index, state)) => {
+                let mut rng = rngs.row_rng(*index);
+                for value in slot {
+                    value.write(draw(state, &mut rng));
+                }
+            },
+            None => {
+                for value in slot {
+                    value.write(V::default());
+                }
+            },
+        })
+    }?;
 
-    let flat =
-        ChunkedArray::<V::Data>::from_iter_values(name.clone(), flat.into_iter()).into_series();
+    let draws =
+        ChunkedArray::<V::Data>::from_iter_values(name.clone(), draws.into_iter()).into_series();
     let shape = [ReshapeDimension::Infer, ReshapeDimension::new(size as i64)];
 
     let outer_validity: Bitmap = states.iter().map(Option::is_some).collect();
     if outer_validity.unset_bits() == 0 {
-        return flat.reshape_array(&shape);
+        return draws.reshape_array(&shape);
     }
     let inner_validity: Bitmap = states
         .iter()
         .flat_map(|state| std::iter::repeat_n(state.is_some(), size))
         .collect();
-    let inner = flat.rechunk().chunks()[0].with_validity(Some(inner_validity));
+    let inner = draws.rechunk().chunks()[0].with_validity(Some(inner_validity));
     let out = Series::from_arrow(name.clone(), inner)?.reshape_array(&shape)?;
     let masked = out.rechunk().chunks()[0].with_validity(Some(outer_validity));
     Series::from_arrow(name, masked)
@@ -347,7 +388,7 @@ pub(crate) fn samples_per_row_binary<V, State, Build, Draw>(
     draw: Draw,
 ) -> PolarsResult<Series>
 where
-    V: DrawValue + Default + Clone + Send,
+    V: DrawValue + Default + Send,
     ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
     State: Sync,
     Build: Fn(f64) -> PolarsResult<State>,
@@ -386,7 +427,7 @@ pub(crate) fn samples_per_row_ternary<V, A, B, State, CoerceA, CoerceB, Check, B
     draw: Draw,
 ) -> PolarsResult<Series>
 where
-    V: DrawValue + Default + Clone + Send,
+    V: DrawValue + Default + Send,
     ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
     A: PolarsNumericType,
     B: PolarsNumericType,
