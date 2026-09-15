@@ -115,8 +115,10 @@ is read into, so polars' own `Expr.sample` takes seeds this library refuses. A `
 `int` raises `TypeError`, `bool` and `numpy.int64` included.
 
 `size` has no maximum. A call allocates `rows * size` elements up front: a product that does not fit a `usize`,
-or an allocation the allocator refuses, raises `ComputeError` naming the size, the row count and the byte count.
-A request the allocator accepts but the machine cannot back is still killed by the OS, with no exception to catch.
+or an allocation the allocator refuses, raises `ComputeError`. When the request reaches the allocator, the message
+names the size, the row count and the byte count; a `size` too large for the plugin's kwargs decoder to read
+raises before that with a generic message. A request the allocator accepts but the machine cannot back is still
+killed by the OS, with no exception to catch.
 
 Element dtype is per distribution and is not normalised to `Float64`:
 
