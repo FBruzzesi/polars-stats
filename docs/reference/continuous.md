@@ -17,21 +17,11 @@ concrete classes follow, alphabetically. The members listed under each class inc
 ## Distributions
 
 ::: polars_stats.Beta
-    options:
-      inherited_members: true
 
 ::: polars_stats.Exponential
-    options:
-      inherited_members: true
 
 ::: polars_stats.LogNormal
-    options:
-      inherited_members: true
 
 ::: polars_stats.Normal
-    options:
-      inherited_members: true
 
 ::: polars_stats.Uniform
-    options:
-      inherited_members: true

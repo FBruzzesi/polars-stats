@@ -17,17 +17,9 @@ classes follow, alphabetically. The members listed under each class include thos
 ## Distributions
 
 ::: polars_stats.Bernoulli
-    options:
-      inherited_members: true
 
 ::: polars_stats.Binomial
-    options:
-      inherited_members: true
 
 ::: polars_stats.DiscreteUniform
-    options:
-      inherited_members: true
 
 ::: polars_stats.Geometric
-    options:
-      inherited_members: true
