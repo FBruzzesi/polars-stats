@@ -114,8 +114,9 @@ Both arguments are checked at call time. A `size <= 0` raises `ValueError`, and 
 is read into, so polars' own `Expr.sample` takes seeds this library refuses. A `seed` or `size` that is not an
 `int` raises `TypeError`, `bool` and `numpy.int64` included.
 
-`size` has no maximum. A call allocates `rows * size` elements up front, so an oversized `size` fails in the
-allocator rather than in a guard, and a large enough one kills the process instead of raising.
+`size` has no maximum. A call allocates `rows * size` elements up front: a product that does not fit a `usize`,
+or an allocation the allocator refuses, raises `ComputeError` naming the size, the row count and the byte count.
+A request the allocator accepts but the machine cannot back is still killed by the OS, with no exception to catch.
 
 Element dtype is per distribution and is not normalised to `Float64`:
 
@@ -149,6 +150,7 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 | Non-numeric column in either position (`Boolean`, `String`, `Categorical`, `Enum`, `Struct`, `Object`, temporal) | Rust evaluation | `ComputeError` naming the column and its dtype, no row computes; polars' `InvalidOperationError` where a closed-form moment's arithmetic meets a parameter column first (see [Accepted inputs](#accepted-inputs)) |
 | Invalid *present* parameter value: outside its domain, `NaN`, `+inf` or `-inf`, as a scalar or on any column row | Rust evaluation | `ComputeError`, fails the whole evaluation, never silently nulls, whatever else is on the row: a null sibling parameter, a null or `NaN` evaluation point |
 | The same, on a **0-row** frame | Rust evaluation | A *constant* parameterisation still raises; a parameter *column* returns an empty result (see below) |
+| `rows * size` in `samples` too large to address or allocate | Rust evaluation | `ComputeError`, fails the whole evaluation (see [Sampling](#sampling)) |
 | `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |

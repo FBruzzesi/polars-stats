@@ -32,9 +32,8 @@ print(df.with_columns(draws=dist.samples(3, seed=42)))
 without changing the draws already there.
 
 `size` has no maximum, and the whole `rows * size` result is materialised at once: a million rows at
-`size=10_000` is 74.5 GiB. A request that cannot be allocated raises `ComputeError`. One the allocator
-accepts but the machine cannot back is killed by the operating system, with no exception to catch,
-exactly as the equivalent `numpy` array would be. Draw in batches of rows instead.
+`size=10_000` asks for 74.5 GiB. Too large to allocate raises `ComputeError`; too large for the machine
+to back is an OS kill, as the equivalent `numpy` array would be. Draw in batches of rows instead.
 
 ## Reduce or expand the draws
 
