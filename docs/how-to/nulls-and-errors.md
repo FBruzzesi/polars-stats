@@ -27,6 +27,26 @@ parameters are estimated, because an under-sized group yields a null `sigma`. Th
 null parameter nulls the row even where the evaluation point alone would have settled the answer; see
 [Reference / Parameters and contracts](../reference/parameters-and-contracts.md#nulls-nans-and-errors).
 
+## Read an undefined moment
+
+A moment the distribution does not have is `null` on every row whose parameters are valid. `Cauchy` has no
+moments of any order, so `mean()`, `variance()` and `std()` are null while `median()` and `entropy()` stay
+ordinary values:
+
+```python exec="yes" source="above" session="nulls-and-errors" result="python"
+heavy_tailed = ps.Cauchy(loc=0.0, scale=2.0)
+
+print(
+    pl.DataFrame({"_": [0]}).select(
+        mean=heavy_tailed.mean(), median=heavy_tailed.median(), entropy=heavy_tailed.entropy()
+    )
+)
+```
+
+That null is an answer rather than a failure, so a downstream `.mean()`, `.sum()` or `.drop_nulls()` absorbs
+it silently. Check for it where a moment feeds an aggregate. An invalid `scale` on the row still raises, so a
+null never stands in for a bad parameter.
+
 ## Find the rows that would raise
 
 An invalid parameter *value* (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, a `NaN` or an infinity) fails the
@@ -101,3 +121,5 @@ A wrong parameter *type* is caught earlier, at construction, with a `TypeError`:
     table, including `NaN`, out-of-support, and out-of-range quantiles.
 * [Explanation / Design notes](../explanation/design.md#invalid-parameters-raise-they-never-silently-null): why an
     invalid parameter raises rather than nulling.
+* [Explanation / Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf):
+    why an undefined moment is `null` and a divergent one is `+inf`.

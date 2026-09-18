@@ -15,7 +15,7 @@ parameter rejects an `int` and an integer bound rejects a `float`, while a metho
 The bounds of `Uniform` and `DiscreteUniform` sit on opposite sides of the float rule despite sharing the names `min`
 and `max`.
 
-| Input | Float parameter (`mu`, `sigma`, `p`, `rate`, `a`, `b`, `Uniform`'s `min` / `max`) | Count parameter (`n`) | Integer bound (`DiscreteUniform`'s `min` / `max`) | Method argument (`x`, `q`) |
+| Input | Float parameter (`mu`, `sigma`, `loc`, `scale`, `p`, `rate`, `a`, `b`, `Uniform`'s `min` / `max`) | Count parameter (`n`) | Integer bound (`DiscreteUniform`'s `min` / `max`) | Method argument (`x`, `q`) |
 |---|---|---|---|---|
 | `float` | accepted | `TypeError` | `TypeError` | accepted |
 | `int` | `TypeError` | accepted (`0` to `2**63 - 1`) | accepted (any `Int64`) | accepted |
@@ -93,6 +93,7 @@ may hold any count its dtype can, up to `UInt64`.
 | Distribution | Required | Also required |
 |---|---|---|
 | `Beta(a, b)` | `a > 0`, `b > 0` | both finite |
+| `Cauchy(loc, scale)` | `scale > 0` | both finite |
 | `Exponential(rate)` | `rate > 0` | finite |
 | `LogNormal(mu, sigma)` | `sigma > 0` | both finite |
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
@@ -127,7 +128,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
+| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|
@@ -155,6 +156,7 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 | `rows * size` in `samples` too large to address or allocate | Rust evaluation | `ComputeError`, fails the whole evaluation (see [Sampling](#sampling)) |
 | `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
+| A moment the distribution does not have (`Cauchy.mean()`, `variance()`, `std()`) | per row | `null` on every valid row; an invalid parameter on the row still raises |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
@@ -176,8 +178,8 @@ returns an empty result instead. This applies to a value the strict cast refuses
 to one outside its domain. The same once-per-call check runs before the value column's dtype gate, so when both are
 invalid a constant parameterisation reports the parameter and a parameter column reports the value column.
 
-Every distribution shipped today has finite moments on its valid parameter range, so this contract is exhaustive for
-them. The policy for distributions whose moments can be undefined is in
+`Cauchy` is the only shipped distribution with a moment that has no value; every other one has finite moments on its
+valid parameter range. The policy, including the `+inf` a *divergent* moment will return, is in
 [Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf).
 
 ## Related

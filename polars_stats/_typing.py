@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         "bernoulli",
         "beta",
         "binomial",
+        "cauchy",
         "discreteuniform",
         "exponential",
         "geometric",
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     SamplerFunction: TypeAlias = Literal["sample", "samples"]
     """Samplers `f(*params, row_index)`, each with a `_scalar` twin over the row index alone."""
 
-    ParamFunction: TypeAlias = Literal["entropy", "p", "params", "proba", "range", "rate", "sigma"]
+    ParamFunction: TypeAlias = Literal["entropy", "p", "params", "proba", "range", "rate", "scale", "sigma"]
     """Parameter-keyed plugins `f(*params)`: the validators and the moments with no closed form. No twin."""
 
     PluginFunction: TypeAlias = ValueFunction | SamplerFunction | ParamFunction

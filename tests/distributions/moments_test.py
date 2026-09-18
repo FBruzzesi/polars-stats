@@ -18,10 +18,24 @@ import polars as pl
 import pytest
 
 from tests._polars_compat import assert_series_equal
-from tests._registry import DRIVER_REGIMES, ULP_ABS_TOL, ULP_REL_TOL, compares_bit_exactly
+from tests._registry import (
+    DRIVER_REGIMES,
+    SPECS_BY_NAME,
+    ULP_ABS_TOL,
+    ULP_REL_TOL,
+    UNDEFINED_MOMENTS,
+    compares_bit_exactly,
+    moment_is_undefined,
+)
 
 if TYPE_CHECKING:
-    from tests._registry import DistSpec, Regime
+    from polars_stats._typing import DistributionName
+    from tests._registry import DistSpec, Moment, Regime
+
+_UNDEFINED_PAIRS = [
+    (spec_name, moment) for spec_name, moments in UNDEFINED_MOMENTS.items() for moment in sorted(moments)
+]
+"""`UNDEFINED_MOMENTS` flattened, so the dtype contract below has one node per pair rather than a skip per spec."""
 
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
@@ -66,15 +80,44 @@ def test_the_mean_lies_inside_the_support(spec: DistSpec, regime: Regime) -> Non
 
     Finiteness is asserted alongside, since `Normal`'s bounds are the whole line and the containment
     claim alone would be vacuous for it.
+
+    A mean recorded in `UNDEFINED_MOMENTS` is pinned to **null** instead, on both routings: `Cauchy` has
+    no mean, and `null` (not `NaN`, not a raise) is the contract for that.
     """
     lo, hi = spec.bounds
     got = pl.DataFrame({"_": range(4)}).select(m=spec.build(regime).mean())["m"][0]
+    if moment_is_undefined(spec.name, "mean"):
+        assert got is None, f"{spec.name}: mean is recorded undefined but answered {got}"
+        return
     assert math.isfinite(got), f"{spec.name}: mean is {got}"
     assert lo <= got <= hi, f"{spec.name}: mean {got} is outside {spec.bounds}"
 
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_the_variance_is_non_negative(spec: DistSpec, regime: Regime) -> None:
-    """A negative variance is a sign error; `std` would then be `NaN` rather than obviously wrong."""
+    """A negative variance is a sign error; `std` would then be `NaN` rather than obviously wrong.
+
+    A variance recorded in `UNDEFINED_MOMENTS` is pinned to **null** instead, as the mean above.
+    """
     got = pl.DataFrame({"_": range(4)}).select(v=spec.build(regime).variance())["v"][0]
+    if moment_is_undefined(spec.name, "variance"):
+        assert got is None, f"{spec.name}: variance is recorded undefined but answered {got}"
+        return
     assert got >= 0.0, f"{spec.name}: variance {got} is negative"
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("spec_name", "moment"), _UNDEFINED_PAIRS, ids=str)
+def test_an_undefined_moment_is_a_typed_null_not_a_null_column(
+    spec_name: DistributionName, moment: Moment, regime: Regime
+) -> None:
+    """An undefined moment is a `Float64` null, not a `Null`-typed column.
+
+    A `Null` column widens the schema of whatever it is concatenated, joined or written into, where a
+    typed null does not. No value assertion sees the difference, so nothing else pins the dtype that
+    `_cauchy.py`'s `_UNDEFINED_MOMENT` sets.
+    """
+    expr = getattr(SPECS_BY_NAME[spec_name].build(regime), moment)()
+    got = pl.DataFrame({"_": range(4)}).select(m=expr)["m"]
+    assert got.dtype == pl.Float64, f"{spec_name}.{moment}() is {got.dtype}, want Float64"
+    assert got[0] is None

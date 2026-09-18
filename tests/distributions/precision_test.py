@@ -14,12 +14,18 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
+from scipy.stats import cauchy as scipy_cauchy
 
-from polars_stats import Beta, Binomial, DiscreteUniform, Exponential, Geometric
+from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric
+from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
+
+if TYPE_CHECKING:
+    from tests._registry import Regime
 
 # --------------------------------------------------------------------------------------------------
 # Beta: the corner where a shape below 1 makes the density diverge and the sf approach 1.
@@ -381,3 +387,175 @@ def test_binomial_entropy_survives_an_underflowing_mass_term(n: int, p: float) -
     """
     got = pl.DataFrame({"_": [0]}).select(v=Binomial(n, p).entropy()).item(0, "v")
     assert got == pytest.approx(float(scipy_binom.entropy(n, p)), rel=1e-8)
+
+
+# --------------------------------------------------------------------------------------------------
+# Cauchy: the tails where `0.5 - atan(z) / pi` cancels and `tan(pi (q - 1/2))` loses a small `q`.
+#
+# scipy spells `sf` as `0.5 - arctan(z) / pi` and `logsf` as its log: absolute error `~1e-17` on a
+# value `~1 / (pi z)`, so `3e-10` relative at `z = 1e6` and worse beyond. `cauchy.rs` reads the tail
+# through `atan2(1, z)`, and the oracle here is that identity in plain `math`, exact wherever `1 / z`
+# is. The inverses are oracled against `cot(pi q) = 1 / (pi q) - pi q / 3 + ...`, whose dropped term
+# is below `1e-16` relative for every quantile here.
+# --------------------------------------------------------------------------------------------------
+
+_CAUCHY_TAIL_PARAMS = [(0.0, 1.0), (1.5, 2.0), (100.0, 1e-3)]
+
+
+@pytest.mark.parametrize(("loc", "scale"), _CAUCHY_TAIL_PARAMS, ids=str)
+@pytest.mark.parametrize("z", [1e6, 1e12, 1e100, 1e300], ids=lambda z: f"z={z}")
+def test_cauchy_tail_methods_keep_relative_precision_where_the_arctangent_cancels(
+    loc: float, scale: float, z: float
+) -> None:
+    """`sf`, `log_sf` far right and `cdf`, `log_cdf` far left hold `1e-14` relative; the near-certain
+    side of each log method reads `log1p` of the far tail rather than the log of a value rounded to `1`."""
+    dist = Cauchy(loc=loc, scale=scale)
+    frame = pl.DataFrame({"upper": [loc + z * scale], "lower": [loc - z * scale]})
+    got = frame.select(
+        sf=dist.sf("upper"),
+        cdf=dist.cdf("lower"),
+        log_sf=dist.log_sf("upper"),
+        log_cdf=dist.log_cdf("lower"),
+        log_cdf_near_one=dist.log_cdf("upper"),
+        log_sf_near_one=dist.log_sf("lower"),
+    )
+    tail = math.atan(1.0 / z) / math.pi
+    assert got["sf"].item() == pytest.approx(tail, rel=1e-14, abs=0.0)
+    assert got["cdf"].item() == pytest.approx(tail, rel=1e-14, abs=0.0)
+    assert got["log_sf"].item() == pytest.approx(math.log(tail), rel=1e-14, abs=0.0)
+    assert got["log_cdf"].item() == pytest.approx(math.log(tail), rel=1e-14, abs=0.0)
+    assert got["log_cdf_near_one"].item() == pytest.approx(math.log1p(-tail), rel=1e-14, abs=0.0)
+    assert got["log_sf_near_one"].item() == pytest.approx(math.log1p(-tail), rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize(("loc", "scale"), _CAUCHY_TAIL_PARAMS, ids=str)
+@pytest.mark.parametrize("q", [1e-300, 1e-100, 1e-20, 1e-9], ids=lambda q: f"q={q}")
+def test_cauchy_inverses_keep_relative_precision_in_the_tails(loc: float, scale: float, q: float) -> None:
+    """`ppf(q)` is `loc - scale / (pi q)` and `isf(q)` its mirror, to `1e-14` relative, down to the smallest `q`.
+
+    The textbook `loc + scale * tan(pi (q - 1/2))`, which is scipy's, forms `q - 1/2` first: that drops
+    the low bits of a small `q`, and the tangent near `-pi / 2` magnifies what was dropped by
+    `1 / (pi q)^2`, to `7e-8` relative at `q = 1e-9`.
+    """
+    dist = Cauchy(loc=loc, scale=scale)
+    got = pl.DataFrame({"q": [q]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    tail_distance = scale / (math.pi * q)
+    assert got["ppf"].item() == pytest.approx(loc - tail_distance, rel=1e-14, abs=0.0)
+    assert got["isf"].item() == pytest.approx(loc + tail_distance, rel=1e-14, abs=0.0)
+
+
+def _cauchy(regime: Regime, loc: float, scale: float) -> Cauchy:
+    """`Cauchy` with both parameters spelled in `regime`, so each test runs both Rust drivers."""
+    dist = SPECS_BY_NAME["cauchy"].build(regime, params=(loc, scale))
+    assert isinstance(dist, Cauchy)
+    return dist
+
+
+# `scale` far enough out that an intermediate leaves `float64` range while the density does not. Each
+# id names the intermediate: the oracles divide stepwise so the reference never forms it either.
+_CAUCHY_EXTREME_SCALES = [
+    # `pi * scale` overflows above `scale ~ 5.7e307`, taking the peak to `0` and `ln(pi scale)` to `inf`.
+    pytest.param(1e308, 0.0, 1.0 / math.pi / 1e308, -(math.log(math.pi) + math.log(1e308)), id="pi-times-scale"),
+    # The peak `1 / (pi scale)` is unrepresentable below `scale ~ 1.77e-309`, and the standardised
+    # point has overflowed too, so the density comes off the raw distance.
+    pytest.param(1e-310, 1.0, 1e-310 / math.pi, math.log(1e-310) - math.log(math.pi), id="the-peak-and-z"),
+    # The peak alone: `z` is finite here, and the true density is an ordinary number.
+    pytest.param(1e-310, 1e-156, 1.0 / math.pi / (1.0 + 1e308) / 1e-310, None, id="the-peak-alone"),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("scale", "point", "pdf", "log_pdf"), _CAUCHY_EXTREME_SCALES)
+def test_cauchy_density_survives_an_intermediate_leaving_float64_range(
+    regime: Regime, scale: float, point: float, pdf: float, log_pdf: float | None
+) -> None:
+    """Only a density outside `float64` range is lost; no intermediate takes one with it.
+
+    Each row overflows a different intermediate while the answer stays representable. The third is
+    the widest: with the peak overflowed and `z` finite, a single `peak / (1 + z^2)` reads `inf` for
+    every point inside `|z| ~ 1.3e154`, however small its density.
+    """
+    dist = _cauchy(regime, 0.0, scale)
+    got = pl.DataFrame({"x": [point] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    assert got["pdf"][0] == pytest.approx(pdf, rel=1e-13, abs=0.0)
+    if log_pdf is not None:
+        assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-14)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize("distance", [1e24, 1e100, 1e300], ids=lambda d: f"d={d}")
+def test_cauchy_log_tails_survive_the_tail_mass_itself_underflowing(regime: Regime, distance: float) -> None:
+    """`scale / |d|` below the smallest subnormal makes the tail mass `0`, but its log is ordinary.
+
+    `Cauchy(0, 1e-300).log_cdf(-1e24)` is `-747.18`, not `-inf`: below the smallest normal the tail is
+    `scale / (pi |d|)` to far beyond `float64`, so the log is read off the three factors instead.
+    `cdf` genuinely has no answer in this regime and stays `0.0`.
+    """
+    scale = 1e-300
+    dist = _cauchy(regime, 0.0, scale)
+    frame = pl.DataFrame({"lower": [-distance] * 4, "upper": [distance] * 4})
+    got = frame.select(log_cdf=dist.log_cdf("lower"), log_sf=dist.log_sf("upper"), cdf=dist.cdf("lower"))
+    want = math.log(scale) - math.log(distance) - math.log(math.pi)
+    assert got["log_cdf"][0] == pytest.approx(want, rel=1e-14)
+    assert got["log_sf"][0] == pytest.approx(want, rel=1e-14)
+    assert got["cdf"][0] == 0.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_cauchy_tails_survive_a_scale_that_cannot_standardise_the_point(regime: Regime) -> None:
+    """A `scale` small enough that `(value - loc) / scale` overflows still answers on every method.
+
+    `Cauchy(0, 1e-300)` reaches that at `|value| > 1.8e8`, far inside the range where the true tail
+    (`3.18e-311` here) is an ordinary subnormal. Standardising first would lose all four tail methods
+    to a saturated `0.0` / `1.0` / `-inf`, and would make `pdf` `inf / inf`, a `NaN` the contract
+    reserves for a `NaN` evaluation point.
+    """
+    scale = 1e-300
+    dist = _cauchy(regime, 0.0, scale)
+    # Four rows: on a height-1 frame the `column` parameter is length 1 and `params_are_constant`
+    # routes it back to the scalar path.
+    frame = pl.DataFrame({"upper": [1e10] * 4, "lower": [-1e10] * 4})
+    got = frame.select(
+        sf=dist.sf("upper"),
+        cdf=dist.cdf("lower"),
+        log_sf=dist.log_sf("upper"),
+        log_cdf=dist.log_cdf("lower"),
+        pdf=dist.pdf("upper"),
+        log_pdf=dist.log_pdf("upper"),
+    )
+    # `tail` is subnormal (3.18e-311, ~6.4e12 ulps above zero), so `rel=1e-14` would be six times
+    # below one ulp of a libm `atan2` that only owes one; an ulp of the tail moves its log by 2e-16.
+    tail = scale / (math.pi * 1e10)
+    assert got["sf"][0] == pytest.approx(tail, rel=1e-12, abs=0.0)
+    assert got["cdf"][0] == pytest.approx(tail, rel=1e-12, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(math.log(tail), rel=1e-14, abs=0.0)
+    assert got["log_cdf"][0] == pytest.approx(math.log(tail), rel=1e-14, abs=0.0)
+    assert got["pdf"][0] == pytest.approx(scale / (math.pi * 1e20), rel=1e-13, abs=0.0)
+    assert got["log_pdf"][0] == pytest.approx(math.log(scale) - math.log(math.pi) - 2.0 * math.log(1e10), rel=1e-14)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_cauchy_entropy_survives_a_scale_whose_four_pi_multiple_overflows(regime: Regime) -> None:
+    """`log(4 pi scale)` is `inf` above `scale ~ 1.43e307`; summed as `log(4 pi) + log(scale)` it is not.
+
+    The true entropy never exceeds `712.3` anywhere in `float64` range, so the overflow was purely in
+    the intermediate. This is also how scipy spells it, which is why parity holds at both ends.
+    """
+    scale = 1e308
+    dist = _cauchy(regime, 0.0, scale)
+    got = pl.DataFrame({"_": range(4)}).select(entropy=dist.entropy())["entropy"][0]
+    assert got == pytest.approx(float(scipy_cauchy(loc=0.0, scale=scale).entropy()), rel=1e-14)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_cauchy_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regime: Regime) -> None:
+    """`-0.0` is inside `[0, 1]` for the range gate, so it reaches the quantile and must still mean `q = 0`.
+
+    Without the `abs()` in `standard_quantile`, `PI * -0.0` is `-0.0`, its tangent is `-0.0`, and
+    `-1.0 / -0.0` is `+inf`: `ppf(-0.0)` would return the upper support bound instead of the lower.
+    A user column reaches `-0.0` through any `0.0 * -1` or a negated aggregate.
+    """
+    dist = _cauchy(regime, 1.5, 2.0)
+    got = pl.DataFrame({"q": [-0.0, 0.0]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list() == [-math.inf, -math.inf]
+    assert got["isf"].to_list() == [math.inf, math.inf]

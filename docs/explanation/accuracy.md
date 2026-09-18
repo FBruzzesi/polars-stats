@@ -34,9 +34,9 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
-distributions (`Uniform`, `Exponential`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and
-`log_sf` stay finite far past that and are the right methods for tail scoring. Likewise `isf(q)`
-rather than `ppf(1 - q)` on those seven: forming the complement quantises the tail mass to `1.1e-16`
+distributions (`Uniform`, `Exponential`, `Cauchy`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf`
+and `log_sf` stay finite far past that and are the right methods for tail scoring. Likewise `isf(q)`
+rather than `ppf(1 - q)` on those eight: forming the complement quantises the tail mass to `1.1e-16`
 absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
@@ -127,6 +127,15 @@ magnitudes are in the inherited limits below.
   variance overflows above `sigma ~ 18.8`, and `Exponential.pdf` lands in the subnormal range once
   `rate * x` passes ~708, where only one or two significant digits remain. `log_pdf` is exact well
   past that.
+
+    `Cauchy` has one such quantity, at the small end of `scale`. Its peak density is `1 / (pi scale)`,
+    which exceeds `float64` below `scale ~ 1.77e-309`, so `Cauchy(0, 1e-310).pdf(0.0)` is `+inf`.
+    That is the density itself leaving the type, not an intermediate: the same object answers
+    `pdf(1e-156)` as `31.8` and `pdf(1.0)` as `3.18e-311`, and `log_pdf` is exact throughout
+    (`708.04` at the point where `pdf` reports `3.15e307`). `entropy` has no range limit anywhere in
+    `scale`. `ppf` and `isf` overflow to an infinity exactly where the quantile itself leaves the
+    type: `Cauchy(0, 1e308).ppf(0.1)` is `-inf` because the true `-3.08e308` is past `float64`'s
+    largest value. The audited range is `scale` in `1e-8` to `1e8`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%
