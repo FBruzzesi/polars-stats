@@ -103,10 +103,10 @@ path is selected only when the parameters are known scalars, so nothing column-v
 
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
-`binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`) so an invalid parameterisation
-raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment
-(see "Invalid parameters raise"). With column parameters that plugin checks each parameter column once, over the
-whole column, before any row is built.
+`binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`) so an invalid
+parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently
+producing a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin checks each
+parameter column once, over the whole column, before any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
@@ -164,9 +164,9 @@ validating plugin (see [Architecture / Plugin granularity](architecture.md#plugi
 
 ### Moments that are undefined return null; divergent ones return `+inf`
 
-Every distribution shipped today has finite moments on its valid parameter range, so this policy does not bite yet; it
-governs distributions on the roadmap. Three outcomes, and the distinction is what the quantity does rather than
-whether the user asked a reasonable question:
+`Cauchy` is the first shipped distribution this bites: its `mean()`, `variance()` and `std()` are null on every valid
+row. Three outcomes, and the distinction is what the quantity does rather than whether the user asked a reasonable
+question:
 
 * **Undefined**, permanently or only on part of the range (a Cauchy mean; a Student-t mean at `df <= 1`): **null**.
   It is Polars' own representation of "no value here", it is what scipy's `nan` maps to under the Polars idiom, and it

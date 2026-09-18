@@ -20,10 +20,21 @@ import pytest
 
 import polars_stats
 from polars_stats.distributions._base import _UnivariateDistribution
-from tests._registry import ALL_SPECS, CONTRACT_FRAME, DEGENERATE, MOMENTS, ULP_TOLERANT_MOMENTS, Regime
+from tests._registry import (
+    ALL_SPECS,
+    CONTRACT_FRAME,
+    DEGENERATE,
+    MOMENTS,
+    ULP_TOLERANT_MOMENTS,
+    UNDEFINED_MOMENTS,
+    Regime,
+)
 
 if TYPE_CHECKING:
-    from tests._registry import DistSpec
+    from collections.abc import Mapping
+
+    from polars_stats._typing import DistributionName
+    from tests._registry import DistSpec, Moment
 
 
 def _exported_distributions() -> dict[str, type[_UnivariateDistribution]]:
@@ -152,17 +163,25 @@ def test_spec_invalid_table_is_not_empty_and_names_its_parameter(spec: DistSpec)
     assert not unnamed, f"{spec.name}: invalid rows whose match names no parameter: {unnamed}"
 
 
-def test_the_ulp_tolerant_table_names_real_specs_and_real_moments() -> None:
-    """Every relaxed `(spec, moment)` pair exists, so a rename cannot silently re-tighten or loosen one.
+@pytest.mark.parametrize(
+    ("table_name", "moments_by_spec"),
+    [("ULP_TOLERANT_MOMENTS", ULP_TOLERANT_MOMENTS), ("UNDEFINED_MOMENTS", UNDEFINED_MOMENTS)],
+    ids=["ULP_TOLERANT_MOMENTS", "UNDEFINED_MOMENTS"],
+)
+def test_the_sparse_moment_tables_name_real_specs_and_real_moments(
+    table_name: str, moments_by_spec: Mapping[DistributionName, frozenset[Moment]]
+) -> None:
+    """Every `(spec, moment)` pair in the two sparse moment tables exists, so a rename cannot silently unpin one.
 
-    The table is the one place the suite gives up bit-exactness between the two parameter routings.
-    A typo there is invisible: the pair simply never matches, and the comparison goes back to exact
-    (or, for a mistyped moment, stays relaxed for a moment that no longer exists).
+    `ULP_TOLERANT_MOMENTS` is the one place the suite gives up bit-exactness between the two parameter
+    routings, and `UNDEFINED_MOMENTS` the one place it replaces a value with a null. A typo in either is
+    invisible: the pair never matches, and the assertion goes back to the strict form (or, for a
+    mistyped moment, stays relaxed for a moment that no longer exists).
     """
-    stale = sorted(set(ULP_TOLERANT_MOMENTS) - SPEC_NAMES)
-    assert not stale, f"ULP_TOLERANT_MOMENTS names specs that do not exist: {stale}"
-    unknown = sorted({m for moments in ULP_TOLERANT_MOMENTS.values() for m in moments} - set(MOMENTS))
-    assert not unknown, f"ULP_TOLERANT_MOMENTS names moments that do not exist: {unknown}"
+    stale = sorted(set(moments_by_spec) - SPEC_NAMES)
+    assert not stale, f"{table_name} names specs that do not exist: {stale}"
+    unknown = sorted({m for moments in moments_by_spec.values() for m in moments} - set(MOMENTS))
+    assert not unknown, f"{table_name} names moments that do not exist: {unknown}"
 
 
 def test_the_degenerate_table_names_real_specs() -> None:

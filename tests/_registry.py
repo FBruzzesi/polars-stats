@@ -21,6 +21,7 @@ from polars_stats import (
     Bernoulli,
     Beta,
     Binomial,
+    Cauchy,
     DiscreteUniform,
     Exponential,
     Geometric,
@@ -438,6 +439,27 @@ _NORMAL = DistSpec(
     integration_bounds=lambda p: (p[0] - 12.0 * p[1], p[0] + 12.0 * p[1]),
 )
 
+_CAUCHY = DistSpec(
+    name="cauchy",
+    cls=Cauchy,
+    continuous=True,
+    parameters=(Param("loc", "loc"), Param("scale", "scale")),
+    param_strategy=st.tuples(_finite(-10.0, 10.0), _finite(1e-2, 10.0)),
+    example=(1.5, 2.0),
+    eval_range=lambda p: (p[0] - 6.0 * p[1], p[0] + 6.0 * p[1]),
+    bounds=(-inf, inf),
+    # `loc` itself would be vacuous for `scale`: the cdf is `0.5` at the median whatever the scale.
+    on_support_point=1.5 + 2.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("scale=0", (0.0, 0.0), "scale must be"),
+        InvalidCase("scale=-1", (0.0, -1.0), "scale must be"),
+    ),
+    # The trapezoid is spectrally accurate on a Lorentzian, so the whole error is the truncated tail
+    # mass `2 / (pi k)`: `2.1e-4` at `k = 3000` against the `1e-3` tolerance, measured on the suite's grid.
+    integration_bounds=lambda p: (p[0] - 3000.0 * p[1], p[0] + 3000.0 * p[1]),
+)
+
 _UNIFORM = DistSpec(
     name="uniform",
     cls=Uniform,
@@ -566,6 +588,8 @@ CONTRACT_FRAME = pl.DataFrame(
         # rather than a reuse of `n`, for the same reason.
         "mu": [0.0, 1.0, -0.5],
         "sigma": [1.0, 2.0, 0.5],
+        "loc": [0.0, 1.0, -0.5],
+        "scale": [1.0, 2.0, 0.5],
         "lo": [0.0, -1.0, 2.0],
         "hi": [1.0, 3.0, 5.0],
         "lo_i": [0, -3, 2],
@@ -589,6 +613,7 @@ ALL_SPECS = [
     _DISCRETE_UNIFORM,
     _GEOMETRIC,
     _NORMAL,
+    _CAUCHY,
     _UNIFORM,
     _LOGNORMAL,
     _EXPONENTIAL,
@@ -626,11 +651,25 @@ def compares_bit_exactly(spec_name: DistributionName, moment: Moment) -> bool:
     return moment not in ULP_TOLERANT_MOMENTS.get(spec_name, frozenset())
 
 
+UNDEFINED_MOMENTS: dict[DistributionName, frozenset[Moment]] = {"cauchy": frozenset({"mean", "variance", "std"})}
+"""The `(spec, moment)` pairs with no value: **null** on every valid row, on both parameter routings, and still
+raising on an invalid parameterisation.
+
+`docs/explanation/design.md` settles the contract. A *divergent* moment is `+inf`, which is a value, and is not
+listed here. Every reader asserts the null in place of the value it would otherwise pin.
+"""
+
+
+def moment_is_undefined(spec_name: DistributionName, moment: Moment) -> bool:
+    """Whether this spec's `moment` is recorded as having no value."""
+    return moment in UNDEFINED_MOMENTS.get(spec_name, frozenset())
+
+
 # Parameterisations where the mass collapses onto one point: `p` at an endpoint, no trials, a
 # one-point range. Both routings must accept them, agree, and reach a finite entropy by the
 # `0 log 0 = 0` convention rather than raising.
 #
-# Not a `DistSpec` field: four of the nine distributions have none, and a field that is an empty
+# Not a `DistSpec` field: six of the ten distributions have none, and a field that is an empty
 # tuple more often than not is a bespoke fact wearing a row's clothes. It lives here rather than in
 # `fast_path_test.py` because `registry_test.py` reads it too.
 DEGENERATE: dict[str, tuple[DistributionName, tuple[float, ...]]] = {

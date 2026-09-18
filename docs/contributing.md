@@ -249,16 +249,17 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       `sample_dtype`, the finite out-of-domain `invalid` table, and `integration_bounds` (continuous) or
       `support` (discrete). Add a column per parameter to `CONTRACT_FRAME` in the same file; no two parameters
       of one distribution may share one. Add the name to `DistributionName` in `polars_stats/_typing.py`, which
-      is what types the row and the three sparse tables below. Every shared contract reads the row, and
+      is what types the row and the four sparse tables below. Every shared contract reads the row, and
       `tests/distributions/registry_test.py` fails if a distribution is exported without one, so this is the one
       place the old silent-skip cannot happen.
-    * Possibly a row in one of the three **sparse** tables, which a `DistSpec` field cannot hold because most
+    * Possibly a row in one of the four **sparse** tables, which a `DistSpec` field cannot hold because most
       distributions have no entry. `support_test.py::_DENSITY_AT_ENDPOINT` (the density *at* a finite support
       endpoint, whose value is the distribution's own rather than a saturated constant) is **required** when the
       support has a finite endpoint, and fails red when missing. `_registry.py::DEGENERATE` (parameterisations
-      where the mass collapses onto one point) and `_registry.py::ULP_TOLERANT_MOMENTS` (moments that are not
-      bit-exact across the two parameter routings) are both opt-in; add to the latter only from a failing
-      bit-exactness assertion, never to quiet one.
+      where the mass collapses onto one point), `_registry.py::ULP_TOLERANT_MOMENTS` (moments that are not
+      bit-exact across the two parameter routings) and `_registry.py::UNDEFINED_MOMENTS` (moments the
+      distribution does not have, pinned to null on every valid row) are all opt-in; add to
+      `ULP_TOLERANT_MOMENTS` only from a failing bit-exactness assertion, never to quiet one.
     * Any **bespoke** facts, appended to the file that owns their subject in `tests/distributions/`: an algebraic
       reduction to another distribution goes in `identities_test.py`, a numerical-regime fact with no scipy oracle
       in `precision_test.py`. Everything a shared contract already states needs no new test at all; see

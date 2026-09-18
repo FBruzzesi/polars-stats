@@ -5,6 +5,7 @@ from polars_stats.distributions._base import ContinuousDistribution, DiscreteDis
 from polars_stats.distributions._bernoulli import Bernoulli
 from polars_stats.distributions._beta import Beta
 from polars_stats.distributions._binomial import Binomial
+from polars_stats.distributions._cauchy import Cauchy
 from polars_stats.distributions._discrete_uniform import DiscreteUniform
 from polars_stats.distributions._exponential import Exponential
 from polars_stats.distributions._geometric import Geometric
@@ -16,6 +17,7 @@ __all__ = (
     "Bernoulli",
     "Beta",
     "Binomial",
+    "Cauchy",
     "ContinuousDistribution",
     "DiscreteDistribution",
     "DiscreteUniform",

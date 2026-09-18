@@ -5,7 +5,7 @@ icon: lucide/chart-column
 # Discrete distributions
 
 Every discrete distribution inherits the shared method surface from `DiscreteDistribution` (shown first); the concrete
-classes follow, alphabetically. The members listed under each class include those inherited methods.
+classes follow, alphabetically, and list only what they define or override.
 
 ## Base class
 

@@ -23,9 +23,20 @@ from typing import TYPE_CHECKING, Annotated
 
 import numpy as np
 from cyclopts import App, Parameter
-from scipy.stats import bernoulli, beta, binom, expon, geom, lognorm, norm, randint, uniform
+from scipy.stats import bernoulli, beta, binom, cauchy, expon, geom, lognorm, norm, randint, uniform
 
-from polars_stats import Bernoulli, Beta, Binomial, DiscreteUniform, Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    Cauchy,
+    DiscreteUniform,
+    Exponential,
+    Geometric,
+    LogNormal,
+    Normal,
+    Uniform,
+)
 from tools.benchmarks._harness import (
     Comparison,
     OutputFormat,
@@ -59,6 +70,12 @@ def _lognormal(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return (
         LogNormal(mu=params.plugin("mu"), sigma=params.plugin("sigma")),
         lognorm(s=params.scipy("sigma"), scale=np.exp(params.scipy("mu"))),
+    )
+
+
+def _cauchy(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Cauchy(loc=params.plugin("loc"), scale=params.plugin("scale")), cauchy(
+        loc=params.scipy("loc"), scale=params.scipy("scale")
     )
 
 
@@ -109,6 +126,12 @@ REGISTRY: dict[str, Comparison] = {
             name="lognormal",
             params={"mu": ParamSpec(0.0, -1.0, 1.0), "sigma": ParamSpec(1.0, 0.5, 2.0)},
             build=_lognormal,
+        ),
+        Comparison(
+            name="cauchy",
+            params={"loc": ParamSpec(0.0, -1.0, 1.0), "scale": ParamSpec(1.0, 0.5, 2.0)},
+            build=_cauchy,
+            undefined_moments=frozenset({"mean", "variance", "std"}),
         ),
         Comparison(
             name="uniform",

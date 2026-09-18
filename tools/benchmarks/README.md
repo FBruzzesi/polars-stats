@@ -151,7 +151,9 @@ so a saved report always says which build produced it.
   `Sweep` (a grid, and the CLI's option surface), and `Contender` (a `(Comparison, Case) -> Call` builder registered by
   name in `CONTENDERS`, with ratios taken against `REFERENCE_CONTENDER`).
 
-Adding a distribution is one entry in `REGISTRY`: its `ParamSpec`s and its factory.
+Adding a distribution is one entry in `REGISTRY`: its `ParamSpec`s and its factory, plus `undefined_moments`
+when the distribution has a moment with no value (`Cauchy`'s `mean` / `variance` / `std`). Those cells are
+dropped from the sweep rather than measured; see the correctness gate below for why.
 Adding a method is a token in `Method` plus a row in `METHOD_SPECS`, and the import-time check that pairs the two will
 fail the run if you add only one.
 
@@ -193,6 +195,8 @@ survive pickling into the memory subprocess.
   Moments are gated on both sides' shapes: height 1 for `scalar` and `broadcast`, `rows` for `column`.
   A null on the `polars_stats` side fails the gate outright, because `to_numpy` renders it as `NaN` and the comparison
   treats `NaN` as agreeing with scipy's own. Flagged `MISMATCH` if it diverges. Warn-only.
+  That null rule is why a moment listed in a `Comparison`'s `undefined_moments` is never measured: its null is
+  the right answer against scipy's `nan`, so there is no cell for the gate to judge.
 
 Caveats on the memory numbers (read before quoting them):
 

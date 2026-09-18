@@ -15,6 +15,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | Distribution | Kind | Parameters | scipy equivalent |
 |---|---|---|---|
 | `Beta(a, b)` | continuous | `a > 0`, `b > 0` | `beta(a, b)` |
+| `Cauchy(loc, scale)` | continuous | `scale > 0` | `cauchy(loc=loc, scale=scale)`; its undefined moments are `null` here, `nan` there |
 | `Exponential(rate)` | continuous | `rate > 0` | `expon(scale=1 / rate)` |
 | `LogNormal(mu, sigma)` | continuous | `sigma > 0` | `lognorm(s=sigma, scale=exp(mu))` |
 | `Normal(mu, sigma)` | continuous | `sigma > 0` | `norm(loc=mu, scale=sigma)` |
@@ -57,7 +58,8 @@ does. The exceptions are `Beta` and `Binomial`, whose `log_cdf` / `log_sf` are `
 [Accuracy](../explanation/accuracy.md)).
 
 Argument-free statistics return one value per row of parameters: with column-valued parameters, `mean()` yields the
-mean of a different distribution on every row.
+mean of a different distribution on every row. A moment the distribution does not have is **null**, and still raises
+on an invalid parameter; see [Parameters and contracts](parameters-and-contracts.md#nulls-nans-and-errors).
 
 ## Type guards
 

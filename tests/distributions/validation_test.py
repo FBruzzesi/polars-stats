@@ -30,7 +30,15 @@ import pytest
 
 from polars_stats import Binomial, DiscreteUniform
 from tests._polars_compat import ENGINE_SELECTABLE, assert_series_equal
-from tests._registry import ALL_SPECS, DRIVER_REGIMES, MOMENTS, all_value_keyed, invalid_cases, point_column
+from tests._registry import (
+    ALL_SPECS,
+    DRIVER_REGIMES,
+    MOMENTS,
+    all_value_keyed,
+    invalid_cases,
+    moment_is_undefined,
+    point_column,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,7 +57,8 @@ class _Probe:
     frame: pl.DataFrame
     expr: pl.Expr
     valid_row_answers: bool = True
-    """Whether row 0 must answer non-null. `False` only where the evaluation point is itself null."""
+    """Whether row 0 must answer non-null. `False` where the evaluation point is itself null, and for a moment
+    recorded in `UNDEFINED_MOMENTS`, whose null on a valid row is the contract."""
 
     def refusal(self) -> str | None:
         """The refusal as `<type>: <message>`, or `None` when the query computed."""
@@ -97,7 +106,9 @@ def _probes(spec: DistSpec, overrides: _Overrides, points: tuple[float | None, .
         for method in all_value_keyed(dist)
     ]
     row = _frame(spec, overrides, spec.on_support_point)
-    probes += [_Probe(method, row, getattr(dist, method)()) for method in MOMENTS]
+    probes += [
+        _Probe(method, row, getattr(dist, method)(), not moment_is_undefined(spec.name, method)) for method in MOMENTS
+    ]
     probes += [_Probe("sample", row, dist.sample(seed=0)), _Probe("samples", row, dist.samples(3, seed=0))]
     return probes
 

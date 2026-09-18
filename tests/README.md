@@ -28,7 +28,7 @@ sweep from the float parameters.
 `polars_stats.__all__` against the rows, so a distribution exported without a row fails a test rather
 than being silently skipped.
 
-Three sparse per-distribution tables sit outside the row, because most distributions have no entry
+Four sparse per-distribution tables sit outside the row, because most distributions have no entry
 and a field that is empty more often than not is a bespoke fact wearing a row's clothes. The split is
 by reader: a table more than one module reads lives in `_registry.py` beside the rows, and one only
 its own test file reads stays in that file.
@@ -37,11 +37,12 @@ its own test file reads stays in that file.
 | --- | --- | --- |
 | `DEGENERATE` | `_registry.py` | parameterisations where the mass collapses onto one point |
 | `ULP_TOLERANT_MOMENTS` | `_registry.py` | the `(spec, moment)` pairs that are not bit-exact across routings |
+| `UNDEFINED_MOMENTS` | `_registry.py` | the `(spec, moment)` pairs with no value, pinned to null on every valid row |
 | `_DENSITY_AT_ENDPOINT` | `support_test.py` | the density *at* a finite support endpoint |
 
-None is invisible. All three are keyed by `DistributionName`, so a mistyped key is a type error; the
-first two are additionally tied back to `ALL_SPECS` by `registry_test.py`, and the third is asserted
-present whenever the support has a finite endpoint.
+None is invisible. All four are keyed by `DistributionName`, so a mistyped key is a type error; the
+three in `_registry.py` are additionally tied back to `ALL_SPECS` by `registry_test.py`, and
+`_DENSITY_AT_ENDPOINT` is asserted present whenever the support has a finite endpoint.
 
 ## 2. Behavioural contracts: `tests/distributions/`
 
@@ -54,7 +55,7 @@ match against SciPy cannot see:
 | `validation_test.py` | an invalid parameter raises and names its rule; a null one nulls that row only; a null or `NaN` evaluation point; the numeric and integer dtype gates |
 | `support_test.py` | outside the support the answers are saturated constants, and a finite endpoint of a continuous support is already saturated |
 | `inverse_test.py` | `ppf(0)` / `ppf(1)` are the support bounds, and a discrete inverse is integer-valued |
-| `moments_test.py` | `std` is the square root of `variance`, the mean is inside the support, the variance is non-negative |
+| `moments_test.py` | `std` is the square root of `variance`, the mean is inside the support, the variance is non-negative, or both are null where `UNDEFINED_MOMENTS` records them |
 | `construct_test.py` | the constructor refuses a wrong scalar *type* and defers every *value* to evaluation |
 | `naming_test.py` | output names follow polars' first-input rule; a `str` argument means `pl.col(name)` |
 | `fast_path_test.py` | the constant-parameter paths refuse and accept exactly what the per-row paths do |

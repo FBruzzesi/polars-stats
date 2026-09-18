@@ -91,6 +91,8 @@ output height follows the regime.
 
 ValueInput = Literal["support", "quantile"]
 DensityToken = Literal["pdf", "pmf"]
+MomentMethod = Literal["mean", "variance", "std", "entropy"]
+"""The `Method` tokens whose `MethodSpec.kind` is `moment`, asserted below against `METHOD_SPECS`."""
 OutputFormat = Literal["markdown", "json", "rich"]
 Regime = Literal["scalar", "column", "broadcast"]
 """How a distribution's parameters are supplied: Python numbers, `pl.col`, or `pl.lit`.
@@ -170,6 +172,11 @@ ALL_METHODS: tuple[Method, ...] = tuple(METHOD_SPECS)
 if _missing := sorted(set(get_args(Method)) - set(METHOD_SPECS)):
     # A token with no row is silently absent from ALL_METHODS, so the default sweep quietly narrows.
     _msg = f"Method tokens with no METHOD_SPECS row: {_missing}"
+    raise RuntimeError(_msg)
+
+if _not_moments := sorted(m for m in get_args(MomentMethod) if METHOD_SPECS[m].kind != "moment"):
+    # Otherwise `Comparison.undefined_moments` could drop a value-keyed cell from a sweep in silence.
+    _msg = f"MomentMethod tokens whose MethodSpec.kind is not 'moment': {_not_moments}"
     raise RuntimeError(_msg)
 
 
@@ -272,6 +279,9 @@ class Comparison:
     build: DistFactory
     density_token: DensityToken = field(init=False)
     """`pdf` or `pmf`, resolved once here rather than per cell: resolving it builds the pair."""
+    undefined_moments: frozenset[MomentMethod] = frozenset()
+    """Moments the distribution has no value for (`Cauchy.mean()` is null, scipy's is `nan`), so there is no
+    cell to time and nothing for the gate to compare."""
 
     def __post_init__(self) -> None:
         if _VALUE_COLUMN in self.params:
@@ -792,7 +802,7 @@ def measure_cases(comparison: Comparison, sweep: Sweep, *, memory: bool = False)
     A cell that raises is reported and skipped rather than discarding the cells already measured;
     the caller can therefore still report a partial report after an interrupt.
     """
-    cases = list(sweep.cases(comparison.name))
+    cases = [case for case in sweep.cases(comparison.name) if case.method not in comparison.undefined_moments]
     try:
         for index, case in enumerate(cases, start=1):
             print(f"  [{index}/{len(cases)}] {case.id}", end="\r", flush=True)

@@ -20,7 +20,7 @@ import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
 from polars_stats import Bernoulli, DiscreteUniform, Geometric, Uniform
-from tests._registry import DRIVER_REGIMES, min_max
+from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
     from tests._registry import DistSpec, Regime
@@ -108,7 +108,12 @@ def test_the_sample_mean_tracks_the_distribution_mean(spec: DistSpec, regime: Re
 
     Nine of these replace nineteen per-distribution moment checks at 200,000 rows, which is a
     duplication cut rather than a speed one: those cost 0.07s of a 12s suite.
+
+    A distribution with no mean has nothing to track;
+    `test_a_cauchy_draw_tracks_loc_and_scale_through_its_quartiles` is its parameter-order check instead.
     """
+    if moment_is_undefined(spec.name, "mean"):
+        pytest.skip(f"{spec.name} has no mean for the draws to track")
     dist = spec.build(regime)
     frame = _frame(_CLT_ROWS)
     moments = frame.select(mean=dist.mean(), std=dist.std())
@@ -182,6 +187,32 @@ def test_over_partitions_keeps_the_full_length(spec: DistSpec) -> None:
 # --------------------------------------------------------------------------------------------------
 # Bespoke sampler facts: a boundary the general contract cannot state, and the saturation regimes.
 # --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_cauchy_draw_tracks_loc_and_scale_through_its_quartiles(regime: Regime) -> None:
+    """The quartiles sit at `loc -+ scale` and the median at `loc`, the parameter-order check the mean cannot make.
+
+    The heavy tail disqualifies the mean: among these draws the farthest lies hundreds of scales out
+    (asserted, as the witness that the tail is the Cauchy one), so the sample mean does not converge at
+    any `n`. A sample quantile converges at the usual `1 / sqrt(n)`, with standard error
+    `sqrt(q (1 - q)) / (pdf(x_q) sqrt(n))`: `pi scale / (2 sqrt n)` at the median and
+    `sqrt(3) pi scale / (2 sqrt n)` at either quartile.
+    """
+    spec = SPECS_BY_NAME["cauchy"]
+    loc, scale = spec.example
+    drawn = _frame(_CLT_ROWS).select(z=spec.build(regime).sample(seed=_SEED))["z"]
+
+    se_median = math.pi * scale / (2.0 * math.sqrt(_CLT_ROWS))
+    se_quartile = math.sqrt(3.0) * se_median
+    for q, want, se in ((0.25, loc - scale, se_quartile), (0.5, loc, se_median), (0.75, loc + scale, se_quartile)):
+        got = drawn.quantile(q)
+        assert isinstance(got, float)
+        assert abs(got - want) <= _CLT_SIGMAS * se, f"quantile {q}: {got} is more than {_CLT_SIGMAS} SE from {want}"
+
+    low, high = min_max(drawn)
+    assert high - loc > 100.0 * scale
+    assert loc - low > 100.0 * scale
 
 
 def test_a_uniform_draw_stays_strictly_below_max_under_rounding() -> None:

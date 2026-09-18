@@ -62,6 +62,7 @@ from polars_stats import (
     Bernoulli,
     Beta,
     Binomial,
+    Cauchy,
     ContinuousDistribution,
     DiscreteDistribution,
     DiscreteUniform,
@@ -393,6 +394,89 @@ def uniform_isf(params: Params, q: float) -> mp.mpf:
     """`hi - q * width`, the exact inverse survival function."""
     _, hi, width = uniform_span(params)
     return hi - mp.mpf(q) * width
+
+
+# Cauchy oracles. Every method is elementary, so this is a control like Exponential and Uniform. Its
+# one regime of its own is that the tail never underflows (`sf ~ 1 / (pi z)` is representable to
+# `z ~ 1e307`), so every decade of `z` is a live probe of the arctangent cancellation.
+
+
+def cauchy_z(params: Params, x: float) -> mp.mpf:
+    """Standardised `(x - loc) / scale` at oracle precision."""
+    loc, scale = params
+    return (mp.mpf(x) - mp.mpf(loc)) / mp.mpf(scale)
+
+
+def cauchy_pdf(params: Params, x: float) -> mp.mpf:
+    """`1 / (pi scale (1 + z^2))`."""
+    z = cauchy_z(params, x)
+    return 1 / (mp.pi * mp.mpf(params[1]) * (1 + z * z))
+
+
+def cauchy_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`-(ln(pi scale) + log1p(z^2))`."""
+    z = cauchy_z(params, x)
+    return -(mp.log(mp.pi * mp.mpf(params[1])) + mp.log1p(z * z))
+
+
+def cauchy_cdf(params: Params, x: float) -> mp.mpf:
+    """`1/2 + atan(z) / pi`, as `atan2(1, -z) / pi` so the lower tail keeps relative precision at 50 digits too."""
+    return mp.atan2(1, -cauchy_z(params, x)) / mp.pi
+
+
+def cauchy_sf(params: Params, x: float) -> mp.mpf:
+    """`1/2 - atan(z) / pi`, as `atan2(1, z) / pi`; see [`cauchy_cdf`]."""
+    return mp.atan2(1, cauchy_z(params, x)) / mp.pi
+
+
+def cauchy_ppf(params: Params, q: float) -> mp.mpf:
+    """`loc + scale tan(pi (q - 1/2))`, as `-cot(pi q)` below the median and `cot(pi (1 - q))` above it.
+
+    The literal form loses `q` entirely below `q ~ 1e-50` at the oracle's own precision, the same
+    cancellation the library avoids at 16 digits. `1 - q` is exact for a float64 `q` above `1/2`.
+    """
+    loc, scale = mp.mpf(params[0]), mp.mpf(params[1])
+    if q <= 0:
+        return mp.ninf
+    if q >= 1:
+        return mp.inf
+    quantile, half = mp.mpf(q), mp.mpf(0.5)
+    if quantile == half:
+        # `cot(pi / 2)` at 50 digits is `~5e-52`, not `0`; the median is `loc` exactly.
+        return loc
+    if quantile < half:
+        return loc - scale * mp.cot(mp.pi * quantile)
+    return loc + scale * mp.cot(mp.pi * (1 - quantile))
+
+
+def cauchy_isf(params: Params, q: float) -> mp.mpf:
+    """`2 loc - ppf(q)`, the exact inverse survival function (see [`normal_isf`])."""
+    ppf = cauchy_ppf(params, q)
+    return 2 * mp.mpf(params[0]) - ppf if mp.isfinite(ppf) else -ppf
+
+
+def undefined_moment(_params: Params, _x: float) -> mp.mpf:
+    """`nan`, which [`classify`] reads as "only a null is acceptable here"."""
+    return mp.nan
+
+
+def cauchy_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """`loc +- scale k`, `k` on a grid to `1e300` and log-uniform over the whole representable range.
+
+    The tail never underflows, so unlike the Normal sweep there is no point past which `cdf` / `sf`
+    stop answering; `pdf` still leaves range near `|k| ~ 3.6e161`, where only `log_pdf` answers.
+    Every decade of `k` probes the `0.5 - atan(k) / pi`
+    cancellation, and past `k ~ 1.3e154` the squared standardised point overflowing inside `pdf` /
+    `log_pdf`. A probe whose `scale * k` overflows the point itself is dropped.
+    """
+    loc, scale = params
+    points: list[Point] = [(loc, "danger")]
+    for k in (*SIGMA_GRID[1:], 1e4, 1e8, 1e12, 1e16, 1e100, 1e154, 1e200, 1e300):
+        points.extend(((loc + scale * k, "danger"), (loc - scale * k, "danger")))
+    for _ in range(count):
+        k = 10.0 ** rng.uniform(-8.0, 300.0)
+        points.extend(((loc + scale * k, "random"), (loc - scale * k, "random")))
+    return [(x, origin) for x, origin in points if math.isfinite(x)]
 
 
 # Bernoulli oracles.
@@ -1179,6 +1263,29 @@ def build_registry() -> tuple[DistributionSpec, ...]:
             ),
         ),
         DistributionSpec(
+            name="Cauchy",
+            build=lambda p: Cauchy(loc=p[0], scale=p[1]),
+            param_names=("loc", "scale"),
+            params=((0.0, 1.0), (0.0, 1e-8), (0.0, 1e8), (5.0, 2.0), (-3.0, 0.5), (1e6, 1e3)),
+            methods=(
+                AuditedMethod("pdf", cauchy_pdf, CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("log_pdf", cauchy_log_pdf, CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("cdf", cauchy_cdf, CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("log_cdf", stable_log(cauchy_cdf, cauchy_sf), CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("sf", cauchy_sf, CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("log_sf", stable_log(cauchy_sf, cauchy_cdf), CLOSED_FORM_RTOL, cauchy_points),
+                AuditedMethod("ppf", cauchy_ppf, CLOSED_FORM_RTOL, quantile_points),
+                AuditedMethod("isf", cauchy_isf, CLOSED_FORM_RTOL, survival_points),
+                *moments(
+                    mean=undefined_moment,
+                    variance=undefined_moment,
+                    median=lambda p, _x: mp.mpf(p[0]),
+                    entropy=lambda p, _x: mp.log(4 * mp.pi * mp.mpf(p[1])),
+                    tolerance=CLOSED_FORM_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
             name="Uniform",
             build=lambda p: Uniform(min=p[0], max=p[1]),
             param_names=("lo", "hi"),
@@ -1479,7 +1586,9 @@ def classify(value: float | None, expected: mp.mpf, tolerance: float) -> tuple[C
     [`Probe.excused`].
     """
     if mp.isnan(expected):
-        return "OK", math.nan, False
+        # No value exists (an undefined moment), so the one right answer is a null; a number where
+        # the oracle has none is a defect, whatever its magnitude.
+        return ("OK" if value is None else "DEGRADED"), math.nan, False
     if value is None or math.isnan(value):
         return "NAN", math.inf, False
     if math.isinf(value):
