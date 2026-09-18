@@ -656,7 +656,7 @@ UNDEFINED_MOMENTS: dict[DistributionName, frozenset[Moment]] = {"cauchy": frozen
 raising on an invalid parameterisation.
 
 `docs/explanation/design.md` settles the contract. A *divergent* moment is `+inf`, which is a value, and is not
-listed here. Every reader asserts the null in place of the value it would otherwise pin.
+listed here.
 """
 
 

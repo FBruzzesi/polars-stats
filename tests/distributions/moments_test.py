@@ -115,7 +115,7 @@ def test_an_undefined_moment_is_a_typed_null_not_a_null_column(
 
     A `Null` column widens the schema of whatever it is concatenated, joined or written into, where a
     typed null does not. No value assertion sees the difference, so nothing else pins the dtype that
-    `_cauchy.py`'s `_UNDEFINED` sets.
+    `_cauchy.py`'s `_UNDEFINED_MOMENT` sets.
     """
     expr = getattr(SPECS_BY_NAME[spec_name].build(regime), moment)()
     got = pl.DataFrame({"_": range(4)}).select(m=expr)["m"]

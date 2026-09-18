@@ -62,21 +62,19 @@ fn on_the_line<Arm: Fn(f64) -> f64>(arm: &Arm, value: f64) -> Option<f64> {
     Some(arm(value))
 }
 
-/// `1 / (pi scale (1 + z^2))`, `z = (value - loc) / scale`, spelled so that only a density genuinely
-/// outside `f64` range is lost. Two intermediates leave the range before the answer does:
+/// `1 / (pi scale (1 + z^2))`, `z = (value - loc) / scale`, spelled so that only a density outside
+/// `f64` range is lost. Two intermediates leave the range before the answer does:
 ///
 /// * past `|z| ~ 1.3e154` the square is `inf`, so that arm reads `scale / (pi d^2)` off the raw
 ///   distance. Dividing the peak by `z` twice would be `inf / inf` where a subnormal `scale` has
-///   overflowed the peak and the standardised point too, and that `NaN` is the sentinel the contract
-///   reserves for a `NaN` evaluation point;
+///   overflowed the peak and the standardised point too, and that `NaN` is the sentinel reserved
+///   for a `NaN` evaluation point;
 /// * below `scale ~ 1.77e-309` the peak `1 / (pi scale)` is itself unrepresentable, which would make
 ///   every point inside `|z| ~ 1.3e154` read `inf` however small its density. The last arm divides
-///   the large factor out first, so only the genuinely-unrepresentable neighbourhood of the mode
-///   saturates.
+///   the large factor out first, so only the unrepresentable neighbourhood of the mode saturates.
 fn derive_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     // Divided twice rather than by the product: `pi scale` overflows above `scale ~ 5.7e307`, which
-    // would take the peak to `0` and the whole density with it. Once per derive, so once per call on
-    // a constant parameter and once per row on a column.
+    // would take the peak to `0` and the whole density with it.
     let peak = 1.0 / PI / scale;
     move |value: f64| {
         let distance = value - loc;
@@ -125,23 +123,18 @@ fn derive_sf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |value: f64| scale.atan2(value - loc) / PI
 }
 
-/// The mass in the further of the two tails, `min(cdf, sf) = atan(scale / |d|) / pi`.
-#[inline]
-fn outer_tail_mass(scale: f64, distance: f64) -> f64 {
-    scale.atan2(distance.abs()) / PI
-}
-
-/// `ln(cdf)` at the signed distance `distance = value - loc`: read as `ln` of the outer tail below
-/// the median and as `ln_1p(-tail)` above it, where `ln(cdf)` would round the answer's own magnitude
-/// away. `ln_sf` is the same function at `-distance`, so the two share one body; `distance == 0` and
-/// `-0.0` both take the `ln_1p` arm, which is the `ln(0.5)` the other arm would also give.
+/// `ln(cdf)` at the signed distance `distance = value - loc`. The outer tail
+/// `min(cdf, sf) = atan(scale / |d|) / pi` is read as `ln(tail)` below the median and as
+/// `ln_1p(-tail)` above it, where `ln(cdf)` would round the answer's own magnitude away. `ln_sf` is
+/// the same function at `-distance`, so the two share one body; `distance == 0` and `-0.0` both take
+/// the `ln_1p` arm, which is the `ln(0.5)` the other arm would also give.
 ///
 /// The tail mass itself leaves `f64` range once `scale / |d|` does, near `|d| / scale ~ 2e323`, and
 /// its log is still an ordinary number there (`-747` at `scale = 1e-300`, `d = -1e24`). Below the
 /// smallest normal the small-angle limit `atan(t) = t` is exact to far beyond `f64`, so that arm
 /// reads `ln(scale) - ln|d| - ln(pi)` and never logs a rounded-away tail.
 fn ln_lower_tail(scale: f64, distance: f64) -> f64 {
-    let tail = outer_tail_mass(scale, distance);
+    let tail = scale.atan2(distance.abs()) / PI;
     if distance >= 0.0 {
         (-tail).ln_1p()
     } else if tail >= f64::MIN_POSITIVE {

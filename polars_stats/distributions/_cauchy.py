@@ -10,12 +10,12 @@ from polars_stats.distributions._base import ContinuousDistribution, coerce_para
 if TYPE_CHECKING:
     from polars_stats._typing import DistributionName, IntoExprColumn
 
-_UNDEFINED = pl.lit(None, dtype=pl.Float64)
-"""A moment the distribution does not have. The explicit dtype keeps the output schema `Float64` rather than `Null`."""
+_UNDEFINED_MOMENT = pl.lit(None, dtype=pl.Float64)
+"""A moment the distribution does not have, as a typed null so the output schema stays `Float64` rather than `Null`."""
 
 _LOG_FOUR_PI = math.log(4 * math.pi)
 """Added to `log(scale)` rather than multiplied into it: `log(4 pi scale)` overflows above `scale ~ 1.43e307`, where
-the true entropy is only 709.8. Splitting the log is also how scipy spells it."""
+the true entropy is only 709.8."""
 
 
 class Cauchy(ContinuousDistribution):
@@ -54,11 +54,11 @@ class Cauchy(ContinuousDistribution):
 
     def mean(self) -> pl.Expr:
         """Undefined, so **null** on every valid row; an invalid ``scale`` still raises."""
-        return self._moment(_UNDEFINED)
+        return self._moment(_UNDEFINED_MOMENT)
 
     def variance(self) -> pl.Expr:
         """Undefined, so **null** on every valid row; an invalid ``scale`` still raises."""
-        return self._moment(_UNDEFINED)
+        return self._moment(_UNDEFINED_MOMENT)
 
     def median(self) -> pl.Expr:
         """Median, ``loc``."""

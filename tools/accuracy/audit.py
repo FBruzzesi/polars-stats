@@ -465,9 +465,9 @@ def cauchy_points(params: Params, rng: random.Random, count: int) -> list[Point]
 
     The tail never underflows, so unlike the Normal sweep there is no point past which `cdf` / `sf`
     stop answering; `pdf` still leaves range near `|k| ~ 3.6e161`, where only `log_pdf` answers.
-    Every decade of `k` probes the `0.5 - atan(k) / pi`
-    cancellation, and past `k ~ 1.3e154` the squared standardised point overflowing inside `pdf` /
-    `log_pdf`. A probe whose `scale * k` overflows the point itself is dropped.
+    Every decade of `k` probes the `0.5 - atan(k) / pi` cancellation, and past `k ~ 1.3e154` the
+    squared standardised point overflowing inside `pdf` / `log_pdf`. A probe whose `scale * k`
+    overflows the point itself is dropped.
     """
     loc, scale = params
     points: list[Point] = [(loc, "danger")]
