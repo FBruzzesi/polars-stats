@@ -13,6 +13,7 @@ from polars_stats.distributions._lognormal import LogNormal
 from polars_stats.distributions._normal import Normal
 from polars_stats.distributions._pareto import Pareto
 from polars_stats.distributions._uniform import Uniform
+from polars_stats.distributions._weibull import Weibull
 
 __all__ = (
     "Bernoulli",
@@ -28,6 +29,7 @@ __all__ = (
     "Normal",
     "Pareto",
     "Uniform",
+    "Weibull",
     "__version__",
     "is_continuous",
     "is_discrete",

@@ -51,9 +51,9 @@ The table below is the rule, which every distribution follows. Method by method:
 | `log_pdf` / `log_pmf` | **always** | Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body; `pdf(x).log()` would underflow. |
 | `sf` | **always** | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
 | `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. `Beta` and `Binomial` have none yet and override the hook with `log(cdf)` / `log(sf)`, see [Accuracy](accuracy.md). See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
-| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, or log-gamma plus digamma. |
+| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
-| `std` | Polars, and override | The base default `variance().sqrt()` saturates long before the answer does. |
+| `std` | override the default | The base default `variance().sqrt()` saturates long before the answer does. Polars where the formula is closed-form, Rust where it needs a special function (`Weibull`). |
 | `isf` | **always** | Solved against `q` itself: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
 
 ### Expose the conventional parameterisation, document the scipy mapping
@@ -104,12 +104,13 @@ path is selected only when the parameters are known scalars, so nothing column-v
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
-`pareto_shape`) so an invalid parameterisation raises the same `ComputeError` as the sampler and value-keyed methods
-rather than silently producing a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin
-checks each parameter column once, over the whole column, before any row is built.
+`pareto_shape`, `weibull_scale`) so an invalid parameterisation raises the same `ComputeError` as the sampler and
+value-keyed methods rather than silently producing a nonsense moment (see "Invalid parameters raise"). With column
+parameters that plugin checks each parameter column once, over the whole column, before any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
-The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
+The validated quantity (or, for `Beta.entropy`, `Binomial.entropy` and `Weibull`'s `mean` / `variance` / `std`, the
+moment itself) is returned behind a
 `pl.when(...)` validity gate. Nothing in the expression is longer than one row, so the moment is a *scalar* column that
 polars broadcasts wherever it meets a longer one; only the standalone height differs
 (`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no new plugin and no kwargs, only the existing

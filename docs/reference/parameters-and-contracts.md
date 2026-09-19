@@ -68,7 +68,7 @@ That cast is the plugin's. The closed-form moments are polars arithmetic on the 
 decides: a moment that is the parameter (`Normal(mu="mu").mean()`) keeps the column's dtype, and a `Decimal` or
 `Null`-typed `sigma` raises `InvalidOperationError` where polars has no kernel for it on the bare column (`pow`,
 `log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`, `Pareto`'s
-`variance` and `entropy`).
+`variance` and `entropy`, `Weibull`'s `entropy`).
 
 The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
@@ -100,6 +100,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
 | `Pareto(scale, shape)` | `scale > 0`, `shape > 0` | both finite |
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
+| `Weibull(shape, scale)` | `shape > 0`, `scale > 0` | both finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
 | `Binomial(n, p)` | `n >= 0`, `0 <= p <= 1` | `n` integral |
 | `DiscreteUniform(min, max)` | `min <= max`, both inclusive | `max - min + 1` fits `Int64` |
@@ -130,7 +131,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Pareto`, `Uniform` | `Float64` |
+| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Pareto`, `Uniform`, `Weibull` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|

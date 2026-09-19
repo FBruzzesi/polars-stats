@@ -21,6 +21,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Normal(mu, sigma)` | continuous | `sigma > 0` | `norm(loc=mu, scale=sigma)` |
 | `Pareto(scale, shape)` | continuous | `scale > 0`, `shape > 0` | `pareto(b=shape, scale=scale)`; the divergent moments are `+inf` in both |
 | `Uniform(min, max)` | continuous | `max > min` | `uniform(loc=min, scale=max - min)` |
+| `Weibull(shape, scale)` | continuous | `shape > 0`, `scale > 0` | `weibull_min(c=shape, scale=scale)` |
 | `Bernoulli(p)` | discrete | `0 <= p <= 1` | `bernoulli(p)` |
 | `Binomial(n, p)` | discrete | `n >= 0`, `0 <= p <= 1` | `binom(n, p)` |
 | `DiscreteUniform(min, max)` | discrete | `min <= max`, both inclusive | `randint(low=min, high=max + 1)`; **`max` is inclusive** |

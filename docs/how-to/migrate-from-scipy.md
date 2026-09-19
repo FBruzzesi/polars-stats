@@ -39,6 +39,7 @@ Some of these translations are not identities, so check this table rather than g
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |
 | `pareto(b=shape, scale=scale)` | `Pareto(scale=scale, shape=shape)` | **`b` is the shape**, and the argument order is `(scale, shape)`: pass both by keyword |
+| `weibull_min(c=shape, scale=scale)` | `Weibull(shape=shape, scale=scale)` | **`c` is the shape**; `weibull_max` and `exponweib` have no counterpart |
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
 | `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |

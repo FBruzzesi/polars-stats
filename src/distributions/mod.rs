@@ -28,6 +28,7 @@ pub mod lognormal;
 pub mod normal;
 pub mod pareto;
 pub mod uniform;
+pub mod weibull;
 
 use std::borrow::Cow;
 
@@ -387,12 +388,20 @@ where
     )
 }
 
+/// `2^-53`, below which `t^2 / 2` is under half an ulp of `t` and `exp(t) - 1` is `t` itself. The
+/// identity in [`expm1`] agrees down to `t ~ 4.5e-308` and then halves `t` into the subnormals,
+/// which costs its last bit and flushes the smallest subnormal to `0`, so `t` is returned outright.
+const EXPM1_IS_IDENTITY_BELOW: f64 = 1.1102230246251565e-16;
+
 /// `exp(t) - 1` as `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel. Not
 /// `f64::exp_m1`, which differs by one ulp on roughly a fifth of the left tail; `_base.expm1` spells
 /// the same identity for the moments assembled in Polars. `sinh(t / 2)` overflows above `|t| ~ 1420`;
 /// every caller crosses to a direct form long before that.
 #[inline]
 pub(crate) fn expm1(t: f64) -> f64 {
+    if t.abs() < EXPM1_IS_IDENTITY_BELOW {
+        return t;
+    }
     let half = t / 2.0;
     2.0 * half.exp() * half.sinh()
 }
@@ -423,6 +432,29 @@ impl<Arm: Fn(f64) -> f64> Sides<Arm> {
             (self.on_support)(value)
         })
     }
+
+    /// The same form read at `transform(x)` on `[floor, inf)`, its below-support constant kept: one
+    /// distribution as another on a transformed variate.
+    pub(crate) fn read_at(
+        self,
+        floor: f64,
+        transform: impl Fn(f64) -> f64,
+    ) -> Sides<impl Fn(f64) -> f64> {
+        let on_support = self.on_support;
+        Sides {
+            floor,
+            below_support: self.below_support,
+            on_support: move |x: f64| on_support(transform(x)),
+        }
+    }
+}
+
+/// `scale * exp(t)` as `(scale * exp(t / 2)) * exp(t / 2)`: `exp(t)` alone overflows past
+/// `t ~ 709.8`, where the answer under a small `scale` is still ordinary; the half exponent holds to
+/// `t ~ 1419`, past which `scale * exp(t)` has left `f64` for every normal `scale`.
+pub(crate) fn scale_exp(scale: f64, t: f64) -> f64 {
+    let half = (t / 2.0).exp();
+    (scale * half) * half
 }
 
 /// The `select` every inverse shares: the arm on `[0, 1]`, null outside it. `-0.0` is inside.
