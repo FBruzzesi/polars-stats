@@ -70,6 +70,7 @@ from polars_stats import (
     Geometric,
     LogNormal,
     Normal,
+    Pareto,
     Uniform,
 )
 
@@ -90,6 +91,9 @@ SMALLEST_NORMAL = mp.mpf(sys.float_info.min)
 
 LARGEST_FINITE = mp.mpf(sys.float_info.max)
 """Above this an oracle value has no finite `float64`, so returning `inf` is correct."""
+
+LN_LARGEST_FINITE = math.log(sys.float_info.max)
+"""The largest exponent `math.exp` returns a finite value for."""
 
 SUBNORMAL_ULPS = 2
 """Slack allowed on a subnormal result, in units of the one spacing it has left."""
@@ -477,6 +481,77 @@ def cauchy_points(params: Params, rng: random.Random, count: int) -> list[Point]
         k = 10.0 ** rng.uniform(-8.0, 300.0)
         points.extend(((loc + scale * k, "random"), (loc - scale * k, "random")))
     return [(x, origin) for x, origin in points if math.isfinite(x)]
+
+
+# Pareto oracles: the exponential oracles read at `t = ln(x / scale)`, which `mpmath` forms exactly.
+
+
+def pareto_log_ratio(params: Params, x: float) -> mp.mpf:
+    """`ln(x / scale)` at oracle precision."""
+    return mp.log(mp.mpf(x) / mp.mpf(params[0]))
+
+
+def pareto_pdf(params: Params, x: float) -> mp.mpf:
+    """`shape / x * (scale / x)^shape` on the support, `0` below it."""
+    scale, shape = params
+    if x < scale:
+        return mp.mpf(0)
+    return mp.mpf(shape) / mp.mpf(x) * mp.e ** (-mp.mpf(shape) * pareto_log_ratio(params, x))
+
+
+def pareto_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`ln(shape) - ln(x) - shape ln(x / scale)` on the support, `-inf` below it."""
+    scale, shape = params
+    if x < scale:
+        return mp.ninf
+    return mp.log(mp.mpf(shape)) - mp.log(mp.mpf(x)) - mp.mpf(shape) * pareto_log_ratio(params, x)
+
+
+def pareto_cdf(params: Params, x: float) -> mp.mpf:
+    """`-expm1(-shape ln(x / scale))` on the support, `0` below it."""
+    scale, shape = params
+    return mp.mpf(0) if x < scale else -mp.expm1(-mp.mpf(shape) * pareto_log_ratio(params, x))
+
+
+def pareto_sf(params: Params, x: float) -> mp.mpf:
+    """`(scale / x)^shape` on the support, `1` below it."""
+    scale, shape = params
+    return mp.mpf(1) if x < scale else mp.e ** (-mp.mpf(shape) * pareto_log_ratio(params, x))
+
+
+def pareto_log_sf(params: Params, x: float) -> mp.mpf:
+    """`-shape ln(x / scale)` on the support, `0` below it."""
+    scale, shape = params
+    return mp.mpf(0) if x < scale else -mp.mpf(shape) * pareto_log_ratio(params, x)
+
+
+def pareto_ppf(params: Params, q: float) -> mp.mpf:
+    """`scale (1 - q)^(-1 / shape)`, as `scale exp(-log1p(-q) / shape)`."""
+    scale, shape = params
+    return mp.inf if q >= 1 else mp.mpf(scale) * mp.e ** (-mp.log1p(-mp.mpf(q)) / mp.mpf(shape))
+
+
+def pareto_isf(params: Params, q: float) -> mp.mpf:
+    """`scale q^(-1 / shape)`; `inf` at `q = 0`."""
+    scale, shape = params
+    return mp.mpf(scale) * mp.e ** (-ln(mp.mpf(q)) / mp.mpf(shape))
+
+
+PARETO_MEAN_SHAPE = 1
+PARETO_VARIANCE_SHAPE = 2
+"""Largest `shape` at which the mean, respectively the variance, integral still diverges."""
+
+
+def pareto_mean(params: Params, _x: float) -> mp.mpf:
+    """`shape scale / (shape - 1)` for `shape > 1`, else `+inf`."""
+    scale, shape = mp.mpf(params[0]), mp.mpf(params[1])
+    return shape * scale / (shape - 1) if shape > PARETO_MEAN_SHAPE else mp.inf
+
+
+def pareto_variance(params: Params, _x: float) -> mp.mpf:
+    """`scale^2 shape / ((shape - 1)^2 (shape - 2))` for `shape > 2`, else `+inf`."""
+    scale, shape = mp.mpf(params[0]), mp.mpf(params[1])
+    return scale**2 * shape / ((shape - 1) ** 2 * (shape - 2)) if shape > PARETO_VARIANCE_SHAPE else mp.inf
 
 
 # Bernoulli oracles.
@@ -1006,14 +1081,31 @@ def lognormal_points(params: Params, rng: random.Random, count: int) -> list[Poi
     return points
 
 
+EXPONENT_GRID = (0.0, 1e-300, 1e-16, 1e-8, 0.01, 0.6931471805599453, 1.0, 10.0, 100.0, 700.0, 745.0, 800.0, 1e4)
+"""Danger points for a method that is `exp(-t)` of its argument, from the median to past `exp`'s underflow."""
+
+
 def exponential_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """Probes at `t / rate`, so the exponent `rate * x` sweeps the whole `exp` range."""
     rate = params[0]
-    grid = (0.0, 1e-300, 1e-16, 1e-8, 0.01, 0.6931471805599453, 1.0, 10.0, 100.0, 700.0, 745.0, 800.0, 1e4)
     points: list[Point] = [(-1.0, "danger")]
-    points.extend((t / rate, "danger") for t in grid)
+    points.extend((t / rate, "danger") for t in EXPONENT_GRID)
     points.extend((10.0 ** rng.uniform(-16.0, 4.0) / rate, "random") for _ in range(count))
     return points
+
+
+def pareto_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """`scale exp(t / shape)` over [`EXPONENT_GRID`], both sides of the support edge, and a log-uniform far tail.
+
+    Spreading `x / scale` out to `1e300` reaches the far tail of a small `shape`.
+    """
+    scale, shape = params
+    points: list[Point] = [(0.5 * scale, "danger"), (math.nextafter(scale, 0.0), "danger"), (scale, "danger")]
+    exponents: list[Point] = [(t, "danger") for t in EXPONENT_GRID]
+    exponents.extend((10.0 ** rng.uniform(-16.0, 4.0), "random") for _ in range(count))
+    points.extend((scale * math.exp(t / shape), origin) for t, origin in exponents if t / shape < LN_LARGEST_FINITE)
+    points.extend((scale * 10.0 ** rng.uniform(0.0, 300.0), "random") for _ in range(count))
+    return [(x, origin) for x, origin in points if math.isfinite(x)]
 
 
 def uniform_points(params: Params, rng: random.Random, count: int) -> list[Point]:
@@ -1281,6 +1373,31 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     variance=undefined_moment,
                     median=lambda p, _x: mp.mpf(p[0]),
                     entropy=lambda p, _x: mp.log(4 * mp.pi * mp.mpf(p[1])),
+                    tolerance=CLOSED_FORM_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="Pareto",
+            build=lambda p: Pareto(scale=p[0], shape=p[1]),
+            param_names=("scale", "shape"),
+            # Eight decades of `shape` either side of 1: at `1e8` the mass sits within `1e-7` of `scale`,
+            # at `1e-8` `sf` is still `0.9999` at the largest representable `x`.
+            params=((1.0, 1.0), (1.0, 1e-8), (1.0, 1e8), (1e-8, 2.5), (1e8, 0.5), (3.0, 10.0), (1e-5, 100.0)),
+            methods=(
+                AuditedMethod("pdf", pareto_pdf, CLOSED_FORM_RTOL, pareto_points),
+                AuditedMethod("log_pdf", pareto_log_pdf, CLOSED_FORM_RTOL, pareto_points),
+                AuditedMethod("cdf", pareto_cdf, CLOSED_FORM_RTOL, pareto_points),
+                AuditedMethod("log_cdf", stable_log(pareto_cdf, pareto_sf), LOG_RTOL, pareto_points),
+                AuditedMethod("sf", pareto_sf, CLOSED_FORM_RTOL, pareto_points),
+                AuditedMethod("log_sf", pareto_log_sf, CLOSED_FORM_RTOL, pareto_points),
+                AuditedMethod("ppf", pareto_ppf, CLOSED_FORM_RTOL, quantile_points),
+                AuditedMethod("isf", pareto_isf, CLOSED_FORM_RTOL, survival_points),
+                *moments(
+                    mean=pareto_mean,
+                    variance=pareto_variance,
+                    median=lambda p, _x: mp.mpf(p[0]) * mp.mpf(2) ** (1 / mp.mpf(p[1])),
+                    entropy=lambda p, _x: mp.log(mp.mpf(p[0]) / mp.mpf(p[1])) + 1 / mp.mpf(p[1]) + 1,
                     tolerance=CLOSED_FORM_RTOL,
                 ),
             ),

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Exponential, Geometric, LogNormal, Normal, Uniform
+from polars_stats import Exponential, Geometric, LogNormal, Normal, Pareto, Uniform
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -46,6 +46,13 @@ def test_uniform_std_is_the_span_over_root_twelve(span: float) -> None:
     """`Uniform(0, span).std()` is `span / sqrt(12)` across the full representable range."""
     got = pl.DataFrame({"z": [0.0]}).select(r=Uniform(min=0.0, max=span).std())["r"].item()
     assert got == pytest.approx(span / math.sqrt(12.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("spread", _EXTREME_SCALES, ids=lambda s: f"spread={s:.0e}")
+def test_pareto_std_is_the_spread_times_the_root_shape_ratio(spread: float) -> None:
+    """`Pareto(scale, 3).std()` is `scale / 2 * sqrt(3)`, finite wherever `scale / (shape - 1)` is."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Pareto(scale=2.0 * spread, shape=3.0).std())["r"].item()
+    assert got == pytest.approx(spread * math.sqrt(3.0), rel=1e-15, abs=0.0)
 
 
 # `p` is a probability, so only the underflow half of `_EXTREME_SCALES` is reachable here: `p ** 2`
@@ -83,8 +90,9 @@ def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
         (Exponential(rate=4.0), 0.25),
         (Uniform(min=-3.0, max=7.0), 10.0 / math.sqrt(12.0)),
         (Geometric(p=0.25), math.sqrt(0.75) / 0.25),
+        (Pareto(scale=2.0, shape=3.0), math.sqrt(3.0)),
     ],
-    ids=["normal", "exponential", "uniform", "geometric"],
+    ids=["normal", "exponential", "uniform", "geometric", "pareto"],
 )
 def test_std_squared_still_agrees_with_variance_in_the_ordinary_range(
     dist: _UnivariateDistribution, expected: float

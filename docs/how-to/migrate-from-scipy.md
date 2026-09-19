@@ -38,6 +38,7 @@ Some of these translations are not identities, so check this table rather than g
 | `uniform(loc=min, scale=max - min)` | `Uniform(min=min, max=max)` | **`scale` is the width**, not the upper bound |
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |
+| `pareto(b=shape, scale=scale)` | `Pareto(scale=scale, shape=shape)` | **`b` is the shape**, and the argument order is `(scale, shape)`: pass both by keyword |
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
 | `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |
@@ -133,6 +134,7 @@ Polars defaults to `ddof=1`.
 | Missing data | no null type; `nan` in, `nan` out | `null` in, `null` out, and `NaN` in, `NaN` out |
 | Invalid parameter (`scale=-1`) | returns `nan` silently | raises `ComputeError` and fails the query |
 | Undefined moment (`cauchy.mean()`) | `nan` | `null`, which a downstream `.mean()` / `.sum()` / `.drop_nulls()` absorbs silently |
+| Divergent moment (`pareto(b=1).mean()`) | `inf` | `inf`, the same |
 | Return type | NumPy array | `pl.Expr` |
 | Randomness | `random_state` / global NumPy state | per-call `seed` only, no global state |
 | Accuracy | reference implementation | matched to `1e-12` absolute in the parity suite, relaxed to `1e-9` / `1e-6` for erf-based and search-based `ppf` methods |

@@ -20,6 +20,7 @@ import pytest
 from tests._polars_compat import assert_series_equal
 from tests._registry import (
     DRIVER_REGIMES,
+    MOMENTS,
     SPECS_BY_NAME,
     ULP_ABS_TOL,
     ULP_REL_TOL,
@@ -121,3 +122,34 @@ def test_an_undefined_moment_is_a_typed_null_not_a_null_column(
     got = pl.DataFrame({"_": range(4)}).select(m=expr)["m"]
     assert got.dtype == pl.Float64, f"{spec_name}.{moment}() is {got.dtype}, want Float64"
     assert got[0] is None
+
+
+# The other half of `UNDEFINED_MOMENTS`: a divergent moment is `+inf`. Both thresholds are closed,
+# as in `scipy.stats.pareto`: `shape = 1` has no mean, `shape = 2` no variance.
+_DIVERGENT_MOMENTS_BY_SHAPE = [
+    pytest.param(0.5, ("mean", "variance", "std"), id="shape=0.5"),
+    pytest.param(1.0, ("mean", "variance", "std"), id="shape=1"),
+    pytest.param(1.5, ("variance", "std"), id="shape=1.5"),
+    pytest.param(2.0, ("variance", "std"), id="shape=2"),
+    pytest.param(2.5, (), id="shape=2.5"),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "divergent"), _DIVERGENT_MOMENTS_BY_SHAPE)
+def test_a_divergent_pareto_moment_is_positive_infinity(
+    regime: Regime, shape: float, divergent: tuple[Moment, ...]
+) -> None:
+    """`+inf` where the integral diverges, finite elsewhere, on both routings.
+
+    Null is reserved for a moment with no value at all (`Cauchy`) and a raise for an invalid
+    parameterisation, which `shape = 0.5` is not; `median` and `entropy` stay finite on every row.
+    """
+    dist = SPECS_BY_NAME["pareto"].build(regime, params=(1.5, shape))
+    got = pl.DataFrame({"_": range(4)}).select(**{moment: getattr(dist, moment)() for moment in MOMENTS})
+    for moment in MOMENTS:
+        value = got[moment][0]
+        if moment in divergent:
+            assert value == math.inf, f"{moment} at shape={shape}: {value}"
+        else:
+            assert math.isfinite(value), f"{moment} at shape={shape}: {value}"

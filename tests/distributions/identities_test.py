@@ -17,7 +17,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, Normal, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, Normal, Pareto, Uniform
 from tests._polars_compat import assert_series_equal
 
 _NEG_INF = float("-inf")
@@ -142,6 +142,50 @@ def test_the_normal_density_is_symmetric_about_its_mean() -> None:
     left = df.select(r=dist.pdf(mean - pl.col("d")))["r"]
     right = df.select(r=dist.pdf(mean + pl.col("d")))["r"]
     assert_series_equal(left, right)
+
+
+# --------------------------------------------------------------------------------------------------
+# Pareto(scale, shape) is Exponential(shape) on the log scale: `ln(X / scale) ~ Exponential(shape)`.
+# --------------------------------------------------------------------------------------------------
+
+_PARETO_PARAMS = [(1.0, 1.0), (1.5, 3.0), (0.5, 0.75), (100.0, 10.0)]
+_PARETO_IDS = [f"scale={scale},shape={shape}" for scale, shape in _PARETO_PARAMS]
+_LOG_RATIOS = [0.0, 0.01, 0.4, 1.0, 2.5, 7.0]
+"""`t = ln(x / scale)`, from the support edge out to `sf = e^(-7 shape)`."""
+_PARETO_QUANTILES = [0.0, 1e-12, 0.1, 0.5, 0.9, 1 - 1e-12]
+
+
+@pytest.mark.parametrize(("scale", "shape"), _PARETO_PARAMS, ids=_PARETO_IDS)
+@pytest.mark.parametrize("method", ["cdf", "log_cdf", "sf", "log_sf"])
+def test_pareto_cumulative_methods_are_the_exponential_on_the_log_ratio(
+    scale: float, shape: float, method: str
+) -> None:
+    """`F(scale e^t) = F_Exp(t)`: two spellings of one variate, agreeing to a few ulps of `t`."""
+    frame = pl.DataFrame({"t": _LOG_RATIOS})
+    via_pareto = frame.select(r=getattr(Pareto(scale=scale, shape=shape), method)(scale * pl.col("t").exp()))["r"]
+    via_exponential = frame.select(r=getattr(Exponential(rate=shape), method)(pl.col("t")))["r"]
+    assert_series_equal(via_pareto, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize(("scale", "shape"), _PARETO_PARAMS, ids=_PARETO_IDS)
+def test_pareto_density_is_the_exponential_density_over_x(scale: float, shape: float) -> None:
+    """The change of variables `x = scale e^t` carries the Jacobian `1 / x`: `pdf(x) x = pdf_Exp(t)`."""
+    frame = pl.DataFrame({"t": _LOG_RATIOS}).with_columns(x=scale * pl.col("t").exp())
+    pareto, exponential = Pareto(scale=scale, shape=shape), Exponential(rate=shape)
+    got = frame.select(pdf=pareto.pdf("x") * pl.col("x"), log_pdf=pareto.log_pdf("x") + pl.col("x").log())
+    want = frame.select(pdf=exponential.pdf("t"), log_pdf=exponential.log_pdf("t"))
+    assert_series_equal(got["pdf"], want["pdf"], rel_tol=1e-13, abs_tol=0.0)
+    assert_series_equal(got["log_pdf"], want["log_pdf"], rel_tol=1e-13, abs_tol=1e-13)
+
+
+@pytest.mark.parametrize(("scale", "shape"), _PARETO_PARAMS, ids=_PARETO_IDS)
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+def test_pareto_inverses_exponentiate_the_exponential_inverses(scale: float, shape: float, method: str) -> None:
+    """`ppf(q) = scale exp(ppf_Exp(q))`, the closed endpoints included (`e^0 = 1`, `e^inf = inf`)."""
+    frame = pl.DataFrame({"q": _PARETO_QUANTILES})
+    via_pareto = frame.select(r=getattr(Pareto(scale=scale, shape=shape), method)(pl.col("q")))["r"]
+    via_exponential = frame.select(r=scale * getattr(Exponential(rate=shape), method)(pl.col("q")).exp())["r"]
+    assert_series_equal(via_pareto, via_exponential, rel_tol=1e-13, abs_tol=0.0)
 
 
 # --------------------------------------------------------------------------------------------------

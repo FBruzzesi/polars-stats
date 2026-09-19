@@ -47,6 +47,11 @@ That null is an answer rather than a failure, so a downstream `.mean()`, `.sum()
 it silently. Check for it where a moment feeds an aggregate. An invalid `scale` on the row still raises, so a
 null never stands in for a bad parameter.
 
+A moment whose integral diverges is `+inf`, as in scipy.
+`Pareto(scale, shape).mean()` is `+inf` for `shape <= 1` and `variance()` / `std()` for `shape <= 2`, and each is
+finite above its threshold, so a column of shapes straddling `1` yields finite means and infinities rather than
+nulls, and an aggregate over it is `inf` rather than silently shortened.
+
 ## Find the rows that would raise
 
 An invalid parameter *value* (`sigma <= 0`, `max <= min`, `p` outside `[0, 1]`, a `NaN` or an infinity) fails the

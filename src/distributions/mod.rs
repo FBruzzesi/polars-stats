@@ -26,6 +26,7 @@ pub mod exponential;
 pub mod geometric;
 pub mod lognormal;
 pub mod normal;
+pub mod pareto;
 pub mod uniform;
 
 use std::borrow::Cow;
@@ -405,17 +406,18 @@ pub(crate) fn ln_abs_expm1(t: f64) -> f64 {
     std::f64::consts::LN_2 + half + half.sinh().abs().ln()
 }
 
-/// A closed form on a support whose floor is the integer `FLOOR`: a constant below it, the
-/// parameter's arm on it.
-pub(crate) struct Sides<Arm, const FLOOR: i8> {
+/// A closed form on a support with a lower bound: a constant below `floor`, the parameter's arm on
+/// `[floor, inf)`.
+pub(crate) struct Sides<Arm> {
+    pub(crate) floor: f64,
     pub(crate) below_support: f64,
     pub(crate) on_support: Arm,
 }
 
-impl<Arm: Fn(f64) -> f64, const FLOOR: i8> Sides<Arm, FLOOR> {
+impl<Arm: Fn(f64) -> f64> Sides<Arm> {
     /// A bare `<`, so `-0.0` sits where `0.0` does; a `NaN` point never reaches here.
     pub(crate) fn at(&self, value: f64) -> Option<f64> {
-        Some(if value < f64::from(FLOOR) {
+        Some(if value < self.floor {
             self.below_support
         } else {
             (self.on_support)(value)

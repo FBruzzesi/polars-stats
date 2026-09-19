@@ -54,8 +54,9 @@ const CDF_SINH_MAX: f64 = 1.0;
 /// `rate * exp(-rate * x)` on `x >= 0`, `0` below, as `(rate * exp(-t / 2)) * exp(-t / 2)`: written
 /// literally, `exp(-t)` rounds into the subnormal range before the scale is applied and the final
 /// multiply magnifies what was thrown away.
-fn derive_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+fn derive_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: 0.0,
         on_support: move |x: f64| {
             let half_exp = (-rate * x / 2.0).exp();
@@ -65,8 +66,9 @@ fn derive_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
 }
 
 /// `ln(rate) - rate * x` on `x >= 0`, `-inf` below; `ln(rate)` is hoisted out of the row loop.
-fn derive_ln_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+pub(super) fn derive_ln_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: f64::NEG_INFINITY,
         on_support: {
             let ln_rate = rate.ln();
@@ -77,8 +79,9 @@ fn derive_ln_pdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
 
 /// `1 - exp(-rate * x)` on `x >= 0`, `0` below. `1 - exp(-t)` cancels to `0` below `t ~ 1.1e-16`,
 /// so the small side reads `-expm1(-t)`.
-fn derive_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+pub(super) fn derive_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: 0.0,
         on_support: move |x: f64| {
             let t = rate * x;
@@ -95,8 +98,9 @@ fn derive_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
 /// rounds to a tiny inaccurate value, so that side goes through `ln_1p` of the small `sf`; the
 /// predicate says where `ln(cdf)` is well conditioned and coincides with [`CDF_SINH_MAX`], which is
 /// what lets the left arm inline [`derive_cdf`]'s `expm1` branch.
-fn derive_ln_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+pub(super) fn derive_ln_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: f64::NEG_INFINITY,
         on_support: move |x: f64| {
             let t = rate * x;
@@ -111,15 +115,17 @@ fn derive_ln_cdf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
 
 /// `exp(-rate * x)` on `x >= 0`, `1` below; never `1 - cdf`, which quantises the upper tail to the
 /// `1.1e-16` spacing of `1.0`.
-fn derive_sf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+pub(super) fn derive_sf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: 1.0,
         on_support: move |x: f64| (-rate * x).exp(),
     }
 }
 
-fn derive_ln_sf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
+pub(super) fn derive_ln_sf(rate: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
+        floor: 0.0,
         below_support: 0.0,
         on_support: move |x: f64| -rate * x,
     }
@@ -128,12 +134,12 @@ fn derive_ln_sf(rate: f64) -> Sides<impl Fn(f64) -> f64, 0> {
 /// `-ln_1p(-q) / rate`; `ln(1 - q)` rounds `1 - q` to exactly `1` below `q ~ 1.1e-16`. The rate is
 /// divided by, never reciprocated: `x * (1 / rate)` rounds twice, and at a subnormal rate the
 /// reciprocal reaches `inf` where the division stays finite.
-fn derive_ppf(rate: f64) -> impl Fn(f64) -> f64 {
+pub(super) fn derive_ppf(rate: f64) -> impl Fn(f64) -> f64 {
     move |quantile: f64| (-((-quantile).ln_1p())) / rate
 }
 
 /// `-ln(q) / rate`, solved on `q` itself rather than as `ppf(1 - q)`.
-fn derive_isf(rate: f64) -> impl Fn(f64) -> f64 {
+pub(super) fn derive_isf(rate: f64) -> impl Fn(f64) -> f64 {
     move |quantile: f64| (-quantile.ln()) / rate
 }
 
