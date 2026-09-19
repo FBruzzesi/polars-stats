@@ -27,6 +27,7 @@ from polars_stats import (
     Geometric,
     LogNormal,
     Normal,
+    Pareto,
     Uniform,
     is_continuous,
     is_discrete,
@@ -524,6 +525,32 @@ _EXPONENTIAL = DistSpec(
     integration_bounds=lambda p: (0.0, 30.0 / p[0]),
 )
 
+_PARETO = DistSpec(
+    name="pareto",
+    cls=Pareto,
+    continuous=True,
+    parameters=(Param("scale", "scale"), Param("shape", "shape")),
+    # Below `shape ~ 1.1` the suite's uniform grid stops resolving the density near `scale`. The
+    # divergent-moment shapes (`<= 1` for the mean, `<= 2` for the variance and the standard
+    # deviation) are covered by the parity, moments and precision suites instead.
+    param_strategy=st.tuples(_finite(0.1, 10.0), _finite(1.5, 10.0)),
+    example=(1.5, 3.0),
+    # From the zero region below `scale` out to `sf = 0.01`.
+    eval_range=lambda p: (0.5 * p[0], p[0] * 100.0 ** (1.0 / p[1])),
+    bounds=(1.5, inf),
+    # Not `scale`: the cdf is `0` there whatever the tail index.
+    on_support_point=3.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("scale=0", (0.0, 3.0), "scale must be"),
+        InvalidCase("scale=-1", (-1.0, 3.0), "scale must be"),
+        InvalidCase("shape=0", (1.5, 0.0), "shape must be"),
+        InvalidCase("shape=-1", (1.5, -1.0), "shape must be"),
+    ),
+    # Out to `sf = 1 / 2000`, half the mass tolerance; the trapezoid is good to `3e-5` at `shape = 1.5`.
+    integration_bounds=lambda p: (p[0], p[0] * 2000.0 ** (1.0 / p[1])),
+)
+
 _BETA = DistSpec(
     name="beta",
     cls=Beta,
@@ -590,6 +617,7 @@ CONTRACT_FRAME = pl.DataFrame(
         "sigma": [1.0, 2.0, 0.5],
         "loc": [0.0, 1.0, -0.5],
         "scale": [1.0, 2.0, 0.5],
+        "shape": [2.5, 3.0, 1.5],
         "lo": [0.0, -1.0, 2.0],
         "hi": [1.0, 3.0, 5.0],
         "lo_i": [0, -3, 2],
@@ -617,6 +645,7 @@ ALL_SPECS = [
     _UNIFORM,
     _LOGNORMAL,
     _EXPONENTIAL,
+    _PARETO,
     _BETA,
 ]
 SPECS_BY_NAME: dict[DistributionName, DistSpec] = {spec.name: spec for spec in ALL_SPECS}
@@ -669,7 +698,7 @@ def moment_is_undefined(spec_name: DistributionName, moment: Moment) -> bool:
 # one-point range. Both routings must accept them, agree, and reach a finite entropy by the
 # `0 log 0 = 0` convention rather than raising.
 #
-# Not a `DistSpec` field: six of the ten distributions have none, and a field that is an empty
+# Not a `DistSpec` field: seven of the eleven distributions have none, and a field that is an empty
 # tuple more often than not is a bespoke fact wearing a row's clothes. It lives here rather than in
 # `fast_path_test.py` because `registry_test.py` reads it too.
 DEGENERATE: dict[str, tuple[DistributionName, tuple[float, ...]]] = {

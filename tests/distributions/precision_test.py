@@ -14,18 +14,29 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
 from scipy.stats import cauchy as scipy_cauchy
 
-from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric
+from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric, Pareto
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
 
 if TYPE_CHECKING:
+    from polars_stats.distributions._base import _UnivariateDistribution
     from tests._registry import Regime
+
+DistT = TypeVar("DistT", bound="_UnivariateDistribution")
+
+
+def _spelled(cls: type[DistT], regime: Regime, *params: float) -> DistT:
+    """`cls` with every parameter spelled in `regime`, so a test runs both Rust drivers."""
+    dist = SPECS_BY_NAME[cls._distribution_name].build(regime, params=params)
+    assert isinstance(dist, cls)
+    return dist
+
 
 # --------------------------------------------------------------------------------------------------
 # Beta: the corner where a shape below 1 makes the density diverge and the sf approach 1.
@@ -444,13 +455,6 @@ def test_cauchy_inverses_keep_relative_precision_in_the_tails(loc: float, scale:
     assert got["isf"].item() == pytest.approx(loc + tail_distance, rel=1e-14, abs=0.0)
 
 
-def _cauchy(regime: Regime, loc: float, scale: float) -> Cauchy:
-    """`Cauchy` with both parameters spelled in `regime`, so each test runs both Rust drivers."""
-    dist = SPECS_BY_NAME["cauchy"].build(regime, params=(loc, scale))
-    assert isinstance(dist, Cauchy)
-    return dist
-
-
 # `scale` far enough out that an intermediate leaves `float64` range while the density does not. Each
 # id names the intermediate: the oracles divide stepwise so the reference never forms it either.
 _CAUCHY_EXTREME_SCALES = [
@@ -475,7 +479,7 @@ def test_cauchy_density_survives_an_intermediate_leaving_float64_range(
     the widest: with the peak overflowed and `z` finite, a single `peak / (1 + z^2)` reads `inf` for
     every point inside `|z| ~ 1.3e154`, however small its density.
     """
-    dist = _cauchy(regime, 0.0, scale)
+    dist = _spelled(Cauchy, regime, 0.0, scale)
     got = pl.DataFrame({"x": [point] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
     assert got["pdf"][0] == pytest.approx(pdf, rel=1e-13, abs=0.0)
     if log_pdf is not None:
@@ -492,7 +496,7 @@ def test_cauchy_log_tails_survive_the_tail_mass_itself_underflowing(regime: Regi
     `cdf` genuinely has no answer in this regime and stays `0.0`.
     """
     scale = 1e-300
-    dist = _cauchy(regime, 0.0, scale)
+    dist = _spelled(Cauchy, regime, 0.0, scale)
     frame = pl.DataFrame({"lower": [-distance] * 4, "upper": [distance] * 4})
     got = frame.select(log_cdf=dist.log_cdf("lower"), log_sf=dist.log_sf("upper"), cdf=dist.cdf("lower"))
     want = math.log(scale) - math.log(distance) - math.log(math.pi)
@@ -511,7 +515,7 @@ def test_cauchy_tails_survive_a_scale_that_cannot_standardise_the_point(regime: 
     reserves for a `NaN` evaluation point.
     """
     scale = 1e-300
-    dist = _cauchy(regime, 0.0, scale)
+    dist = _spelled(Cauchy, regime, 0.0, scale)
     # Four rows: on a height-1 frame the `column` parameter is length 1 and `params_are_constant`
     # routes it back to the scalar path.
     frame = pl.DataFrame({"upper": [1e10] * 4, "lower": [-1e10] * 4})
@@ -542,7 +546,7 @@ def test_cauchy_entropy_survives_a_scale_whose_four_pi_multiple_overflows(regime
     the intermediate. This is also how scipy spells it, which is why parity holds at both ends.
     """
     scale = 1e308
-    dist = _cauchy(regime, 0.0, scale)
+    dist = _spelled(Cauchy, regime, 0.0, scale)
     got = pl.DataFrame({"_": range(4)}).select(entropy=dist.entropy())["entropy"][0]
     assert got == pytest.approx(float(scipy_cauchy(loc=0.0, scale=scale).entropy()), rel=1e-14)
 
@@ -555,7 +559,138 @@ def test_cauchy_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regi
     `-1.0 / -0.0` is `+inf`: `ppf(-0.0)` would return the upper support bound instead of the lower.
     A user column reaches `-0.0` through any `0.0 * -1` or a negated aggregate.
     """
-    dist = _cauchy(regime, 1.5, 2.0)
+    dist = _spelled(Cauchy, regime, 1.5, 2.0)
     got = pl.DataFrame({"q": [-0.0, 0.0]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
     assert got["ppf"].to_list() == [-math.inf, -math.inf]
     assert got["isf"].to_list() == [math.inf, math.inf]
+
+
+# --------------------------------------------------------------------------------------------------
+# Pareto: a point just above `scale`, where `ln(x / scale)` has few digits left, and the regimes past
+# where the survival mass, a single `exp`, the literal power, the excess `(x - scale) / scale` or the
+# leading `shape / x` leaves `float64`. The oracles spell `pareto.rs`'s `ln_1p((x - scale) / scale)`
+# through `math`.
+# --------------------------------------------------------------------------------------------------
+
+_PARETO_NEAR_SCALE = [(3.0, 0.5), (7.5, 3.0), (1e5, 50.0)]
+
+
+@pytest.mark.parametrize(("scale", "shape"), _PARETO_NEAR_SCALE, ids=str)
+@pytest.mark.parametrize("eps", [1e-8, 1e-12, 1e-14], ids=lambda e: f"eps={e}")
+def test_pareto_cumulative_methods_keep_relative_precision_just_above_the_scale(
+    scale: float, shape: float, eps: float
+) -> None:
+    """`cdf(scale (1 + eps))` is `shape eps` to first order and holds `1e-14` relative down to `eps = 1e-14`.
+
+    The literal `1 - (scale / x) ** shape` rounds the ratio to `1 - eps` plus a few ulps of `1` before
+    the power: `1.3e-8` relative at `eps = 1e-8` and `1.5e-2` at `1e-14` against a 50-digit reference.
+    """
+    dist = Pareto(scale=scale, shape=shape)
+    x = scale * (1.0 + eps)
+    t = math.log1p((x - scale) / scale)
+    got = pl.DataFrame({"x": [x]}).select(
+        cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x"), sf=dist.sf("x"), log_sf=dist.log_sf("x")
+    )
+    assert got["cdf"].item() == pytest.approx(-math.expm1(-shape * t), rel=1e-14, abs=0.0)
+    assert got["log_cdf"].item() == pytest.approx(math.log(-math.expm1(-shape * t)), rel=1e-14, abs=0.0)
+    assert got["sf"].item() == pytest.approx(math.exp(-shape * t), rel=1e-14, abs=0.0)
+    assert got["log_sf"].item() == pytest.approx(-shape * t, rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_log_tails_survive_the_survival_mass_underflowing(regime: Regime) -> None:
+    """`Pareto(1, 100).log_sf(1e4)` is `-921.03` where `sf` is `1e-400`, below the smallest subnormal.
+
+    `log_sf` is `-shape ln(x / scale)` exactly, with no linear value to underflow. `log_cdf` on the
+    same row is `ln_1p(-sf)`, which rounds to `0` because the true `-1e-400` does.
+    """
+    dist = _spelled(Pareto, regime, 1.0, 100.0)
+    frame = pl.DataFrame({"x": [1e4] * 4})
+    got = frame.select(sf=dist.sf("x"), log_sf=dist.log_sf("x"), cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x"))
+    assert got["sf"][0] == 0.0
+    assert got["log_sf"][0] == pytest.approx(-100.0 * math.log(1e4), rel=1e-15)
+    assert got["cdf"][0] == 1.0
+    assert got["log_cdf"][0] == 0.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_inverses_survive_an_exponent_a_single_exp_cannot_hold(regime: Regime) -> None:
+    """`Pareto(1e-300, 1).isf(1e-310)` is `1e10`: `exp(713.8)` alone is `inf`, `scale exp(t / 2) exp(t / 2)` is not.
+
+    Both inverses are `scale exp(t)` with `t` the exponential quantile, which passes `709.8` long
+    before the answer under a small `scale` leaves `float64`.
+    """
+    dist = _spelled(Pareto, regime, 1e-300, 1.0)
+    got = pl.DataFrame({"q": [1e-310] * 4}).select(isf=dist.isf("q"))
+    assert got["isf"][0] == pytest.approx(1e10, rel=1e-12, abs=0.0)
+
+    dist = _spelled(Pareto, regime, 1e-300, 0.05)
+    q = 1.0 - 1e-16
+    t = -math.log1p(-q) / 0.05
+    got = pl.DataFrame({"q": [q] * 4}).select(ppf=dist.ppf("q"))
+    assert got["ppf"][0] == pytest.approx(math.exp(t + math.log(1e-300)), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_density_survives_a_subnormal_survival_factor(regime: Regime) -> None:
+    """`Pareto(1e-16, 100).pdf(x)` where `(scale / x) ** shape = e^-740` is an ordinary `2.6e-307`.
+
+    A single `exp(-740)` is a subnormal with two digits left, and `shape / x` cannot restore what it
+    dropped; the two half exponents never leave the normal range. The literal power answers `NaN`:
+    `scale ** shape` and `x ** (shape + 1)` are both `0`.
+    """
+    scale, shape = 1e-16, 100.0
+    x = scale * math.exp(7.4)
+    dist = _spelled(Pareto, regime, scale, shape)
+    got = pl.DataFrame({"x": [x] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    log_pdf = math.log(shape) - math.log(x) - shape * math.log1p((x - scale) / scale)
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-14)
+    assert got["pdf"][0] == pytest.approx(math.exp(log_pdf), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_median_survives_an_exponent_a_single_exp_cannot_hold(regime: Regime) -> None:
+    """`Pareto(1e-300, 7e-4).median()` is `1.1e130`, where `scale * exp(ln(2) / shape)` alone is `+inf`.
+
+    `median` is the base class' `ppf(0.5)`, so it inherits that inverse's split exponent rather than
+    spelling the closed form a second time in Polars arithmetic.
+    """
+    scale, shape = 1e-300, 7e-4
+    got = pl.DataFrame({"_": range(4)}).select(median=_spelled(Pareto, regime, scale, shape).median())
+    want = math.exp(math.log(2.0) / shape + math.log(scale))
+    assert got["median"][0] == pytest.approx(want, rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_density_survives_a_shape_over_scale_ratio_past_float64(regime: Regime) -> None:
+    """`Pareto(1e-300, 1e10).pdf(scale (1 + 1e-9))` is `4.5e305`, where the leading `shape / x` is `+inf`.
+
+    The survival factor is applied to `shape` before the division, and it never exceeds `1` on the
+    support, so the intermediate stays inside `float64` wherever the density itself does.
+    """
+    scale, shape = 1e-300, 1e10
+    x = scale * (1.0 + 1e-9)
+    dist = _spelled(Pareto, regime, scale, shape)
+    got = pl.DataFrame({"x": [x] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    log_pdf = math.log(shape) - math.log(x) - shape * math.log1p((x - scale) / scale)
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-14)
+    assert got["pdf"][0] == pytest.approx(math.exp(log_pdf), rel=1e-12, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_pareto_log_ratio_falls_back_to_a_difference_of_logs_when_the_excess_overflows(regime: Regime) -> None:
+    """`Pareto(1e-300, 1).log_sf(1e10)` is `-713.8`: `(x - scale) / scale` is `+inf`, `ln(x) - ln(scale)` is not.
+
+    Without the fallback `ln_1p(+inf)` would carry `+inf` into every method, so `log_sf` would be
+    `-inf` and the density `0` where both are ordinary.
+    """
+    scale, shape = 1e-300, 1.0
+    t = math.log(1e10) - math.log(scale)
+    dist = _spelled(Pareto, regime, scale, shape)
+    got = pl.DataFrame({"x": [1e10] * 4}).select(
+        log_sf=dist.log_sf("x"), log_pdf=dist.log_pdf("x"), sf=dist.sf("x"), cdf=dist.cdf("x")
+    )
+    assert got["log_sf"][0] == pytest.approx(-shape * t, rel=1e-15, abs=0.0)
+    assert got["log_pdf"][0] == pytest.approx(math.log(shape) - math.log(1e10) - shape * t, rel=1e-15, abs=0.0)
+    assert got["sf"][0] > 0.0
+    assert got["cdf"][0] == 1.0

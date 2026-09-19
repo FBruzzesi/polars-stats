@@ -86,7 +86,7 @@ impl<Arm: Fn(f64) -> f64> Mass<Arm> {
 }
 
 /// The tail methods floor a non-integral point onto the support, so `cdf(2.5)` is `cdf(2)`.
-type Tail<Arm> = Sides<Arm, 1>;
+type Tail<Arm> = Sides<Arm>;
 
 /// `(1 - p)^(k - 1) * p` on the positive integers, `0` elsewhere. `k = 1` short-circuits the power,
 /// whose exponent `(k - 1) * ln(1 - p)` is `0 * -inf = NaN` at `p = 1`.
@@ -128,6 +128,7 @@ fn derive_ln_pmf(p: f64) -> Mass<impl Fn(f64) -> f64> {
 /// [`CDF_DIRECT_COMPLEMENT_MAX`].
 fn derive_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
+        floor: 1.0,
         below_support: 0.0,
         on_support: {
             let ln_failure = ln_failure(p);
@@ -147,6 +148,7 @@ fn derive_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
 /// difference from `1` is what carries the answer, [`ln_abs_expm1`] above it.
 fn derive_ln_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
+        floor: 1.0,
         below_support: f64::NEG_INFINITY,
         on_support: {
             let ln_failure = ln_failure(p);
@@ -166,6 +168,7 @@ fn derive_ln_cdf(p: f64) -> Tail<impl Fn(f64) -> f64> {
 /// `1.1e-16` spacing of `1.0`.
 fn derive_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
+        floor: 1.0,
         below_support: 1.0,
         on_support: {
             let ln_failure = ln_failure(p);
@@ -176,6 +179,7 @@ fn derive_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
 
 fn derive_ln_sf(p: f64) -> Tail<impl Fn(f64) -> f64> {
     Tail {
+        floor: 1.0,
         below_support: 0.0,
         on_support: {
             let ln_failure = ln_failure(p);

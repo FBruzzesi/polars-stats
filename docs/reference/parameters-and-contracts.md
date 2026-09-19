@@ -67,7 +67,8 @@ are cast to `Float64` at evaluation, so an integer column works wherever a float
 That cast is the plugin's. The closed-form moments are polars arithmetic on the parameter itself, so there polars
 decides: a moment that is the parameter (`Normal(mu="mu").mean()`) keeps the column's dtype, and a `Decimal` or
 `Null`-typed `sigma` raises `InvalidOperationError` where polars has no kernel for it on the bare column (`pow`,
-`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`).
+`log`, `exp`: `Normal`'s `variance` and `entropy`, `LogNormal`'s `mean`, `variance`, `std` and `entropy`, `Pareto`'s
+`variance` and `entropy`).
 
 The integer parameters are the exception to the cast: the count `n` and `DiscreteUniform`'s bounds must already hold
 integers, of any integer dtype, because casting a float one would silently truncate. `n` widens to `UInt64` and the
@@ -97,6 +98,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Exponential(rate)` | `rate > 0` | finite |
 | `LogNormal(mu, sigma)` | `sigma > 0` | both finite |
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
+| `Pareto(scale, shape)` | `scale > 0`, `shape > 0` | both finite |
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
 | `Binomial(n, p)` | `n >= 0`, `0 <= p <= 1` | `n` integral |
@@ -128,7 +130,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Uniform` | `Float64` |
+| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Pareto`, `Uniform` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|
@@ -157,6 +159,7 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 | `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
 | A moment the distribution does not have (`Cauchy.mean()`, `variance()`, `std()`) | per row | `null` on every valid row; an invalid parameter on the row still raises |
+| A moment whose integral diverges (`Pareto.mean()` at `shape <= 1`, `variance()` / `std()` at `shape <= 2`) | per row | `+inf`, as scipy returns; a `null` is reserved for a moment with no value at all |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
@@ -178,8 +181,9 @@ returns an empty result instead. This applies to a value the strict cast refuses
 to one outside its domain. The same once-per-call check runs before the value column's dtype gate, so when both are
 invalid a constant parameterisation reports the parameter and a parameter column reports the value column.
 
-`Cauchy` is the only shipped distribution with a moment that has no value; every other one has finite moments on its
-valid parameter range. The policy, including the `+inf` a *divergent* moment will return, is in
+`Cauchy` is the only shipped distribution with a moment that has no value, and `Pareto` the only one with a moment
+that diverges on part of its parameter range; every other one has finite moments wherever its parameters are valid.
+The policy behind the two answers is in
 [Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf).
 
 ## Related

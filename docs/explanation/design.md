@@ -103,10 +103,10 @@ path is selected only when the parameters are known scalars, so nothing column-v
 
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
-`binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`) so an invalid
-parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently
-producing a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin checks each
-parameter column once, over the whole column, before any row is built.
+`binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
+`pareto_shape`) so an invalid parameterisation raises the same `ComputeError` as the sampler and value-keyed methods
+rather than silently producing a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin
+checks each parameter column once, over the whole column, before any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy` and `Binomial.entropy`, the entropy itself) is returned behind a
@@ -164,15 +164,16 @@ validating plugin (see [Architecture / Plugin granularity](architecture.md#plugi
 
 ### Moments that are undefined return null; divergent ones return `+inf`
 
-`Cauchy` is the first shipped distribution this bites: its `mean()`, `variance()` and `std()` are null on every valid
-row. Three outcomes, and the distinction is what the quantity does rather than whether the user asked a reasonable
-question:
+`Cauchy` and `Pareto` are the two shipped distributions this bites, one per half: `Cauchy`'s `mean()`, `variance()` and
+`std()` are null on every valid row, `Pareto`'s are `+inf` below `shape = 1` (the mean) and `shape = 2` (the variance).
+Three outcomes, and the distinction is what the quantity does rather than whether the user asked a reasonable question:
 
 * **Undefined**, permanently or only on part of the range (a Cauchy mean; a Student-t mean at `df <= 1`): **null**.
   It is Polars' own representation of "no value here", it is what scipy's `nan` maps to under the Polars idiom, and it
   keeps a parameter sweep across the threshold from dying on an exception.
-* **Divergent** (a Pareto mean at `shape <= 1`): **`+inf`**, matching scipy. The integral has an answer and it is
-  infinite, which is different from having none.
+* **Divergent** (a Pareto mean at `shape <= 1`, its variance at `shape <= 2`): **`+inf`**, matching scipy. The
+  integral has an answer and it is infinite, which is different from having none. Both thresholds are closed, as in
+  scipy: `Pareto(1.0, 1.0).mean()` is `+inf`.
 * **Invalid parameterisation**: raises, as everywhere else. This is the case the other two must not be confused with,
   so a moment with no formula at all still routes through the parameter validator: `Cauchy.mean()` is null for a valid
   `scale` and raises for a negative one.

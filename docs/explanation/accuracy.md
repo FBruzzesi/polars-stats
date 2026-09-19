@@ -34,10 +34,10 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
-distributions (`Uniform`, `Exponential`, `Cauchy`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf`
-and `log_sf` stay finite far past that and are the right methods for tail scoring. Likewise `isf(q)`
-rather than `ppf(1 - q)` on those eight: forming the complement quantises the tail mass to `1.1e-16`
-absolute before any inverse runs.
+distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Bernoulli`, `Geometric`, `DiscreteUniform`),
+`log_cdf` and `log_sf` stay finite far past that and are the right methods for tail scoring. Likewise
+`isf(q)` rather than `ppf(1 - q)` on those nine: forming the complement quantises the tail mass to
+`1.1e-16` absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
 are the linear value's logarithm, so they return `-inf` at exactly the point where `cdf` / `sf`
@@ -136,6 +136,17 @@ magnitudes are in the inherited limits below.
     `scale`. `ppf` and `isf` overflow to an infinity exactly where the quantile itself leaves the
     type: `Cauchy(0, 1e308).ppf(0.1)` is `-inf` because the true `-3.08e308` is past `float64`'s
     largest value. The audited range is `scale` in `1e-8` to `1e8`.
+
+    `Pareto` has the same kind of limit at both ends of its quantile functions. `ppf` and `isf` are
+    `scale * exp(t)` with `t` the exponential quantile, and they overflow to `+inf` exactly where the
+    answer does: `Pareto(1e-300, 1.0).isf(1e-310)` is `1e10` although a single `exp(713.8)` is not
+    representable, while `Pareto(1.0, 1e-8).median()` is `+inf` because the true `2 ** 1e8` is.
+    `median` is the base `ppf(0.5)` rather than a second spelling of the same formula, so it carries
+    that guard too. The other methods read the exponential's closed form at `ln(x / scale)`, formed
+    from the exact excess `(x - scale) / scale`, so `cdf` keeps full relative precision at
+    `x = scale (1 + 1e-14)` where the literal `1 - (scale / x) ** shape` is off by `1.5e-2`; where the
+    excess itself overflows, under a tiny `scale` beside an ordinary `x`, a difference of logs takes
+    over. The audited range is `shape` in `1e-8` to `1e8` and `scale` in `1e-8` to `1e8`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%

@@ -11,6 +11,7 @@ from polars_stats.distributions._exponential import Exponential
 from polars_stats.distributions._geometric import Geometric
 from polars_stats.distributions._lognormal import LogNormal
 from polars_stats.distributions._normal import Normal
+from polars_stats.distributions._pareto import Pareto
 from polars_stats.distributions._uniform import Uniform
 
 __all__ = (
@@ -25,6 +26,7 @@ __all__ = (
     "Geometric",
     "LogNormal",
     "Normal",
+    "Pareto",
     "Uniform",
     "__version__",
     "is_continuous",
