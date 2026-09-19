@@ -158,8 +158,14 @@ magnitudes are in the inherited limits below.
     `1e-7` relative off at `shape = 1e4` and `3.7x` at `1e8`, in `statrs` and `scipy` alike. Above
     `shape = 8` the log-gamma ratio is a series in `1 / shape` instead, and the variance holds `1e-13`
     relative to `shape = 1e8`; the gamma-function moments otherwise hold `~1e-14`, what `statrs`'
-    Lanczos `gamma` and `ln_gamma` carry near `1` and `2`. The audited range is `shape` in `1e-8` to
-    `1e8` and `scale` in `1e-8` to `1e8`.
+    Lanczos `gamma` and `ln_gamma` carry near `1` and `2`. `mean` and `std` are `scale * exp(t)` with
+    `t` a log-gamma, so they saturate where the moment does rather than where the gamma function does:
+    `Weibull(0.004, 1e-300).mean()` is `3.23e192` although `Gamma(251)` is not representable, and
+    `variance` is the square of `std` rather than a second spelling of the same product. That range
+    costs a few ulps of the log-gamma times `|t|`, so the two moments ease to `2e-13` where `t`
+    reaches the hundreds (`shape = 0.01`) rather than saturating there. The audited range is `shape`
+    in `1e-8` to `1e8` and `scale` in `1e-8` to `1e8`; past `shape ~ 6.7e153` the series argument
+    `1 / shape ** 2` underflows and `variance` and `std` collapse to `0`, as they do in `scipy`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%

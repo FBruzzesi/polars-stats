@@ -66,11 +66,8 @@ def test_weibull_std_is_the_scale_times_the_unit_root(scale: float) -> None:
     At `1e-14` rather than the elementary `1e-15` of its neighbours: the root goes through statrs'
     log-gamma, which holds `~4e-15` absolute near `1` and `2`.
     """
-    frame = pl.DataFrame({"z": [0.0]})
-    got = frame.select(s=Weibull(shape=2.0, scale=scale).std(), v=Weibull(shape=2.0, scale=scale).variance())
-    assert got["s"].item() == pytest.approx(scale * _RAYLEIGH_UNIT_STD, rel=1e-14, abs=0.0)
-    if math.isfinite(got["v"].item()) and got["v"].item() > 0.0:
-        assert got["s"].item() ** 2 == pytest.approx(got["v"].item(), rel=1e-13, abs=0.0)
+    got = pl.select(s=Weibull(shape=2.0, scale=scale).std())["s"].item()
+    assert got == pytest.approx(scale * _RAYLEIGH_UNIT_STD, rel=1e-14, abs=0.0)
 
 
 # `p` is a probability, so only the underflow half of `_EXTREME_SCALES` is reachable here: `p ** 2`

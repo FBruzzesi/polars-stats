@@ -6,7 +6,7 @@ use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Weibull;
-use statrs::function::gamma::{gamma, ln_gamma};
+use statrs::function::gamma::ln_gamma;
 
 use crate::distributions::{
     coerce_f64, expm1, exponential, on_unit_interval, param_keyed, scale_exp, validated_pair,
@@ -107,7 +107,7 @@ fn ln_pdf_at_origin(shape: f64, scale: f64) -> f64 {
 /// `(shape * half / scale) * half` with `half = exp(((shape - 1) ln(x / scale) - t) / 2)`: the
 /// power's log folded into the exponent keeps a subnormal `t` from costing digits, the half
 /// exponent stays normal down to `exp(-1420)`, and `shape / scale` alone overflows where the
-/// density is ordinary. An infinite power is the one place the density is `0` before the formula.
+/// density is ordinary. An infinite power saturates the density to `0` ahead of the formula.
 fn derive_pdf(shape: f64, scale: f64) -> Sides<impl Fn(f64) -> f64> {
     Sides {
         floor: 0.0,
@@ -160,16 +160,20 @@ const LN_CDF_IS_LN_POWER_BELOW: f64 = -36.7368005696771;
 
 /// The exponential's `ln_cdf` at the power; deep in the left tail, the log of the power itself.
 fn derive_ln_cdf(shape: f64, scale: f64) -> Sides<impl Fn(f64) -> f64> {
-    let exponential = exponential::derive_ln_cdf(1.0);
+    let Sides {
+        below_support,
+        on_support,
+        ..
+    } = exponential::derive_ln_cdf(1.0);
     Sides {
         floor: 0.0,
-        below_support: f64::NEG_INFINITY,
+        below_support,
         on_support: move |x: f64| {
             let ln_t = shape * log_ratio(scale, x);
             if ln_t < LN_CDF_IS_LN_POWER_BELOW {
                 ln_t
             } else {
-                (exponential.on_support)(ln_t.exp())
+                on_support(ln_t.exp())
             }
         },
     }
@@ -283,14 +287,13 @@ fn weibull_scale(inputs: &[Series]) -> PolarsResult<Series> {
     validated_pair(inputs, coerce_f64, check_params)
 }
 
-/// The parameter-keyed moments, one driver.
-fn moment(inputs: &[Series], body: impl Fn(f64, f64) -> f64) -> PolarsResult<Series> {
+fn moment(inputs: &[Series], formula: impl Fn(f64, f64) -> f64) -> PolarsResult<Series> {
     param_keyed(
         inputs,
         coerce_f64,
         coerce_f64,
         check_params,
-        |shape, scale| Ok(body(shape, scale)),
+        |shape, scale| Ok(formula(shape, scale)),
     )
 }
 
@@ -355,32 +358,38 @@ fn second_moment_terms(a: f64) -> (f64, f64) {
     (ln_second_moment, variance_fraction)
 }
 
-/// `scale Gamma(1 + 1 / shape)`.
+/// `scale Gamma(1 + 1 / shape)` as `scale exp(ln Gamma(1 + 1 / shape))`: `Gamma` alone leaves `f64`
+/// once its argument passes `171.6`, at `shape ~ 5.9e-3`, where the mean under a small `scale` is
+/// still ordinary. `Weibull(0.004, 1e-300).mean()` is `3.23e192`.
 #[polars_expr(output_type=Float64)]
 fn weibull_mean(inputs: &[Series]) -> PolarsResult<Series> {
-    moment(inputs, |shape, scale| scale * gamma(1.0 + 1.0 / shape))
+    moment(inputs, |shape, scale| {
+        scale_exp(scale, ln_gamma(1.0 + 1.0 / shape))
+    })
 }
 
-/// `scale^2 (Gamma(1 + 2a) - Gamma(1 + a)^2)` as `scale^2 Gamma(1 + 2a)` times the variance
-/// fraction of [`second_moment_terms`]: the literal difference cancels at large `shape`, where the
-/// answer is `pi^2 scale^2 / (6 shape^2)`.
+/// `scale sqrt(Gamma(1 + 2a) - Gamma(1 + a)^2)`, `a = 1 / shape`, as `scale exp(ln Gamma(1 + 2a) / 2)`
+/// times the root of [`second_moment_terms`]'s fraction: the literal difference cancels at large
+/// `shape`, where the answer is `pi scale / (sqrt(6) shape)`, and the half exponent keeps it finite
+/// wherever the standard deviation is rather than wherever its square is, in `shape` as in `scale`.
+fn standard_deviation(shape: f64, scale: f64) -> f64 {
+    let (ln_second_moment, variance_fraction) = second_moment_terms(1.0 / shape);
+    scale_exp(scale, ln_second_moment / 2.0) * variance_fraction.sqrt()
+}
+
+/// The square of [`standard_deviation`], never a second spelling of the same product: `sqrt(x * x)`
+/// is `x` for every normal `f64`, so squaring is what makes `std` the exact root of `variance`.
 #[polars_expr(output_type=Float64)]
 fn weibull_variance(inputs: &[Series]) -> PolarsResult<Series> {
     moment(inputs, |shape, scale| {
-        let (ln_second_moment, variance_fraction) = second_moment_terms(1.0 / shape);
-        scale * scale * ln_second_moment.exp() * variance_fraction
+        let deviation = standard_deviation(shape, scale);
+        deviation * deviation
     })
 }
 
-/// `scale sqrt(Gamma(1 + 2a) - Gamma(1 + a)^2)` as `scale exp(ln Gamma(1 + 2a) / 2)` times the root
-/// of the variance fraction, so it is finite wherever the standard deviation is rather than
-/// wherever its square is.
 #[polars_expr(output_type=Float64)]
 fn weibull_std(inputs: &[Series]) -> PolarsResult<Series> {
-    moment(inputs, |shape, scale| {
-        let (ln_second_moment, variance_fraction) = second_moment_terms(1.0 / shape);
-        scale * (ln_second_moment / 2.0).exp() * variance_fraction.sqrt()
-    })
+    moment(inputs, standard_deviation)
 }
 
 #[inline]

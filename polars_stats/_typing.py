@@ -33,9 +33,13 @@ if TYPE_CHECKING:
     SamplerFunction: TypeAlias = Literal["sample", "samples"]
     """Samplers `f(*params, row_index)`, each with a `_scalar` twin over the row index alone."""
 
-    ParamFunction: TypeAlias = Literal[
-        "entropy", "mean", "p", "params", "proba", "range", "rate", "scale", "shape", "sigma", "std", "variance"
-    ]
-    """Parameter-keyed plugins `f(*params)`: the validators and the moments with no closed form. No twin."""
+    ValidatorFunction: TypeAlias = Literal["p", "params", "proba", "range", "rate", "scale", "shape", "sigma"]
+    """Parameter-keyed validators `f(*params)`: raise on an invalid parameterisation, return a reusable quantity."""
+
+    MomentFunction: TypeAlias = Literal["entropy", "mean", "std", "variance"]
+    """Parameter-keyed moments `f(*params)` with no closed form, so the validation rides inside the moment."""
+
+    ParamFunction: TypeAlias = ValidatorFunction | MomentFunction
+    """Every parameter-keyed plugin. No `_scalar` twin: constant parameters run it once on length-1 literals."""
 
     PluginFunction: TypeAlias = ValueFunction | SamplerFunction | ParamFunction

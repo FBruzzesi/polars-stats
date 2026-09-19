@@ -51,14 +51,14 @@ class Weibull(ContinuousDistribution):
         return self._param_plugin("mean")
 
     def variance(self) -> pl.Expr:
-        """Variance, ``scale**2 * (Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape)**2)``."""
+        """Variance, ``scale**2 * (Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape)**2)``.
+
+        Squared from ``std()``, which saturates about 300 decades later than the gamma function does.
+        """
         return self._param_plugin("variance")
 
     def std(self) -> pl.Expr:
-        """Standard deviation, ``scale * sqrt(Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape)**2)``.
-
-        Not ``variance().sqrt()``: squaring and unsquaring the scale saturates about 300 decades earlier.
-        """
+        """Standard deviation, ``scale * sqrt(Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape)**2)``."""
         return self._param_plugin("std")
 
     def entropy(self) -> pl.Expr:

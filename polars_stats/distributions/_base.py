@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         PluginFunction,
         PolarsDataType,
         SamplerFunction,
+        ValidatorFunction,
         ValueFunction,
     )
 
@@ -376,7 +377,7 @@ class _UnivariateDistribution(ABC):
         args = self._param_exprs if self._scalar_kwargs is None else self._param_lits
         return register_plugin(self._distribution_name, function, args)
 
-    def _validated(self, function: ParamFunction, quantity: pl.Expr) -> pl.Expr:
+    def _validated(self, function: ValidatorFunction, quantity: pl.Expr) -> pl.Expr:
         """`quantity` behind the validating plugin `<name>_<function>`.
 
         With column parameters the plugin runs per row and its own output is returned. With constant

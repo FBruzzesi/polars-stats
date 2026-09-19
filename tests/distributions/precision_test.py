@@ -827,3 +827,55 @@ def test_weibull_variance_keeps_its_digits_at_a_large_shape(regime: Regime, shap
     got = pl.DataFrame({"_": range(4)}).select(variance=dist.variance(), std=dist.std())
     assert got["variance"][0] == pytest.approx(9.0 * unit_variance, rel=1e-13, abs=0.0)
     assert got["std"][0] == pytest.approx(3.0 * math.sqrt(unit_variance), rel=1e-13, abs=0.0)
+
+
+# `mpmath` at 50 digits. `Gamma(1 + 1 / shape)` leaves `float64` at `shape ~ 5.9e-3` and
+# `exp(ln Gamma(1 + 2 / shape) / 2)` at `shape ~ 3.3e-3`, both far above the `shape` where the moment
+# itself does; a small enough `scale` is what keeps the product ordinary.
+_WEIBULL_SMALL_SHAPE = [
+    (0.004, 1e-300, 3.2328562609090149e192, 1.1045980381980728e267),
+    (0.006, 1e-200, 2.7286180109907209e99, 8.4663490529360535e148),
+    (0.01, 1e-40, 9.332621544394325e117, 2.8083053027845334e147),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "scale", "mean", "std"), _WEIBULL_SMALL_SHAPE, ids=lambda v: f"{v:.0e}")
+def test_weibull_gamma_moments_survive_a_shape_a_single_gamma_cannot_hold(
+    regime: Regime, shape: float, scale: float, mean: float, std: float
+) -> None:
+    """`Weibull(0.004, 1e-300).mean()` is `3.23e192`, where `Gamma(251)` alone is `inf`.
+
+    Both moments are `scale exp(t)` with `t` a log-gamma, so they saturate where the answer does
+    rather than where the gamma function does, as `ppf` and `isf` do on the same parameterisation.
+    At `1e-12` rather than the `1e-13` of the ordinary range: `exp` carries `|t| * 1.1e-16` relative,
+    and `t` reaches `364` here, which is the price of the range.
+    """
+    dist = _spelled(Weibull, regime, shape, scale)
+    got = pl.DataFrame({"_": range(4)}).select(mean=dist.mean(), std=dist.std())
+    assert got["mean"][0] == pytest.approx(mean, rel=1e-12, abs=0.0)
+    assert got["std"][0] == pytest.approx(std, rel=1e-12, abs=0.0)
+
+
+# `mpmath` at 50 digits, straddling the `a = 1 / shape < 0.125` crossover at `shape = 8` where
+# `variance` swaps the difference of log-gammas for its own series.
+_WEIBULL_ACROSS_SERIES_CROSSOVER = [
+    (7.9, 0.17966693964636126),
+    (8.0, 0.17570847901744918),
+    (8.1, 0.17188098654015858),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "variance"), _WEIBULL_ACROSS_SERIES_CROSSOVER, ids=lambda v: f"{v:.2f}")
+def test_weibull_variance_agrees_across_the_series_crossover(regime: Regime, shape: float, variance: float) -> None:
+    """Both branches of the log-gamma ratio hold `1e-13` at `shape = 8`, so the seam has no step.
+
+    `shape = 8` and below take the difference of log-gammas, which the cancellation leaves `5.3e-14`
+    off here; `8.1` and above take the series, at `1.5e-15`. The crossover sits where the direct form
+    still carries the digits the series keeps, and moving it down would widen that gap.
+    """
+    dist = _spelled(Weibull, regime, shape, 3.0)
+    got = pl.DataFrame({"_": range(4)}).select(variance=dist.variance(), std=dist.std())
+    assert got["variance"][0] == pytest.approx(variance, rel=1e-13, abs=0.0)
+    assert got["std"][0] == pytest.approx(math.sqrt(variance), rel=1e-13, abs=0.0)

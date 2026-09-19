@@ -165,6 +165,21 @@ def real(value: mp.mpf) -> mp.mpf:
     return value.real
 
 
+EXP_STALLS_ABOVE = mp.mpf(10) ** 6
+"""Past this `t`, `exp(-t)` has a million-digit exponent and `mpmath` stalls on it; it is `0` for every
+classification the audit makes, since anything below the smallest subnormal reads the same."""
+
+
+def exp_neg(t: mp.mpf) -> mp.mpf:
+    """`exp(-t)`, cut to `0` past [`EXP_STALLS_ABOVE`]."""
+    return mp.mpf(0) if t > EXP_STALLS_ABOVE else mp.e ** (-t)
+
+
+def one_minus_exp_neg(t: mp.mpf) -> mp.mpf:
+    """`-expm1(-t)`, cut to `1` past [`EXP_STALLS_ABOVE`]; never `1 - exp(-t)`, which cancels at 50 digits too."""
+    return mp.mpf(1) if t > EXP_STALLS_ABOVE else -mp.expm1(-t)
+
+
 def solve_monotone(residual: Callable[[mp.mpf], mp.mpf], seed: float) -> mp.mpf:
     """Root of a strictly monotone `residual`, refined from `seed` by the secant method.
 
@@ -562,21 +577,6 @@ def weibull_power(params: Params, x: float) -> mp.mpf:
     """`(x / scale)^shape` at oracle precision."""
     shape, scale = params
     return (mp.mpf(x) / mp.mpf(scale)) ** mp.mpf(shape)
-
-
-EXP_STALL_POWER = mp.mpf(10) ** 6
-"""Past this `t`, `exp(-t)` has a million-digit exponent and `mpmath` stalls on it; it is `0` for every
-classification the audit makes, since anything below the smallest subnormal reads the same."""
-
-
-def exp_neg(t: mp.mpf) -> mp.mpf:
-    """`exp(-t)`, cut to `0` past [`EXP_STALL_POWER`]."""
-    return mp.mpf(0) if t > EXP_STALL_POWER else mp.e ** (-t)
-
-
-def one_minus_exp_neg(t: mp.mpf) -> mp.mpf:
-    """`-expm1(-t)`, cut to `1` past [`EXP_STALL_POWER`]; never `1 - exp(-t)`, which cancels at 50 digits too."""
-    return mp.mpf(1) if t > EXP_STALL_POWER else -mp.expm1(-t)
 
 
 def weibull_pdf_at_origin(params: Params) -> mp.mpf:

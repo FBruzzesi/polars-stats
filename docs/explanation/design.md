@@ -53,7 +53,7 @@ The table below is the rule, which every distribution follows. Method by method:
 | `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. `Beta` and `Binomial` have none yet and override the hook with `log(cdf)` / `log(sf)`, see [Accuracy](accuracy.md). See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
 | `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
-| `std` | Polars, and override | The base default `variance().sqrt()` saturates long before the answer does. |
+| `std` | override the default | The base default `variance().sqrt()` saturates long before the answer does. Polars where the formula is closed-form, Rust where it needs a special function (`Weibull`). |
 | `isf` | **always** | Solved against `q` itself: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
 
 ### Expose the conventional parameterisation, document the scipy mapping

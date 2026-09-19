@@ -388,8 +388,9 @@ where
     )
 }
 
-/// Below this `|t|` the identity in [`expm1`] returns `t` bit for bit, so `t` is returned outright:
-/// halving a subnormal `t` first would round its last bit away.
+/// `2^-53`, below which `t^2 / 2` is under half an ulp of `t` and `exp(t) - 1` is `t` itself. The
+/// identity in [`expm1`] agrees down to `t ~ 4.5e-308` and then halves `t` into the subnormals,
+/// which costs its last bit and flushes the smallest subnormal to `0`, so `t` is returned outright.
 const EXPM1_IS_IDENTITY_BELOW: f64 = 1.1102230246251565e-16;
 
 /// `exp(t) - 1` as `2 exp(t / 2) sinh(t / 2)`, which has no subtraction to cancel. Not
