@@ -17,7 +17,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, Normal, Pareto, Uniform
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, Normal, Pareto, Uniform, Weibull
 from tests._polars_compat import assert_series_equal
 
 _NEG_INF = float("-inf")
@@ -186,6 +186,64 @@ def test_pareto_inverses_exponentiate_the_exponential_inverses(scale: float, sha
     via_pareto = frame.select(r=getattr(Pareto(scale=scale, shape=shape), method)(pl.col("q")))["r"]
     via_exponential = frame.select(r=scale * getattr(Exponential(rate=shape), method)(pl.col("q")).exp())["r"]
     assert_series_equal(via_pareto, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# Weibull(shape, scale) is Exponential(1) on the power scale: `(X / scale) ** shape ~ Exponential(1)`,
+# and at `shape = 1` it is Exponential(1 / scale) outright.
+# --------------------------------------------------------------------------------------------------
+
+_WEIBULL_PARAMS = [(1.0, 1.0), (0.5, 2.0), (3.0, 0.5), (10.0, 100.0)]
+_WEIBULL_IDS = [f"shape={shape},scale={scale}" for shape, scale in _WEIBULL_PARAMS]
+_POWERS = [0.0, 0.01, 0.4, 1.0, 2.5, 7.0]
+"""`t = (x / scale) ** shape`, from the support edge out to `sf = e ** -7`."""
+_WEIBULL_QUANTILES = [0.0, 1e-12, 0.1, 0.5, 0.9, 1 - 1e-12]
+_WEIBULL_SCALES = [0.25, 1.0, 3.0]
+
+
+@pytest.mark.parametrize(("shape", "scale"), _WEIBULL_PARAMS, ids=_WEIBULL_IDS)
+@pytest.mark.parametrize("method", ["cdf", "log_cdf", "sf", "log_sf"])
+def test_weibull_cumulative_methods_are_the_unit_exponential_on_the_power(
+    shape: float, scale: float, method: str
+) -> None:
+    """`F(scale t ** (1 / shape)) = F_Exp(1)(t)`: two spellings of one variate, agreeing to a few ulps of `t`."""
+    frame = pl.DataFrame({"t": _POWERS})
+    weibull_expr = getattr(Weibull(shape=shape, scale=scale), method)(scale * pl.col("t") ** (1.0 / shape))
+    via_weibull = frame.select(r=weibull_expr)["r"]
+    via_exponential = frame.select(r=getattr(Exponential(rate=1.0), method)(pl.col("t")))["r"]
+    assert_series_equal(via_weibull, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize(("shape", "scale"), _WEIBULL_PARAMS, ids=_WEIBULL_IDS)
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+def test_weibull_inverses_are_the_root_of_the_unit_exponential_inverses(
+    shape: float, scale: float, method: str
+) -> None:
+    """`ppf(q) = scale ppf_Exp(1)(q) ** (1 / shape)`, the closed endpoints included (`0 ** a = 0`, `inf ** a = inf`)."""
+    frame = pl.DataFrame({"q": _WEIBULL_QUANTILES})
+    via_weibull = frame.select(r=getattr(Weibull(shape=shape, scale=scale), method)(pl.col("q")))["r"]
+    exponential = getattr(Exponential(rate=1.0), method)(pl.col("q"))
+    via_exponential = frame.select(r=scale * exponential ** (1.0 / shape))["r"]
+    assert_series_equal(via_weibull, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("scale", _WEIBULL_SCALES, ids=lambda s: f"scale={s}")
+@pytest.mark.parametrize("method", ["pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf"])
+def test_unit_shape_weibull_value_keyed_methods_match_the_exponential(scale: float, method: str) -> None:
+    """`Weibull(1, scale)` is `Exponential(1 / scale)`, the support edge `0` and a point below it included."""
+    frame = pl.DataFrame({"x": [-1.0, 0.0, 0.1 * scale, scale, 5.0 * scale, 40.0 * scale]})
+    via_weibull = frame.select(r=getattr(Weibull(shape=1.0, scale=scale), method)(pl.col("x")))["r"]
+    via_exponential = frame.select(r=getattr(Exponential(rate=1.0 / scale), method)(pl.col("x")))["r"]
+    assert_series_equal(via_weibull, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("scale", _WEIBULL_SCALES, ids=lambda s: f"scale={s}")
+@pytest.mark.parametrize("method", ["mean", "variance", "std", "median", "entropy"])
+def test_unit_shape_weibull_moments_match_the_exponential(scale: float, method: str) -> None:
+    """The gamma-function moments at `shape = 1` are `Gamma(2) = 1` and `Gamma(3) - 1 = 1`: the exponential's."""
+    via_weibull = pl.select(r=getattr(Weibull(shape=1.0, scale=scale), method)())["r"]
+    via_exponential = pl.select(r=getattr(Exponential(rate=1.0 / scale), method)())["r"]
+    assert_series_equal(via_weibull, via_exponential, rel_tol=1e-13, abs_tol=0.0)
 
 
 # --------------------------------------------------------------------------------------------------

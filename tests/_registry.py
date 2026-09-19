@@ -29,6 +29,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Uniform,
+    Weibull,
     is_continuous,
     is_discrete,
 )
@@ -551,6 +552,31 @@ _PARETO = DistSpec(
     integration_bounds=lambda p: (p[0], p[0] * 2000.0 ** (1.0 / p[1])),
 )
 
+_WEIBULL = DistSpec(
+    name="weibull",
+    cls=Weibull,
+    continuous=True,
+    parameters=(Param("shape", "shape"), Param("scale", "scale")),
+    # `shape` starts at 2: below it the density has a cusp at `0` (`x ** (shape - 1)`) whose trapezoid
+    # error `~h ** shape` breaks the mass check, and below 1 it diverges there.
+    param_strategy=st.tuples(_finite(2.0, 10.0), _finite(0.1, 10.0)),
+    example=(1.5, 2.0),
+    # From the zero region below `0` out to `sf = 0.01`.
+    eval_range=lambda p: (-0.5 * p[1], p[1] * log(100.0) ** (1.0 / p[0])),
+    bounds=(0.0, inf),
+    # Not `scale`: the cdf is `1 - 1 / e` there whatever the shape.
+    on_support_point=3.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("shape=0", (0.0, 2.0), "shape must be"),
+        InvalidCase("shape=-1", (-1.0, 2.0), "shape must be"),
+        InvalidCase("scale=0", (1.5, 0.0), "scale must be"),
+        InvalidCase("scale=-1", (1.5, -1.0), "scale must be"),
+    ),
+    # Out to `sf = 1 / 2000`, half the mass tolerance.
+    integration_bounds=lambda p: (0.0, p[1] * log(2000.0) ** (1.0 / p[0])),
+)
+
 _BETA = DistSpec(
     name="beta",
     cls=Beta,
@@ -646,6 +672,7 @@ ALL_SPECS = [
     _LOGNORMAL,
     _EXPONENTIAL,
     _PARETO,
+    _WEIBULL,
     _BETA,
 ]
 SPECS_BY_NAME: dict[DistributionName, DistSpec] = {spec.name: spec for spec in ALL_SPECS}

@@ -34,9 +34,9 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
-distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Bernoulli`, `Geometric`, `DiscreteUniform`),
-`log_cdf` and `log_sf` stay finite far past that and are the right methods for tail scoring. Likewise
-`isf(q)` rather than `ppf(1 - q)` on those nine: forming the complement quantises the tail mass to
+distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
+`DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the right methods for tail
+scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those ten: forming the complement quantises the tail mass to
 `1.1e-16` absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
@@ -147,6 +147,19 @@ magnitudes are in the inherited limits below.
     `x = scale (1 + 1e-14)` where the literal `1 - (scale / x) ** shape` is off by `1.5e-2`; where the
     excess itself overflows, under a tiny `scale` beside an ordinary `x`, a difference of logs takes
     over. The audited range is `shape` in `1e-8` to `1e8` and `scale` in `1e-8` to `1e8`.
+
+    `Weibull` reads the unit exponential at the power `(x / scale) ** shape`, formed as
+    `exp(shape ln(x / scale))` with the log ratio taken from the exact excess `(x - scale) / scale`
+    near `scale`: the literal power rounds the ratio first, and the exponent magnifies that rounding
+    into `shape * 1.1e-16` relative. `log_cdf` is the log of the power itself below `t = 2^-53`, so it
+    stays finite where `cdf` has underflowed: `Weibull(100, 1e-5).log_cdf(1e-9)` is `-921.03`.
+    `variance` and `std` do **not** form `Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape) ** 2` literally:
+    the two gammas tend to `1` and the difference to `pi ** 2 / (6 shape ** 2)`, so the subtraction is
+    `1e-7` relative off at `shape = 1e4` and `3.7x` at `1e8`, in `statrs` and `scipy` alike. Above
+    `shape = 8` the log-gamma ratio is a series in `1 / shape` instead, and the variance holds `1e-13`
+    relative to `shape = 1e8`; the gamma-function moments otherwise hold `~1e-14`, what `statrs`'
+    Lanczos `gamma` and `ln_gamma` carry near `1` and `2`. The audited range is `shape` in `1e-8` to
+    `1e8` and `scale` in `1e-8` to `1e8`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%

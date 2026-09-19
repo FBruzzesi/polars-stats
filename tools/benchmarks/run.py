@@ -23,7 +23,20 @@ from typing import TYPE_CHECKING, Annotated
 
 import numpy as np
 from cyclopts import App, Parameter
-from scipy.stats import bernoulli, beta, binom, cauchy, expon, geom, lognorm, norm, pareto, randint, uniform
+from scipy.stats import (
+    bernoulli,
+    beta,
+    binom,
+    cauchy,
+    expon,
+    geom,
+    lognorm,
+    norm,
+    pareto,
+    randint,
+    uniform,
+    weibull_min,
+)
 
 from polars_stats import (
     Bernoulli,
@@ -37,6 +50,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Uniform,
+    Weibull,
 )
 from tools.benchmarks._harness import (
     Comparison,
@@ -83,6 +97,12 @@ def _cauchy(params: Params) -> tuple[Distribution, ScipyFrozen]:
 def _pareto(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Pareto(scale=params.plugin("scale"), shape=params.plugin("shape")), pareto(
         b=params.scipy("shape"), scale=params.scipy("scale")
+    )
+
+
+def _weibull(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Weibull(shape=params.plugin("shape"), scale=params.plugin("scale")), weibull_min(
+        c=params.scipy("shape"), scale=params.scipy("scale")
     )
 
 
@@ -145,6 +165,11 @@ REGISTRY: dict[str, Comparison] = {
             name="pareto",
             params={"scale": ParamSpec(1.0, 0.5, 2.0), "shape": ParamSpec(3.0, 2.5, 5.0)},
             build=_pareto,
+        ),
+        Comparison(
+            name="weibull",
+            params={"shape": ParamSpec(1.5, 0.8, 4.0), "scale": ParamSpec(1.0, 0.5, 2.0)},
+            build=_weibull,
         ),
         Comparison(
             name="uniform",

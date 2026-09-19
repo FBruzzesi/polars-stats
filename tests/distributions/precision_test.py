@@ -21,7 +21,7 @@ import pytest
 from scipy.stats import binom as scipy_binom
 from scipy.stats import cauchy as scipy_cauchy
 
-from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric, Pareto
+from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric, Pareto, Weibull
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
 
 if TYPE_CHECKING:
@@ -694,3 +694,136 @@ def test_pareto_log_ratio_falls_back_to_a_difference_of_logs_when_the_excess_ove
     assert got["log_pdf"][0] == pytest.approx(math.log(shape) - math.log(1e10) - shape * t, rel=1e-15, abs=0.0)
     assert got["sf"][0] > 0.0
     assert got["cdf"][0] == 1.0
+
+
+# --------------------------------------------------------------------------------------------------
+# Weibull: a point beside `scale` at a large shape, where the power magnifies the ratio's rounding;
+# the regimes where the survival mass, a single `exp`, or the power leaves `float64`; the density at
+# the origin; and the variance at a large shape, where the two gammas cancel.
+# --------------------------------------------------------------------------------------------------
+
+_WEIBULL_LARGE_SHAPE = [(1e4, 3.0), (1e6, 0.7), (1e8, 3.0)]
+
+
+@pytest.mark.parametrize(("shape", "scale"), _WEIBULL_LARGE_SHAPE, ids=str)
+@pytest.mark.parametrize("eps", [1e-9, 1e-12, 1e-14], ids=lambda e: f"eps={e}")
+def test_weibull_cumulative_methods_keep_relative_precision_beside_the_scale(
+    shape: float, scale: float, eps: float
+) -> None:
+    """`sf(scale (1 + eps))` is `exp(-exp(shape log1p(eps)))` and holds `1e-13` relative at `shape = 1e8`.
+
+    The literal `(x / scale) ** shape` rounds the ratio before the power, which the exponent
+    magnifies into `shape * 1.1e-16` relative: `1.1e-8` at `shape = 1e8`.
+    """
+    dist = Weibull(shape=shape, scale=scale)
+    x = scale * (1.0 + eps)
+    t = math.exp(shape * math.log1p((x - scale) / scale))
+    got = pl.DataFrame({"x": [x]}).select(
+        cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x"), sf=dist.sf("x"), log_sf=dist.log_sf("x")
+    )
+    assert got["cdf"].item() == pytest.approx(-math.expm1(-t), rel=1e-13, abs=0.0)
+    assert got["log_cdf"].item() == pytest.approx(math.log(-math.expm1(-t)), rel=1e-13, abs=0.0)
+    assert got["sf"].item() == pytest.approx(math.exp(-t), rel=1e-13, abs=0.0)
+    assert got["log_sf"].item() == pytest.approx(-t, rel=1e-13, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_weibull_log_tails_survive_the_survival_mass_underflowing(regime: Regime) -> None:
+    """`Weibull(2, 1).log_sf(30)` is `-900` where `sf` is `e ** -900`, below the smallest subnormal.
+
+    `log_sf` is the power itself, with no linear value to underflow. `log_cdf` on the same row is
+    `ln_1p(-sf)`, which rounds to `0` because the true `-e ** -900` does.
+    """
+    dist = _spelled(Weibull, regime, 2.0, 1.0)
+    frame = pl.DataFrame({"x": [30.0] * 4})
+    got = frame.select(sf=dist.sf("x"), log_sf=dist.log_sf("x"), cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x"))
+    assert got["sf"][0] == 0.0
+    assert got["log_sf"][0] == pytest.approx(-900.0, rel=1e-15)
+    assert got["cdf"][0] == 1.0
+    assert got["log_cdf"][0] == 0.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_weibull_log_cdf_survives_the_power_underflowing(regime: Regime) -> None:
+    """`Weibull(100, 1e-5).log_cdf(1e-9)` is `100 ln(1e-4) = -921.03` where the power, and so `cdf`, is `1e-400`.
+
+    Below `t = 2^-53` the log of the cdf is the log of the power to the last bit, and the power is
+    never formed; `ln(-expm1(-t))` would be `ln(0) = -inf` from `t ~ 1e-308` down.
+    """
+    dist = _spelled(Weibull, regime, 100.0, 1e-5)
+    got = pl.DataFrame({"x": [1e-9] * 4}).select(cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x"), sf=dist.sf("x"))
+    assert got["cdf"][0] == 0.0
+    assert got["log_cdf"][0] == pytest.approx(100.0 * math.log(1e-4), rel=1e-15)
+    assert got["sf"][0] == 1.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_weibull_inverses_survive_an_exponent_a_single_exp_cannot_hold(regime: Regime) -> None:
+    """`Weibull(0.004, 1e-300).isf(1e-10)` is `3.6e40`, where `(-ln q) ** 250` alone is `inf`.
+
+    Both inverses are `scale exp(ln(t) / shape)` with `t` the unit exponential quantile, and at a
+    small `shape` that exponent passes `709.8` long before the answer under a small `scale` leaves
+    `float64`. Oracle: `mpmath` at 50 digits.
+    """
+    dist = _spelled(Weibull, regime, 0.004, 1e-300)
+    got = pl.DataFrame({"q": [1e-10] * 4}).select(isf=dist.isf("q"), ppf=dist.ppf(1.0 - pl.col("q")))
+    assert got["isf"][0] == pytest.approx(3.5803227233069835e40, rel=1e-12, abs=0.0)
+    assert math.isfinite(got["ppf"][0])
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_weibull_density_survives_a_subnormal_power(regime: Regime) -> None:
+    """`Weibull(2, 1).pdf(1e-160)` is `2e-160`, where the power `x ** 2 = 1e-320` is a subnormal with four digits left.
+
+    With the power's log folded into the exponent the subnormal `t` only enters as `exp(-t) = 1`;
+    formed as `shape t exp(-t) / x` it would carry the subnormal's missing digits into an ordinary
+    answer. The exponent route costs `|(shape - 1) ln(x / scale)| * 1.1e-16` relative, `4e-14` here.
+    """
+    dist = _spelled(Weibull, regime, 2.0, 1.0)
+    got = pl.DataFrame({"x": [1e-160] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    assert got["pdf"][0] == pytest.approx(2e-160, rel=1e-13, abs=0.0)
+    assert got["log_pdf"][0] == pytest.approx(math.log(2.0) + math.log(1e-160), rel=1e-15)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "pdf", "log_pdf"),
+    [(0.5, math.inf, math.inf), (1.0, 0.25, math.log(0.25)), (1.5, 0.0, -math.inf)],
+    ids=["shape<1", "shape=1", "shape>1"],
+)
+def test_weibull_density_at_the_origin_follows_the_shape(
+    regime: Regime, shape: float, pdf: float, log_pdf: float
+) -> None:
+    """`pdf(0)` is infinite below `shape = 1`, `1 / scale` at it and `0` above it, as `scipy.stats.weibull_min`.
+
+    The origin is the one point where `(shape - 1) ln(x / scale)` is `0 * -inf`, so it is answered
+    before the formula runs.
+    """
+    dist = _spelled(Weibull, regime, shape, 4.0)
+    got = pl.DataFrame({"x": [0.0] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    assert got["pdf"][0] == pdf
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-15)
+
+
+# `mpmath` at 50 digits; the literal difference of gammas in `float64` is `1e-7` relative off at
+# `shape = 1e4`, `12%` at `1e7` and `3.7x` at `1e8`.
+_WEIBULL_UNIT_VARIANCE = [
+    (100.0, 0.00016030491620026111),
+    (1e4, 1.6445038762822376e-08),
+    (1e6, 1.6449297637827162e-12),
+    (1e8, 1.6449340238174553e-16),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "unit_variance"), _WEIBULL_UNIT_VARIANCE, ids=lambda v: f"{v:.0e}")
+def test_weibull_variance_keeps_its_digits_at_a_large_shape(regime: Regime, shape: float, unit_variance: float) -> None:
+    """`Weibull(shape, 3).variance()` holds `1e-13` relative up to `shape = 1e8`.
+
+    Both gammas tend to `1` and their difference to `pi ** 2 / (6 shape ** 2)`, so the literal
+    subtraction loses `2 log10(shape)` digits; the log-gamma ratio is a series in `1 / shape` there.
+    """
+    dist = _spelled(Weibull, regime, shape, 3.0)
+    got = pl.DataFrame({"_": range(4)}).select(variance=dist.variance(), std=dist.std())
+    assert got["variance"][0] == pytest.approx(9.0 * unit_variance, rel=1e-13, abs=0.0)
+    assert got["std"][0] == pytest.approx(3.0 * math.sqrt(unit_variance), rel=1e-13, abs=0.0)

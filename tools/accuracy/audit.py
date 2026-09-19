@@ -72,6 +72,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Uniform,
+    Weibull,
 )
 
 if TYPE_CHECKING:
@@ -552,6 +553,112 @@ def pareto_variance(params: Params, _x: float) -> mp.mpf:
     """`scale^2 shape / ((shape - 1)^2 (shape - 2))` for `shape > 2`, else `+inf`."""
     scale, shape = mp.mpf(params[0]), mp.mpf(params[1])
     return scale**2 * shape / ((shape - 1) ** 2 * (shape - 2)) if shape > PARETO_VARIANCE_SHAPE else mp.inf
+
+
+# Weibull oracles: the unit exponential oracles read at `t = (x / scale)^shape`, which `mpmath` forms exactly.
+
+
+def weibull_power(params: Params, x: float) -> mp.mpf:
+    """`(x / scale)^shape` at oracle precision."""
+    shape, scale = params
+    return (mp.mpf(x) / mp.mpf(scale)) ** mp.mpf(shape)
+
+
+EXP_STALL_POWER = mp.mpf(10) ** 6
+"""Past this `t`, `exp(-t)` has a million-digit exponent and `mpmath` stalls on it; it is `0` for every
+classification the audit makes, since anything below the smallest subnormal reads the same."""
+
+
+def exp_neg(t: mp.mpf) -> mp.mpf:
+    """`exp(-t)`, cut to `0` past [`EXP_STALL_POWER`]."""
+    return mp.mpf(0) if t > EXP_STALL_POWER else mp.e ** (-t)
+
+
+def one_minus_exp_neg(t: mp.mpf) -> mp.mpf:
+    """`-expm1(-t)`, cut to `1` past [`EXP_STALL_POWER`]; never `1 - exp(-t)`, which cancels at 50 digits too."""
+    return mp.mpf(1) if t > EXP_STALL_POWER else -mp.expm1(-t)
+
+
+def weibull_pdf_at_origin(params: Params) -> mp.mpf:
+    """`inf` below `shape = 1`, `1 / scale` at it, `0` above it, as `scipy.stats.weibull_min`."""
+    shape, scale = params
+    if shape < 1:
+        return mp.inf
+    return 1 / mp.mpf(scale) if shape == 1 else mp.mpf(0)
+
+
+def weibull_pdf(params: Params, x: float) -> mp.mpf:
+    """`(shape / scale) (x / scale)^(shape - 1) exp(-t)` on the support, `0` below it."""
+    shape, scale = params
+    if x < 0:
+        return mp.mpf(0)
+    if x == 0:
+        return weibull_pdf_at_origin(params)
+    ratio = mp.mpf(x) / mp.mpf(scale)
+    return mp.mpf(shape) / mp.mpf(scale) * ratio ** (mp.mpf(shape) - 1) * exp_neg(weibull_power(params, x))
+
+
+def weibull_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`ln(shape / scale) + (shape - 1) ln(x / scale) - t` on the support, `-inf` below it."""
+    shape, scale = params
+    if x < 0:
+        return mp.ninf
+    if x == 0:
+        return ln(weibull_pdf_at_origin(params))
+    ratio = mp.mpf(x) / mp.mpf(scale)
+    return mp.log(mp.mpf(shape) / mp.mpf(scale)) + (mp.mpf(shape) - 1) * mp.log(ratio) - weibull_power(params, x)
+
+
+def weibull_cdf(params: Params, x: float) -> mp.mpf:
+    """`-expm1(-t)` on the support, `0` below it."""
+    return mp.mpf(0) if x < 0 else one_minus_exp_neg(weibull_power(params, x))
+
+
+def weibull_sf(params: Params, x: float) -> mp.mpf:
+    """`exp(-t)` on the support, `1` below it."""
+    return mp.mpf(1) if x < 0 else exp_neg(weibull_power(params, x))
+
+
+def weibull_log_sf(params: Params, x: float) -> mp.mpf:
+    """`-t` on the support, `0` below it."""
+    return mp.mpf(0) if x < 0 else -weibull_power(params, x)
+
+
+def weibull_ppf(params: Params, q: float) -> mp.mpf:
+    """`scale (-log1p(-q))^(1 / shape)`."""
+    shape, scale = params
+    return mp.inf if q >= 1 else mp.mpf(scale) * (-mp.log1p(-mp.mpf(q))) ** (1 / mp.mpf(shape))
+
+
+def weibull_isf(params: Params, q: float) -> mp.mpf:
+    """`scale (-ln q)^(1 / shape)`."""
+    shape, scale = params
+    return mp.mpf(scale) * (-ln(mp.mpf(q))) ** (1 / mp.mpf(shape))
+
+
+def weibull_median(params: Params, _x: float) -> mp.mpf:
+    """`scale (ln 2)^(1 / shape)`."""
+    shape, scale = params
+    return mp.mpf(scale) * mp.log(2) ** (1 / mp.mpf(shape))
+
+
+def weibull_mean(params: Params, _x: float) -> mp.mpf:
+    """`scale Gamma(1 + 1 / shape)`."""
+    shape, scale = params
+    return mp.mpf(scale) * mp.gamma(1 + 1 / mp.mpf(shape))
+
+
+def weibull_variance(params: Params, _x: float) -> mp.mpf:
+    """`scale^2 (Gamma(1 + 2 / shape) - Gamma(1 + 1 / shape)^2)`, which 50 digits carry through the cancellation."""
+    shape, scale = params
+    a = 1 / mp.mpf(shape)
+    return mp.mpf(scale) ** 2 * (mp.gamma(1 + 2 * a) - mp.gamma(1 + a) ** 2)
+
+
+def weibull_entropy(params: Params, _x: float) -> mp.mpf:
+    """`euler (1 - 1 / shape) + ln(scale / shape) + 1`."""
+    shape, scale = params
+    return mp.euler * (1 - 1 / mp.mpf(shape)) + mp.log(mp.mpf(scale) / mp.mpf(shape)) + 1
 
 
 # Bernoulli oracles.
@@ -1108,6 +1215,21 @@ def pareto_points(params: Params, rng: random.Random, count: int) -> list[Point]
     return [(x, origin) for x, origin in points if math.isfinite(x)]
 
 
+def weibull_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """`scale t^(1 / shape)` over [`EXPONENT_GRID`], both sides of the origin, and a log-uniform sweep of `x / scale`.
+
+    The wide ratio sweep is what reaches a subnormal or overflowing power at an ordinary point.
+    """
+    shape, scale = params
+    points: list[Point] = [(-scale, "danger"), (-0.0, "danger"), (0.0, "danger"), (math.nextafter(0.0, 1.0), "danger")]
+    powers: list[Point] = [(t, "danger") for t in EXPONENT_GRID if t > 0.0]
+    powers.extend((10.0 ** rng.uniform(-16.0, 4.0), "random") for _ in range(count))
+    log_ratios: list[Point] = [(math.log(t) / shape, origin) for t, origin in powers]
+    points.extend((scale * math.exp(r), origin) for r, origin in log_ratios if r < LN_LARGEST_FINITE)
+    points.extend((scale * 10.0 ** rng.uniform(-300.0, 300.0), "random") for _ in range(count))
+    return [(x, origin) for x, origin in points if math.isfinite(x)]
+
+
 def uniform_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """Probes hugging both support edges, where the comparison chains live."""
     lo, hi = params
@@ -1400,6 +1522,38 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     entropy=lambda p, _x: mp.log(mp.mpf(p[0]) / mp.mpf(p[1])) + 1 / mp.mpf(p[1]) + 1,
                     tolerance=CLOSED_FORM_RTOL,
                 ),
+            ),
+        ),
+        DistributionSpec(
+            name="Weibull",
+            build=lambda p: Weibull(shape=p[0], scale=p[1]),
+            param_names=("shape", "scale"),
+            # Eight decades of `shape` either side of 1: at `1e8` the mass sits within `1e-7` of `scale`;
+            # at `1e-8` every moment has left `float64`. `(100.0, 1e-5)` overflows `scale^-shape`.
+            params=(
+                (1.0, 1.0),
+                (0.5, 2.0),
+                (3.0, 1.0),
+                (1e-8, 1.0),
+                (1e8, 3.0),
+                (2.0, 1e-8),
+                (2.0, 1e8),
+                (100.0, 1e-5),
+            ),
+            methods=(
+                AuditedMethod("pdf", weibull_pdf, CLOSED_FORM_RTOL, weibull_points),
+                AuditedMethod("log_pdf", weibull_log_pdf, CLOSED_FORM_RTOL, weibull_points),
+                AuditedMethod("cdf", weibull_cdf, CLOSED_FORM_RTOL, weibull_points),
+                AuditedMethod("log_cdf", stable_log(weibull_cdf, weibull_sf), LOG_RTOL, weibull_points),
+                AuditedMethod("sf", weibull_sf, CLOSED_FORM_RTOL, weibull_points),
+                AuditedMethod("log_sf", weibull_log_sf, CLOSED_FORM_RTOL, weibull_points),
+                AuditedMethod("ppf", weibull_ppf, CLOSED_FORM_RTOL, quantile_points),
+                AuditedMethod("isf", weibull_isf, CLOSED_FORM_RTOL, survival_points),
+                AuditedMethod("mean", weibull_mean, SPECIAL_RTOL),
+                AuditedMethod("variance", weibull_variance, SPECIAL_RTOL),
+                AuditedMethod("std", sqrt_of(weibull_variance), SPECIAL_RTOL),
+                AuditedMethod("median", weibull_median, CLOSED_FORM_RTOL),
+                AuditedMethod("entropy", weibull_entropy, CLOSED_FORM_RTOL),
             ),
         ),
         DistributionSpec(

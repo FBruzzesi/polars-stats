@@ -88,8 +88,8 @@ Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, 
 The maths runs on [`statrs`](https://docs.rs/statrs), and `make audit` sweeps every method against
 an [`mpmath`](https://mpmath.org) oracle at 50 digits, including inputs many decades past where
 `scipy` itself saturates. For tail work on `Normal`, `LogNormal` and the closed-form distributions
-(`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Bernoulli`, `Geometric`, `DiscreteUniform`), use `log_cdf` / `log_sf` rather
-than the linear pair, and `isf(q)` rather than `ppf(1 - q)`. `Beta` and `Binomial` inherit several
+(`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), use `log_cdf` /
+`log_sf` rather than the linear pair, and `isf(q)` rather than `ppf(1 - q)`. `Beta` and `Binomial` inherit several
 documented `statrs`-side limits in this release: there the log methods underflow with the linear ones,
 and the extreme lower tail of `ppf` misbehaves. Every known limit is listed with a regime and a magnitude in
 [Numerical accuracy](https://fbruzzesi.github.io/polars-stats/explanation/accuracy/).
@@ -139,7 +139,7 @@ ground, and if your need matches their scope they may serve you well:
 * [`polars_rng`](https://github.com/alipatti/polars_rng) exposes one sampling expression per distribution
   (`prng.normal(mu=pl.col("x"), sigma=3)`), also as a Rust plugin over the same `statrs` crate, also with
   column-valued parameters. Its sampling catalogue is wider than what `polars-stats` ships today (Poisson, Gamma,
-  Weibull, Laplace, plus categorical and integer draws), so for pure simulation it may be the better fit. The
+  Laplace, plus categorical and integer draws), so for pure simulation it may be the better fit. The
   differences are scope and reproducibility: it is sampling only, with no `pdf` / `cdf` / `ppf` or moments, and it
   draws from a thread-local RNG with no `seed` argument, where `polars-stats` keys every draw on
   `(seed, row index)` so a seeded column repeats across runs, chunkings, and engines.

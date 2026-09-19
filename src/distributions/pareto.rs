@@ -8,8 +8,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Pareto;
 
 use crate::distributions::{
-    coerce_f64, exponential, on_unit_interval, validated_pair, value_keyed_derived_ternary,
-    value_keyed_scalar, ParamDomain, Sides,
+    coerce_f64, exponential, on_unit_interval, scale_exp, validated_pair,
+    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -70,26 +70,6 @@ fn log_ratio(scale: f64, x: f64) -> f64 {
     }
 }
 
-/// The exponential's closed form read at [`log_ratio`], its below-support constant kept.
-fn at_log_ratio(
-    scale: f64,
-    exponential_form: Sides<impl Fn(f64) -> f64>,
-) -> Sides<impl Fn(f64) -> f64> {
-    Sides {
-        floor: scale,
-        below_support: exponential_form.below_support,
-        on_support: move |x: f64| (exponential_form.on_support)(log_ratio(scale, x)),
-    }
-}
-
-/// `scale * exp(t)` as `(scale * exp(t / 2)) * exp(t / 2)`: `exp(t)` alone overflows past
-/// `t ~ 709.8`, where the answer under a small `scale` is still ordinary; the half exponent holds to
-/// `t ~ 1419`, past which `scale * exp(t)` has left `f64` for every normal `scale`.
-fn scale_exp(scale: f64, t: f64) -> f64 {
-    let half = (t / 2.0).exp();
-    (scale * half) * half
-}
-
 /// `(shape / x) (scale / x)^shape` on the support, `0` below, as `(shape * half / x) * half` with
 /// `half = exp(-shape ln(x / scale) / 2)`. The literal power forms `scale^shape` and `x^(shape + 1)`,
 /// `0 / 0` at `scale = 1e-4, shape = 100`; a single `exp(-shape t)` rounds into the subnormals before
@@ -120,19 +100,19 @@ fn derive_ln_pdf(scale: f64, shape: f64) -> Sides<impl Fn(f64) -> f64> {
 }
 
 fn derive_cdf(scale: f64, shape: f64) -> Sides<impl Fn(f64) -> f64> {
-    at_log_ratio(scale, exponential::derive_cdf(shape))
+    exponential::derive_cdf(shape).read_at(scale, move |x| log_ratio(scale, x))
 }
 
 fn derive_ln_cdf(scale: f64, shape: f64) -> Sides<impl Fn(f64) -> f64> {
-    at_log_ratio(scale, exponential::derive_ln_cdf(shape))
+    exponential::derive_ln_cdf(shape).read_at(scale, move |x| log_ratio(scale, x))
 }
 
 fn derive_sf(scale: f64, shape: f64) -> Sides<impl Fn(f64) -> f64> {
-    at_log_ratio(scale, exponential::derive_sf(shape))
+    exponential::derive_sf(shape).read_at(scale, move |x| log_ratio(scale, x))
 }
 
 fn derive_ln_sf(scale: f64, shape: f64) -> Sides<impl Fn(f64) -> f64> {
-    at_log_ratio(scale, exponential::derive_ln_sf(shape))
+    exponential::derive_ln_sf(shape).read_at(scale, move |x| log_ratio(scale, x))
 }
 
 /// `scale (1 - q)^(-1 / shape)` as `scale exp(t)`, `t = -ln_1p(-q) / shape` the exponential

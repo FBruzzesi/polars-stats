@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         "normal",
         "pareto",
         "uniform",
+        "weibull",
     ]
     """Prefix of one distribution's Rust plugins, `<name>_<function>`."""
 
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
     SamplerFunction: TypeAlias = Literal["sample", "samples"]
     """Samplers `f(*params, row_index)`, each with a `_scalar` twin over the row index alone."""
 
-    ParamFunction: TypeAlias = Literal["entropy", "p", "params", "proba", "range", "rate", "scale", "shape", "sigma"]
+    ParamFunction: TypeAlias = Literal[
+        "entropy", "mean", "p", "params", "proba", "range", "rate", "scale", "shape", "sigma", "std", "variance"
+    ]
     """Parameter-keyed plugins `f(*params)`: the validators and the moments with no closed form. No twin."""
 
     PluginFunction: TypeAlias = ValueFunction | SamplerFunction | ParamFunction

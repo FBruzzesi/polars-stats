@@ -179,9 +179,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           picks one by the evaluation value. Where the branch answers are fixed once the parameters are, the table is
           non-generic and `derive` is an associated constructor (`bernoulli.rs`'s `Mass::pmf` / `Mass::at`,
           `uniform.rs`'s `Density::pdf`); where a branch still depends on the evaluation point, the table carries an
-          `Arm` type parameter and `derive` is a free function (`exponential.rs`'s, `geometric.rs`'s and
-          `pareto.rs`'s `derive_cdf` over the shared `Sides<Arm>` in `mod.rs`, whose `floor` each of the three sets to
-          `0`, `1` and its own `scale`; `uniform.rs`'s `derive_cdf` / `Regions::at`). An inverse
+          `Arm` type parameter and `derive` is a free function (`exponential.rs`'s, `geometric.rs`'s, `pareto.rs`'s and
+          `weibull.rs`'s `derive_cdf` over the shared `Sides<Arm>` in `mod.rs`, whose `floor` the four set to `0`, `1`,
+          the `scale` and `0`; `uniform.rs`'s `derive_cdf` / `Regions::at`). An inverse
           needs no table at all: `derive` returns the arm and `select` is the shared `on_unit_interval`. `derive`
           runs once per call on the constant path and once per row when a parameter is a column; a body that
           recomputed the parameter-only terms per row regressed the constant-parameter path by up to 195% at 10M
@@ -335,9 +335,11 @@ probe aimed at it.
 `uniform.rs`'s `derive_ln_cdf` (`log1p` on the near-certain side), `geometric.rs`'s `smallest_support_point` (the
 one-ulp tie rule of a discrete inverse, decided in the log domain both sides entered through), `normal.rs`'s `ln_erfc`
 (a special function ported to log space, the pattern for the hard cases), the `isf_value` bodies in `normal.rs` (a
-symmetry) and `lognormal.rs` (composing one), and `pareto.rs`'s `at_log_ratio` and `log_ratio` (one distribution read
-as another on a transformed variate, the transform formed from an exact difference so the support edge keeps its
-digits).
+symmetry) and `lognormal.rs` (composing one), `Sides::read_at` in `mod.rs` with `pareto.rs`'s and `weibull.rs`'s
+`log_ratio` (one distribution read as another on a transformed variate, the transform formed from an exact difference
+so the support edge keeps its digits), and `weibull.rs`'s `second_moment_terms` (a difference of two special-function
+values replaced by its own series where the two cancel, with the crossover chosen where the direct form still has the
+digits the series keeps).
 
 ## Conventions
 

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Exponential, Geometric, LogNormal, Normal, Pareto, Uniform
+from polars_stats import Exponential, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -53,6 +53,24 @@ def test_pareto_std_is_the_spread_times_the_root_shape_ratio(spread: float) -> N
     """`Pareto(scale, 3).std()` is `scale / 2 * sqrt(3)`, finite wherever `scale / (shape - 1)` is."""
     got = pl.DataFrame({"z": [0.0]}).select(r=Pareto(scale=2.0 * spread, shape=3.0).std())["r"].item()
     assert got == pytest.approx(spread * math.sqrt(3.0), rel=1e-15, abs=0.0)
+
+
+_RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)
+"""`sqrt(Gamma(2) - Gamma(1.5) ** 2)`, the standard deviation of `Weibull(2, 1)`."""
+
+
+@pytest.mark.parametrize("scale", [*_EXTREME_SCALES, 2.0], ids=lambda s: f"scale={s:.0e}")
+def test_weibull_std_is_the_scale_times_the_unit_root(scale: float) -> None:
+    """`Weibull(2, scale).std()` is `scale sqrt(1 - pi / 4)`, finite wherever `scale` is.
+
+    At `1e-14` rather than the elementary `1e-15` of its neighbours: the root goes through statrs'
+    log-gamma, which holds `~4e-15` absolute near `1` and `2`.
+    """
+    frame = pl.DataFrame({"z": [0.0]})
+    got = frame.select(s=Weibull(shape=2.0, scale=scale).std(), v=Weibull(shape=2.0, scale=scale).variance())
+    assert got["s"].item() == pytest.approx(scale * _RAYLEIGH_UNIT_STD, rel=1e-14, abs=0.0)
+    if math.isfinite(got["v"].item()) and got["v"].item() > 0.0:
+        assert got["s"].item() ** 2 == pytest.approx(got["v"].item(), rel=1e-13, abs=0.0)
 
 
 # `p` is a probability, so only the underflow half of `_EXTREME_SCALES` is reachable here: `p ** 2`
