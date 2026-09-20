@@ -19,7 +19,7 @@ keywords = [
   "rust",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Operating System :: OS Independent",
   "Programming Language :: Rust",
   "Programming Language :: Python",
