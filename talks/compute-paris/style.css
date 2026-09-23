@@ -1,0 +1,133 @@
+:root {
+  --interstellar: #211c4f;
+  --oxygen: #9df249;
+  --slidev-theme-primary: #211c4f;
+}
+
+.slidev-layout {
+  background: #ffffff;
+  color: var(--interstellar);
+}
+
+.slidev-layout h1 {
+  color: var(--interstellar);
+}
+
+.slidev-layout.cover,
+.slidev-layout.section,
+.slidev-layout.statement,
+.slidev-layout.fact,
+.slidev-layout.end {
+  background: var(--interstellar);
+  color: #ffffff;
+}
+
+.slidev-layout.cover h1,
+.slidev-layout.section h1,
+.slidev-layout.statement h1,
+.slidev-layout.fact h1,
+.slidev-layout.end h1 {
+  color: var(--oxygen);
+}
+
+.slidev-layout.cover p,
+.slidev-layout.section p,
+.slidev-layout.statement p {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.slidev-layout a {
+  color: var(--interstellar);
+  border-bottom: 2px solid var(--oxygen);
+  text-decoration: none;
+}
+
+.slidev-layout.end a,
+.slidev-layout.statement a {
+  color: #ffffff;
+}
+
+.ox {
+  color: var(--interstellar);
+  background: var(--oxygen);
+  padding: 0 0.25em;
+  border-radius: 0.15em;
+  font-weight: 600;
+}
+
+.slidev-layout.statement .ox,
+.slidev-layout.section .ox {
+  color: var(--interstellar);
+}
+
+.big {
+  font-size: 3.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--oxygen);
+}
+
+.muted {
+  opacity: 0.6;
+}
+
+.slidev-layout table {
+  font-size: 0.85em;
+}
+
+.slidev-layout th {
+  color: var(--interstellar);
+  border-bottom: 2px solid var(--oxygen);
+}
+
+.slidev-layout td,
+.slidev-layout th {
+  padding: 0.25em 0.8em;
+}
+
+.disclaimer {
+  border-left: 6px solid var(--oxygen);
+  padding: 0.4em 0.9em;
+  font-size: 0.85em;
+  background: rgba(33, 28, 79, 0.05);
+}
+
+.slidev-layout .slidev-code {
+  font-size: 0.9em;
+}
+
+.slidev-layout.cover .slidev-code,
+.slidev-layout.section .slidev-code {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.slidev-layout.cover code,
+.slidev-layout.section code,
+.slidev-layout.statement code {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--oxygen);
+}
+
+.slidev-layout.section a {
+  color: #ffffff;
+}
+
+.slidev-layout.statement h1 {
+  line-height: 1.2;
+}
+
+.slidev-layout.statement h1 .ox {
+  background: none;
+  color: #ffffff;
+  padding: 0;
+}
+
+.slidev-layout.statement h1 + p,
+.slidev-layout.section h1 + p {
+  opacity: 1;
+}
+
+.slidev-layout.two-cols-header h3 {
+  color: var(--interstellar);
+  margin-bottom: 0.3em;
+}
