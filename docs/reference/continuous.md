@@ -22,6 +22,8 @@ The concrete classes follow, alphabetically, and list only what they define or o
 
 ::: polars_stats.Exponential
 
+::: polars_stats.Gamma
+
 ::: polars_stats.LogNormal
 
 ::: polars_stats.Normal

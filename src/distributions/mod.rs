@@ -23,6 +23,7 @@ pub mod binomial;
 pub mod cauchy;
 pub mod discrete_uniform;
 pub mod exponential;
+pub mod gamma;
 pub mod geometric;
 pub mod lognormal;
 pub mod normal;
@@ -447,6 +448,14 @@ impl<Arm: Fn(f64) -> f64> Sides<Arm> {
             on_support: move |x: f64| on_support(transform(x)),
         }
     }
+}
+
+/// `c_0 + c_1 x + c_2 x^2 + ...` by Horner's rule.
+pub(crate) fn polynomial(coefficients: &[f64], x: f64) -> f64 {
+    coefficients
+        .iter()
+        .rev()
+        .fold(0.0, |acc, coefficient| acc * x + coefficient)
 }
 
 /// `scale * exp(t)` as `(scale * exp(t / 2)) * exp(t / 2)`: `exp(t)` alone overflows past
