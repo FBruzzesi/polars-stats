@@ -165,7 +165,16 @@ const TEMME_WITHIN: f64 = 0.3;
 
 /// `d_{k,n}` of DLMF 8.12.12, `C_k(eta) = sum_n d_{k,n} eta^n` for `k = 0..=6` truncated at
 /// `15 - 2k` powers: from [`TEMME_FROM`] on and within [`TEMME_WITHIN`] of the mean the dropped terms
-/// are below `1e-17` of the tail. Computed by series reversion at 90 digits.
+/// are below `1e-17` of the tail. Regenerated bit for bit by scipy's own generator (needs `sympy`):
+///
+/// ```python
+/// import mpmath
+/// from scipy.special._precompute.gammainc_asy import compute_d
+///
+/// with mpmath.workdps(50):
+///     d = compute_d(7, 15)
+/// rows = [[float(x) for x in d[k][: 15 - 2 * k]] for k in range(7)]
+/// ```
 const TEMME_COEFFICIENTS: [&[f64]; 7] = [
     &[
         -0.3333333333333333,
@@ -249,7 +258,16 @@ const TEMME_COEFFICIENTS: [&[f64]; 7] = [
 /// Below this `w`, [`erfcx`] is its Taylor polynomial about `w = 1`.
 const ERFCX_TAYLOR_BELOW: f64 = 2.0;
 
-/// The Taylor coefficients of `erfcx` about `w = 1`, `3e-16` relative on `[0, 2]`.
+/// The Taylor coefficients of `erfcx` about `w = 1`, `3e-16` relative on `[0, 2]`. Regenerated bit
+/// for bit by:
+///
+/// ```python
+/// import mpmath
+///
+/// with mpmath.workdps(60):
+///     taylor = mpmath.taylor(lambda w: mpmath.exp(w * w) * mpmath.erfc(w), 1, 31)
+/// coefficients = [float(c) for c in taylor]
+/// ```
 const ERFCX_TAYLOR: [f64; 32] = [
     0.427583576155807,
     -0.27321201478389856,
