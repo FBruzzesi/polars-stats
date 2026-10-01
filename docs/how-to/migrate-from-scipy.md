@@ -35,6 +35,7 @@ Some of these translations are not identities, so check this table rather than g
 | `norm(loc=mu, scale=sigma)` | `Normal(mu=mu, sigma=sigma)` | same meaning |
 | `lognorm(s=sigma, scale=exp(mu))` | `LogNormal(mu=mu, sigma=sigma)` | `scale` is `exp(mu)`, not `mu` |
 | `expon(scale=1 / rate)` | `Exponential(rate=rate)` | **inverted**: `scale` is `1 / rate` |
+| `gamma(a=shape, scale=1 / rate)` | `Gamma(shape=shape, rate=rate)` | **`a` is the shape** and `scale` is `1 / rate`, as for `expon` |
 | `uniform(loc=min, scale=max - min)` | `Uniform(min=min, max=max)` | **`scale` is the width**, not the upper bound |
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |

@@ -11,14 +11,19 @@ no oracle at all.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Geometric, Normal, Pareto, Uniform, Weibull
+from polars_stats import Bernoulli, Beta, Binomial, Exponential, Gamma, Geometric, Normal, Pareto, Uniform, Weibull
 from tests._polars_compat import assert_series_equal
+from tests._registry import point_column
+
+if TYPE_CHECKING:
+    from tests._registry import Method, Moment
 
 _NEG_INF = float("-inf")
 
@@ -244,6 +249,55 @@ def test_unit_shape_weibull_moments_match_the_exponential(scale: float, method: 
     via_weibull = pl.select(r=getattr(Weibull(shape=1.0, scale=scale), method)())["r"]
     via_exponential = pl.select(r=getattr(Exponential(rate=1.0 / scale), method)())["r"]
     assert_series_equal(via_weibull, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# Gamma(1, rate) is Exponential(rate), and Gamma(n, rate) at an integer shape is the sum of `n` of them:
+# its survival function is the Poisson sum `e ** -t sum_{k < n} t ** k / k!` at `t = rate x`.
+# --------------------------------------------------------------------------------------------------
+
+_GAMMA_RATES = [0.25, 1.0, 3.0]
+
+
+@pytest.mark.parametrize("rate", _GAMMA_RATES, ids=lambda r: f"rate={r}")
+@pytest.mark.parametrize("method", ["pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"])
+def test_unit_shape_gamma_value_keyed_methods_match_the_exponential(rate: float, method: Method) -> None:
+    """`Gamma(1, rate)` is `Exponential(rate)`, the support edge, a point below it and the deep `log_sf` included.
+
+    `1e-13` rather than bit equality: the gamma's density and tails are the `exp` of a log and the exponential's
+    closed forms are not, so the two differ by a few ulps of the log, `4e-14` relative at `t = 400`.
+    """
+    column = point_column(method)
+    if column == "q":
+        points = [0.0, 1e-12, 0.1, 0.5, 0.9, 1 - 1e-12, 1.0]
+    else:
+        points = [t / rate for t in (-1.0, 0.0, 1e-9, 0.3, 2.0, 40.0, 400.0)]
+    frame = pl.DataFrame({column: points})
+    via_gamma = frame.select(r=getattr(Gamma(shape=1.0, rate=rate), method)(pl.col(column)))["r"]
+    via_exponential = frame.select(r=getattr(Exponential(rate=rate), method)(pl.col(column)))["r"]
+    assert_series_equal(via_gamma, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("rate", _GAMMA_RATES, ids=lambda r: f"rate={r}")
+@pytest.mark.parametrize("method", ["mean", "variance", "std", "median", "entropy"])
+def test_unit_shape_gamma_moments_match_the_exponential(rate: float, method: Moment) -> None:
+    """At `shape = 1` the moments are `1 / rate`, `1 / rate ** 2`, `ln 2 / rate` and `1 - ln(rate)`."""
+    via_gamma = pl.select(r=getattr(Gamma(shape=1.0, rate=rate), method)())["r"]
+    via_exponential = pl.select(r=getattr(Exponential(rate=rate), method)())["r"]
+    assert_series_equal(via_gamma, via_exponential, rel_tol=1e-13, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("shape", [2, 3, 7, 20], ids=lambda n: f"shape={n}")
+def test_integer_shape_gamma_log_sf_is_the_poisson_sum(shape: int) -> None:
+    """`ln Q(n, t) = -t + ln sum_{k < n} t ** k / k!` exactly, out to `t = 1e4` where `sf` is `e ** -9870`.
+
+    The finite sum checks the continued fraction's log well past where any linear oracle has underflowed.
+    Only from `t = n` up, where `Q` is the small tail: below it `-t` and the log of the sum cancel in the oracle.
+    """
+    ts = [float(shape), 2.0 * shape, 30.0 * shape, 700.0, 1e4]
+    expected = [-t + math.log(math.fsum(t**k / math.factorial(k) for k in range(shape))) for t in ts]
+    got = pl.DataFrame({"x": [t / 2.0 for t in ts]}).select(r=Gamma(shape=float(shape), rate=2.0).log_sf(pl.col("x")))
+    assert_series_equal(got["r"], pl.Series(values=expected), rel_tol=1e-13, abs_tol=0.0, check_names=False)
 
 
 # --------------------------------------------------------------------------------------------------

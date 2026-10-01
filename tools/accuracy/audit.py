@@ -67,6 +67,7 @@ from polars_stats import (
     DiscreteDistribution,
     DiscreteUniform,
     Exponential,
+    Gamma,
     Geometric,
     LogNormal,
     Normal,
@@ -661,6 +662,121 @@ def weibull_entropy(params: Params, _x: float) -> mp.mpf:
     return mp.euler * (1 - 1 / mp.mpf(shape)) + mp.log(mp.mpf(scale) / mp.mpf(shape)) + 1
 
 
+# Gamma oracles: the regularized incomplete gamma at `t = rate x`, whose smaller tail is computed directly and
+# whose other tail is its complement at 50 digits. `mpmath.gammainc(a, 0, t)` does not converge at `a = 1e8`
+# within its default term budget, so the lower tail is Kummer's `t^a e^-t / Gamma(a + 1) 1F1(1; a + 1; t)`.
+
+GammaTail = Literal["P", "Q"]
+"""The lower regularized incomplete gamma `P` or the upper `Q = 1 - P`."""
+
+GAMMA_HYP1F1_MAXTERMS = 10**8
+"""Enough for the `~sqrt(a)` significant terms of `1F1(1; a + 1; t)` near `t = a`, at `a = 1e8` and 50 digits."""
+
+
+def gamma_ln_standard_tail(shape: mp.mpf, t: mp.mpf, tail: GammaTail) -> mp.mpf:
+    """`ln P(shape, t)` or `ln Q(shape, t)` for `t > 0`: the smaller tail directly, the other as `log1p(-small)`."""
+    if t < shape:
+        ln_prefactor = shape * mp.log(t) - t - mp.loggamma(shape + 1)
+        small, ln_small = "P", ln_prefactor + mp.log(mp.hyp1f1(1, shape + 1, t, maxterms=GAMMA_HYP1F1_MAXTERMS))
+    else:
+        small, ln_small = "Q", mp.log(mp.gammainc(shape, t, mp.inf, regularized=True))
+    if small == tail:
+        return ln_small
+    return -exp_neg(-ln_small) if ln_small < -EXP_STALLS_ABOVE else mp.log1p(-(mp.e**ln_small))
+
+
+def gamma_ln_tail(params: Params, x: float, tail: GammaTail) -> mp.mpf:
+    """`ln P(shape, rate x)` or `ln Q(shape, rate x)`, with the support edges' limits."""
+    if x <= 0:
+        return mp.ninf if tail == "P" else mp.mpf(0)
+    if math.isinf(x):
+        return mp.mpf(0) if tail == "P" else mp.ninf
+    return gamma_ln_standard_tail(mp.mpf(params[0]), mp.mpf(params[1]) * mp.mpf(x), tail)
+
+
+def gamma_log_cdf(params: Params, x: float) -> mp.mpf:
+    """`ln P(shape, rate x)`."""
+    return gamma_ln_tail(params, x, "P")
+
+
+def gamma_log_sf(params: Params, x: float) -> mp.mpf:
+    """`ln Q(shape, rate x)`."""
+    return gamma_ln_tail(params, x, "Q")
+
+
+def gamma_cdf(params: Params, x: float) -> mp.mpf:
+    """`P(shape, rate x)`, `0` at and below the origin."""
+    return exp_neg(-gamma_log_cdf(params, x))
+
+
+def gamma_sf(params: Params, x: float) -> mp.mpf:
+    """`Q(shape, rate x)`, `1` at and below the origin."""
+    return exp_neg(-gamma_log_sf(params, x))
+
+
+def gamma_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`ln rate + (shape - 1) ln t - t - ln Gamma(shape)`; at the origin `+inf`, `ln rate` or `-inf` by the shape."""
+    shape, rate = mp.mpf(params[0]), mp.mpf(params[1])
+    if x < 0:
+        return mp.ninf
+    if x == 0:
+        if shape < 1:
+            return mp.inf
+        return mp.log(rate) if shape == 1 else mp.ninf
+    t = rate * mp.mpf(x)
+    return mp.log(rate) + (shape - 1) * mp.log(t) - t - mp.loggamma(shape)
+
+
+def gamma_pdf(params: Params, x: float) -> mp.mpf:
+    """`exp` of [`gamma_log_pdf`], `+inf` where the density diverges at the origin."""
+    log_density = gamma_log_pdf(params, x)
+    return mp.inf if log_density == mp.inf else exp_neg(-log_density)
+
+
+def gamma_root(params: Params, tail: GammaTail, target: mp.mpf, seed: float) -> mp.mpf:
+    """`x` with `ln tail(shape, rate x) = target`, solved in `u = ln(rate x)` to keep `1e-300` well-scaled.
+
+    Seeded from the library's answer, or where that has underflowed to `0` from the lower tail's leading term
+    `t^shape / Gamma(shape + 1) = P`, which is where every such quantile sits.
+    """
+    shape, rate = mp.mpf(params[0]), mp.mpf(params[1])
+    if seed > 0 and math.isfinite(seed):
+        u_seed = mp.log(mp.mpf(seed) * rate)
+    else:
+        ln_p = target if tail == "P" else mp.log1p(-(mp.e**target))
+        u_seed = (ln_p + mp.loggamma(shape + 1)) / shape
+    root = solve_monotone(lambda u: gamma_ln_standard_tail(shape, mp.e**u, tail) - target, float(u_seed))
+    return cast("mp.mpf", mp.e**root / rate)
+
+
+def gamma_ppf(params: Params, q: float, seed: float) -> mp.mpf:
+    """`P^-1(shape, q) / rate`, refined from the library's answer on whichever side of the median is small."""
+    if q <= 0:
+        return mp.mpf(0)
+    if q >= 1:
+        return mp.inf
+    if mp.mpf(q) <= mp.mpf(0.5):
+        return gamma_root(params, "P", mp.log(mp.mpf(q)), seed)
+    return gamma_root(params, "Q", mp.log1p(-mp.mpf(q)), seed)
+
+
+def gamma_isf(params: Params, q: float, seed: float) -> mp.mpf:
+    """`Q^-1(shape, q) / rate`, with the complement taken at oracle precision (see [`normal_isf`])."""
+    if q <= 0:
+        return mp.inf
+    if q >= 1:
+        return mp.mpf(0)
+    if mp.mpf(q) <= mp.mpf(0.5):
+        return gamma_root(params, "Q", mp.log(mp.mpf(q)), seed)
+    return gamma_root(params, "P", mp.log1p(-mp.mpf(q)), seed)
+
+
+def gamma_entropy(params: Params, _x: float) -> mp.mpf:
+    """`shape - ln rate + ln Gamma(shape) + (1 - shape) psi(shape)`, which 50 digits carry through the cancellation."""
+    shape, rate = mp.mpf(params[0]), mp.mpf(params[1])
+    return shape - mp.log(rate) + mp.loggamma(shape) + (1 - shape) * mp.digamma(shape)
+
+
 # Bernoulli oracles.
 
 
@@ -1230,6 +1346,40 @@ def weibull_points(params: Params, rng: random.Random, count: int) -> list[Point
     return [(x, origin) for x, origin in points if math.isfinite(x)]
 
 
+GAMMA_SERIES_SEAMS = (0.5, 1.1)
+"""The two `t` where the incomplete gamma's region split changes expansion at a small shape."""
+
+GAMMA_TEMME_WITHIN = 0.3
+"""The relative distance from the mean inside which a large shape's tails are Temme's expansion."""
+
+
+def gamma_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """`t / rate` around the mean `t = shape` in standard deviations, at every region seam, and log-uniform over `t`.
+
+    The bulk grid is where the series and the continued fraction need the most terms and where the
+    textbook prefactor cancels at a large shape; the log-uniform sweep reaches both tails past `float64`.
+    """
+    shape, rate = params
+    points: list[Point] = [
+        (-1.0 / rate, "danger"),
+        (-0.0, "danger"),
+        (0.0, "danger"),
+        (math.nextafter(0.0, 1.0), "danger"),
+    ]
+    scaled: list[Point] = [(shape, "danger"), (shape * (1 - 1e-9), "danger"), (shape * (1 + 1e-9), "danger")]
+    scaled.extend((shape + sign * k * math.sqrt(shape), "danger") for k in SIGMA_GRID[1:] for sign in (-1.0, 1.0))
+    scaled.extend((shape * fraction, "danger") for fraction in (0.5, 2.0))
+    for edge in (shape * (1 - GAMMA_TEMME_WITHIN), shape * (1 + GAMMA_TEMME_WITHIN)):
+        scaled.extend((t, "danger") for t in (math.nextafter(edge, 0.0), edge, math.nextafter(edge, math.inf)))
+    for seam in GAMMA_SERIES_SEAMS:
+        scaled.extend(((seam, "danger"), (math.nextafter(seam, 0.0), "danger"), (math.nextafter(seam, 2.0), "danger")))
+    scaled.extend((t, "danger") for t in (1e-300, 1e-100, 1e-16, 1e-8, 700.0, 745.0, 1e4, 1e300))
+    scaled.extend((10.0 ** rng.uniform(-300.0, 300.0), "random") for _ in range(count))
+    scaled.extend((shape * 10.0 ** rng.uniform(-2.0, 1.0), "random") for _ in range(count))
+    points.extend((t / rate, origin) for t, origin in scaled if t > 0)
+    return [(x, origin) for x, origin in points if math.isfinite(x)]
+
+
 def uniform_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """Probes hugging both support edges, where the comparison chains live."""
     lo, hi = params
@@ -1554,6 +1704,43 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 AuditedMethod("std", sqrt_of(weibull_variance), SPECIAL_RTOL),
                 AuditedMethod("median", weibull_median, CLOSED_FORM_RTOL),
                 AuditedMethod("entropy", weibull_entropy, CLOSED_FORM_RTOL),
+            ),
+        ),
+        DistributionSpec(
+            name="Gamma",
+            build=lambda p: Gamma(shape=p[0], rate=p[1]),
+            param_names=("shape", "rate"),
+            # Eight decades of `shape` either side of 1: at `1e-8` all but `7e-6` of the mass sits below the
+            # smallest positive double, at `1e8` the prefactor's textbook form cancels to `1e-7`. `10`, `30` and
+            # `100` sit on the prefactor's, the entropy's and the tails' switch to their asymptotic expansions.
+            params=(
+                (1.0, 1.0),
+                (0.5, 2.0),
+                (2.0, 1.5),
+                (1e-8, 1.0),
+                (1e-3, 5.0),
+                (10.0, 0.5),
+                (30.0, 4.0),
+                (100.0, 2.0),
+                (1e4, 1.0),
+                (1e8, 3.0),
+                (2.0, 1e-8),
+                (2.0, 1e8),
+            ),
+            methods=(
+                AuditedMethod("pdf", gamma_pdf, SPECIAL_RTOL, gamma_points),
+                AuditedMethod("log_pdf", gamma_log_pdf, LOG_RTOL, gamma_points),
+                AuditedMethod("cdf", gamma_cdf, SPECIAL_RTOL, gamma_points),
+                AuditedMethod("log_cdf", gamma_log_cdf, LOG_RTOL, gamma_points),
+                AuditedMethod("sf", gamma_sf, SPECIAL_RTOL, gamma_points),
+                AuditedMethod("log_sf", gamma_log_sf, LOG_RTOL, gamma_points),
+                AuditedMethod("ppf", gamma_ppf, CLOSED_FORM_RTOL, quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", gamma_isf, CLOSED_FORM_RTOL, survival_points, seeded_oracle=True),
+                AuditedMethod("mean", lambda p, _x: mp.mpf(p[0]) / mp.mpf(p[1]), CLOSED_FORM_RTOL),
+                AuditedMethod("variance", lambda p, _x: mp.mpf(p[0]) / mp.mpf(p[1]) ** 2, CLOSED_FORM_RTOL),
+                AuditedMethod("std", lambda p, _x: mp.sqrt(mp.mpf(p[0])) / mp.mpf(p[1]), CLOSED_FORM_RTOL),
+                AuditedMethod("median", at_median_seeded(gamma_ppf), CLOSED_FORM_RTOL, seeded_oracle=True),
+                AuditedMethod("entropy", gamma_entropy, SPECIAL_RTOL),
             ),
         ),
         DistributionSpec(

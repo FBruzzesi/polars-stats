@@ -315,9 +315,9 @@ reason in the `Case`, not a shrug.
 
 **`statrs`' `inverse_cdf` is not a safe default.** For the discrete families it is a binary search, so its parity
 tolerance is the search's convergence rather than a formula's: state the `1e-6` loosening in the `Case`. Where it is
-*not* a binary search it has been wrong in several ways, including relatively wrong by `6e-3` for `Gamma` in the
-low-quantile tail, and panicking, hanging *and* saturating for `Beta`. A bounded solve with every Newton proposal
-clamped into a bisection bracket is the pattern to copy.
+*not* a binary search it has been wrong in several ways, including `8.7e-10` for `Gamma(2, 1)` at `q = 1e-30`, whose
+quantile is `1.4e-15`, and panicking, hanging *and* saturating for `Beta`. A bounded solve with every Newton proposal
+clamped into a bisection bracket is the pattern to copy; `gamma.rs`'s `IncompleteGamma::ln_quantile` is one.
 
 **Run `make audit` for a new distribution**, and add its oracle to the registry in `tools/accuracy/audit.py`. A
 distribution absent from the audit is unaudited, exactly as one absent from `tests/_registry.py` is untested;
@@ -337,9 +337,12 @@ one-ulp tie rule of a discrete inverse, decided in the log domain both sides ent
 (a special function ported to log space, the pattern for the hard cases), the `isf_value` bodies in `normal.rs` (a
 symmetry) and `lognormal.rs` (composing one), `Sides::read_at` in `mod.rs` with `pareto.rs`'s and `weibull.rs`'s
 `log_ratio` (one distribution read as another on a transformed variate, the transform formed from an exact difference
-so the support edge keeps its digits), and `weibull.rs`'s `second_moment_terms` (a difference of two special-function
+so the support edge keeps its digits), `weibull.rs`'s `second_moment_terms` (a difference of two special-function
 values replaced by its own series where the two cancel, with the crossover chosen where the direct form still has the
-digits the series keeps).
+digits the series keeps), and `gamma.rs`'s `IncompleteGamma` (a special function `statrs` has, re-derived where its
+own form cancels: the prefactor read off Stirling's formula, the smaller tail computed directly and the other as its
+complement, the bulk at a large shape as Temme's uniform expansion, and the inverse as Newton in `ln t` inside a
+bracket that holds for every shape).
 
 ## Conventions
 

@@ -11,7 +11,7 @@ lives here; a table only its own test file reads stays in that file.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, exp, inf, log, log1p, nextafter
+from math import ceil, exp, inf, log, log1p, nextafter, sqrt
 from typing import TYPE_CHECKING, Literal, get_args
 
 import polars as pl
@@ -24,6 +24,7 @@ from polars_stats import (
     Cauchy,
     DiscreteUniform,
     Exponential,
+    Gamma,
     Geometric,
     LogNormal,
     Normal,
@@ -577,6 +578,30 @@ _WEIBULL = DistSpec(
     integration_bounds=lambda p: (0.0, p[1] * log(2000.0) ** (1.0 / p[0])),
 )
 
+_GAMMA = DistSpec(
+    name="gamma",
+    cls=Gamma,
+    continuous=True,
+    parameters=(Param("shape", "shape"), Param("rate", "rate")),
+    # `shape` starts at 2: below it the density has a cusp at `0` (`x ** (shape - 1)`) whose trapezoid
+    # error `~h ** shape` breaks the mass check, and below 1 it diverges there.
+    param_strategy=st.tuples(_finite(2.0, 10.0), _finite(0.1, 10.0)),
+    example=(2.0, 1.5),
+    # From the zero region below `0` out to five standard deviations above the mean.
+    eval_range=lambda p: (-0.5 / p[1], (p[0] + 5.0 * sqrt(p[0])) / p[1]),
+    bounds=(0.0, inf),
+    on_support_point=1.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("shape=0", (0.0, 1.5), "shape must be"),
+        InvalidCase("shape=-1", (-1.0, 1.5), "shape must be"),
+        InvalidCase("rate=0", (2.0, 0.0), "rate must be"),
+        InvalidCase("rate=-1", (2.0, -1.0), "rate must be"),
+    ),
+    # Out to seven standard deviations above the mean, where `sf` is below `1e-4` at `shape = 2`.
+    integration_bounds=lambda p: (0.0, (p[0] + 7.0 * sqrt(p[0])) / p[1]),
+)
+
 _BETA = DistSpec(
     name="beta",
     cls=Beta,
@@ -673,6 +698,7 @@ ALL_SPECS = [
     _EXPONENTIAL,
     _PARETO,
     _WEIBULL,
+    _GAMMA,
     _BETA,
 ]
 SPECS_BY_NAME: dict[DistributionName, DistSpec] = {spec.name: spec for spec in ALL_SPECS}
@@ -688,6 +714,7 @@ DISCRETE_SPECS = [s for s in ALL_SPECS if not s.continuous]
 ULP_TOLERANT_MOMENTS: dict[DistributionName, frozenset[Moment]] = {
     "uniform": frozenset({"variance", "std"}),
     "geometric": frozenset({"std", "entropy"}),
+    "gamma": frozenset({"variance", "std"}),
 }
 """The `(spec, moment)` pairs that compare to `ULP_REL_TOL` instead of bit-exactly.
 
@@ -699,6 +726,9 @@ itself, and `col`'s `pl.repeat` keeps `p` in polars' scalar-backed representatio
 kernel is a reciprocal multiply rather than an exactly-rounded divide. A materialised `p` column and
 a `pl.lit(pl.Series(...))` one both stay bit-exact against the fast path (0 divergences over 300
 random `p`); only the `pl.repeat` spelling moves the last bit.
+
+`gamma`'s two are the same mechanism on `sqrt(shape) / rate`, which `variance` squares: 73 of 300 random
+`(shape, rate)` move the last bit under `pl.repeat`, a materialised pair none.
 """
 
 
