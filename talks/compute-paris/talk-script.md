@@ -81,7 +81,7 @@ attached to the right rows is now your job, and an invalid parameter comes back 
 4. The scipy round trip, as code:
 
     ```python
-    df = lf.collect()                          # the lazy query ends here
+    df = lf.collect()  # the lazy query ends here
     mu, sigma, x = (df[c].to_numpy() for c in ("mu", "sigma", "reading"))
     rng = np.random.default_rng(42)
     df = df.with_columns(
@@ -169,7 +169,7 @@ engine side, and statrs for the maths. One flag, `is_elementwise=True`, and Pola
 4. The anatomy, three layers top to bottom, one line each:
 
     ```python
-    baseline = ps.Normal(mu="mu", sigma="sigma")      # Python: returns pl.Expr, computes nothing
+    baseline = ps.Normal(mu="mu", sigma="sigma")  # Python: returns pl.Expr, computes nothing
     lf.with_columns(upper_tail=baseline.sf("reading"))
     ```
 

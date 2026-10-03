@@ -78,7 +78,7 @@ I'm Francesco. One thing that matters for the next 25 minutes: I'm not a Rust ex
 <div v-click="1">
 
 ```python {all|1,5,6}{at:2}
-df = lf.collect()                          # the lazy query ends here
+df = lf.collect()  # the lazy query ends here
 mu, sigma, x = (df[c].to_numpy() for c in ("mu", "sigma", "reading"))
 rng = np.random.default_rng(42)
 df = df.with_columns(
@@ -929,9 +929,9 @@ One machine: my laptop. An Apple M5, ten cores, four performance and six efficie
 # Three ways to pass parameters are three different code paths
 
 ```python
-Normal(0.0, 1.0)                           # scalar: plain numbers
-Normal(pl.col("mu"), pl.col("sigma"))      # column: one value per row
-Normal(pl.lit(0.0), pl.lit(1.0))           # broadcast: a one-value expression, stretched
+Normal(0.0, 1.0)  # scalar: plain numbers
+Normal(pl.col("mu"), pl.col("sigma"))  # column: one value per row
+Normal(pl.lit(0.0), pl.lit(1.0))  # broadcast: a one-value expression, stretched
 ```
 
 <p class="callout">never compare across them</p>
