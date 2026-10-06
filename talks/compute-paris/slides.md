@@ -17,7 +17,7 @@ Francesco Bruzzesi
 <!--
 Thank you for having me. [pause]
 
-(Timing marks: beat 1 ends 4:00, beat 2 8:30, beat 3 12:45, beat 4 17:00, beat 5 21:30, beat 6 26:00. If beat 2 ends past 9:00, take cut list items 1 to 3.)
+(Timing marks: beat 1 ends 4:15, beat 2 9:15, beat 3 13:00, beat 4 17:15, beat 5 21:00, beat 6 TODO. If beat 2 ends past 9:45, take cut list items 1 to 3.)
 -->
 
 ---
@@ -59,16 +59,16 @@ Here are six temperature readings from two sensors. Sensor A usually sits around
 
 [click] That tells you how far. What I usually need is how surprising: if the sensor is healthy, how likely is a reading at least this high? That's the tail of the distribution, and it lets you set an alarm at "one in a thousand" instead of at a magic number of degrees, different for every sensor.
 
-And before I score real readings, I want fake ones: simulated telemetry for each sensor, from its own baseline, one draw per row or a thousand per row. So, two jobs: sample and score. And every row has its own distribution.
+And before I score real readings, I want fake ones: simulated readings for each sensor, from its own baseline, one draw per row or a thousand per row. So, two jobs: sample and score. And every row has its own distribution.
 
-I'm Francesco. One thing that matters for the next 25 minutes: I'm not a Rust expert, and a good part of the Rust in polars-stats, the library this talk is about, was written with AI assistance. This talk is about what you can build anyway, standing on the right shoulders, and by the end you'll know where your own bugs are going to live.
+I'm Francesco. One thing that matters for the next 25 minutes: I'm not a Rust expert, and a good part of the Rust in polars-stats, the library this talk is about, was written with AI assistance. This talk is about what you can build anyway, standing on three giants, and by the end you'll know where your own bugs are going to live.
 -->
 
 ---
 
 # scipy already scores every row against its own distribution
 
-<p class="lede">Polars: describe the whole query first, and Polars plans it before running any of it.</p>
+<p class="lede">Polars: a dataframe engine written in Rust. Describe the whole query first, and Polars plans it before running any of it.</p>
 
 <table class="vocab">
 <thead><tr><th><code>pdf</code></th><th><code>cdf</code></th><th><code>sf</code></th><th><code>ppf</code> · <code>isf</code></th><th><code>rvs</code></th></tr></thead>
@@ -91,16 +91,16 @@ df = df.with_columns(
 
 <div v-click="2" class="tags"><span class="tag">the query ends</span><span class="tag">alignment is yours</span><span class="tag">?</span></div>
 
-<p class="footnote">scipy: Python's scientific library, since 2001 · <code>scipy.stats</code>: more than a hundred distributions, one vocabulary · polars-stats copies it word for word</p>
+<p class="footnote">scipy: Python's scientific library, since 2001 · <code>scipy.stats</code>: more than a hundred distributions, one vocabulary · polars-stats copies it word for word, so porting is mostly renaming</p>
 
 <!--
-My data lives in Polars, a dataframe library written in Rust, with a Python API. Its trick is laziness: you describe the whole query first, and Polars plans it before running any of it.
+My data lives in Polars, a dataframe engine written in Rust that most people drive from Python. Its trick is laziness: you describe the whole query first, and Polars plans it before running any of it.
 
-The first pair of shoulders is scipy, Python's scientific library, around since 2001. Its statistics module, `scipy.stats`, has more than a hundred distributions, and they all speak one vocabulary: `pdf` for the density, `cdf` for the probability below a value, `sf`, the survival function, for the probability above it, `ppf` and `isf` to go from a probability back to a value, and `rvs` to draw samples. polars-stats copies that vocabulary, word for word.
+The first giant is scipy, Python's scientific library, around since 2001. Its statistics module, `scipy.stats`, has more than a hundred distributions, and they all speak one vocabulary. `sf`, the survival function, is the tail I want. `rvs` draws samples. The rest are on the slide. polars-stats copies that vocabulary word for word, so porting scipy code is mostly renaming.
 
-And scipy already solves my problem. Give it an array of means and an array of standard deviations, and it scores every element against its own distribution, in compiled code, with no Python loop. So the honest first attempt is this one. [click] Take the columns out, give them to scipy, put the results back. It works. I did it for years.
+And scipy already solves my problem. Give it an array of means and an array of standard deviations, and it scores every element against its own distribution, in compiled code, with no Python loop. So the honest first attempt is this one. [click] Take the columns out as NumPy arrays, Python's standard arrays, give them to scipy, put the results back. It works. I did it for years.
 
-What it costs is where the result lands. [click] First, the query: to leave a lazy query you have to run it, so everything after this line is a second query, and the optimiser never sees the two together. Second, alignment: the result is a bare array, and keeping it on the right rows through the next join is your job. Third, a quiz.
+What it costs is where the result lands. [click] First, the query: to leave a lazy query you have to run it, so everything after this line is a second query, and the optimiser, the part of Polars that rewrites your query before it runs, never sees the two together. Second, alignment: the result is a bare array, and keeping it on the right rows through the next join is your job. Third, a quiz.
 -->
 
 ---
@@ -118,12 +118,16 @@ A normal distribution with a standard deviation of minus one. That's not a distr
 
 [click] `nan`. No warning. A modelling error, travelling down your pipeline dressed up as missing data.
 
-None of this is scipy's fault: an array has no query plan, no row identity and no null.
+None of this is scipy's fault: an array has no query plan, no row identity and no null, so `nan` is the only way it can say "invalid".
 -->
 
 ---
 
-# I wanted the answer to stay inside the query
+# R keeps the answer in the data frame. I wanted that in Polars
+
+```r
+mutate(df, upper_tail = pnorm(reading, mu, sigma, lower.tail = FALSE))
+```
 
 <div class="spine">
 <div class="slot">
@@ -146,7 +150,7 @@ None of this is scipy's fault: an array has no query plan, no row identity and n
 </div>
 
 <!--
-But I wanted the answer to stay inside the query.
+And if you come from R, you've been smiling for a minute: R's `pnorm`, inside `mutate`, has always kept the answer in the data frame. That's what I wanted in Polars: the answer as one more expression in the query.
 -->
 
 ---
@@ -193,7 +197,7 @@ Reading minus mu, divided by sigma: plain arithmetic, on every core. The next st
 
 So what would you try? [pause] [click] Call a Python function once per row with `map_elements`: it works, one row at a time, through the interpreter, on one thread. Type a textbook approximation of `erf` as Polars arithmetic: fine in the middle, wrong in the tails, which is exactly where anomaly detection lives.
 
-[click] The third option is the one Polars offers itself: an expression plugin. You write a function in Rust, compile it, and Polars calls it as if it were one of its own expressions. The function receives columns and returns a column, and that is the whole contract.
+[click] The third option is the one Polars offers itself: an expression plugin. You write a function in Rust, compile it, and Polars calls it as if it were one of its own expressions. The Polars team ships the machinery for this, and documents it. The function receives columns and returns a column, and that is the whole contract.
 
 That leaves the maths, and I was not going to write an error function.
 -->
@@ -213,10 +217,10 @@ That leaves the maths, and I was not going to write an error function.
 </div>
 </div>
 
-<p class="footnote">statrs: a Rust crate (Rust's word for a library), roughly <code>scipy.stats</code> for Rust, maintained by volunteers</p>
+<p class="footnote">statrs: a Rust crate (Rust's word for a library), the closest thing Rust has to <code>scipy.stats</code>, maintained by volunteers · expression plugins: shipped and documented by the Polars team</p>
 
 <!--
-Meet the second pair of shoulders: statrs. It's a Rust crate, which is Rust's word for a library, and it's roughly `scipy.stats` for Rust. Build `Normal::new(mu, sigma)` and you get the density, the cdf, the survival function, the inverse cdf, the log density and sampling, with `erf`, gamma and beta underneath. It's maintained by volunteers, and it's the reason polars-stats exists.
+Meet the second giant: statrs. It's a Rust crate, which is Rust's word for a library, and it's the closest thing Rust has to `scipy.stats`. Build `Normal::new(mu, sigma)` and you get the density, the cdf, the survival function, the inverse cdf, the log density and sampling, with `erf`, gamma and beta underneath. It's maintained by volunteers, and it's the reason polars-stats exists.
 -->
 
 ---
@@ -265,16 +269,13 @@ register_plugin_function(
 <!--
 So here's the whole anatomy. On top, a Python class whose parameters can be column names. Its methods compute nothing: each one returns a Polars expression that says "call this Rust function on these columns". In the middle, the Rust function: it gets the columns, walks the rows, builds a distribution per row. At the bottom, one line: `dist.sf(v)`. That line is statrs.
 
-It wasn't always this plain: the first versions generated these functions with Rust macros, code that writes code, and I couldn't review what they produced. When you're not an expert in a language, code you can read beats code that saves typing.
-
-Now the part I enjoy the most. [click] When I register the function with Polars, I pass one flag: `is_elementwise=True`. It's a promise: row i of the output depends only on row i of the inputs. In exchange for that one promise, Polars gives me everything else. Watch.
+Now the part I enjoy the most. [click] When I register the function with Polars, I pass one flag: `is_elementwise=True`. It's a promise: row i of the output depends only on row i of the inputs. Watch what Polars does with that promise.
 -->
 
 ---
 
 # Polars plans the whole query before it runs a single row
 
-````md magic-move {at:3}
 ```python
 scored = (
     pl.scan_parquet("readings.parquet")
@@ -284,13 +285,6 @@ scored = (
 )
 print(scored.explain())
 ```
-```python
-in_memory = scored.collect(engine="in-memory")
-streaming = scored.collect(engine="streaming")
-in_memory.height, streaming.height, in_memory.equals(streaming)
-# (482, 482, True)
-```
-````
 
 <div v-click="1" class="plan">
 
@@ -307,16 +301,71 @@ FROM
 <span v-click="2" class="callout">the filter moved into the file reader</span>
 </div>
 
-<p v-click="4" class="engines"><code>sink_parquet</code>: file to file · <code>over</code> / <code>group_by</code>: per group · all 10 cores</p>
-
-<p class="footnote">Polars 1.44.2 · a 1,000,000-row Parquet file of the two sensors</p>
+<p class="footnote">Polars 1.44.2 · a 1,000,000-row Parquet file (a common columnar file format) of the two sensors</p>
 
 <!--
-Here's a pipeline. Scan a Parquet file of a million readings, add the tail probability, keep sensor B, keep the readings rarer than one in a thousand. [click] And here's what Polars plans to do, read from the bottom up. [pause] [click] The filter on sensor B, which I wrote after the scoring, has moved down into the file reader. Half the rows are never decoded, so they never reach my function. The filter on the score stays on top, because it needs the score. That's called predicate pushdown, and I wrote none of it.
+Here's a pipeline. Scan a Parquet file, a common columnar file format, holding a million readings. Add the tail probability, keep sensor B, keep the readings rarer than one in a thousand. [click] And here's what Polars plans to do, read from the bottom up. [pause] [click] The filter on sensor B, which I wrote after the scoring, has moved down into the file reader. Half the rows are never decoded, so they never reach my function. The filter on the score stays on top, because it needs the score. That's called predicate pushdown, and I wrote none of it. In the scipy round trip, that reordering was your job, by hand.
+-->
 
-[click] Run it on the in-memory engine, and on the streaming engine, which reads the file in small batches called morsels, so the data never has to fit in memory. Same 482 rows, identical. [click] Swap `collect` for `sink_parquet` and it streams from file to file. Put it inside a `group_by` or an `over` and it works per group. All of it on Polars' thread pool, across every core.
+---
 
-I wrote a loop over rows. Polars made it lazy, optimised, parallel, streaming and groupable. statrs made the numbers right. scipy told me what right looks like.
+# Same query, `is_elementwise=False`. Does the filter still move?
+
+<div class="pair even">
+<div>
+<p class="layer-label"><code>is_elementwise=True</code></p>
+
+```text {5}
+WITH_COLUMNS:
+ [… normal_sf …]
+  Parquet SCAN [readings.parquet]
+  PROJECT */4 COLUMNS
+  SELECTION: col("sensor") == "temp-b"
+```
+
+</div>
+<div v-click="1">
+<p class="layer-label"><code>is_elementwise=False</code></p>
+
+```text {1}
+FILTER col("sensor") == "temp-b"
+FROM
+   WITH_COLUMNS:
+   [… normal_sf …]
+    Parquet SCAN [readings.parquet]
+    PROJECT */4 COLUMNS
+```
+
+</div>
+</div>
+
+<p v-click="1" class="promise">the promise is what buys the optimisation</p>
+
+<p class="footnote">sensor filter only · <code>normal_sf</code> registered directly with each flag · Polars 1.44.2</p>
+
+<!--
+Is that the promise, or would Polars do it anyway? Same query, one change: `is_elementwise=False`. Does the filter still move? [pause] [click] No. It stays on top, and every row gets scored. If my function could look at its neighbours, removing rows first might change the answers, so Polars won't risk it. The promise is what buys the optimisation.
+-->
+
+---
+
+# The same query streams, groups and runs on every core
+
+```python
+in_memory = scored.collect(engine="in-memory")
+streaming = scored.collect(engine="streaming")
+in_memory.height, streaming.height, in_memory.equals(streaming)
+# (482, 482, True)
+```
+
+<p v-click="1" class="engines"><code>sink_parquet</code>: file to file · <code>over</code> (a window function, like SQL's <code>OVER</code>) / <code>group_by</code>: per group · all 10 cores</p>
+
+<p class="footnote">streaming engine: reads the file in small batches called morsels, so the data never has to fit in memory</p>
+
+<!--
+Run it on the in-memory engine, and on the streaming engine, which reads the file in small batches called morsels, so the data never has to fit in memory. Same 482 rows, identical. [click] Swap `collect` for `sink_parquet` and it streams from file to file. Put it inside a `group_by`, or an `over`, Polars' window function, like SQL's `OVER`, and it works per group. All of it on Polars' thread pool, across every core.
+
+I wrote a loop over rows. Polars made it lazy, optimised, parallel, streaming and groupable. statrs did the maths. scipy told me what right looks like.
 -->
 
 ---
@@ -327,7 +376,7 @@ I wrote a loop over rows. Polars made it lazy, optimised, parallel, streaming an
 <div class="stack">
 <div class="giant"><b>Polars</b>the engine: lazy, optimised, parallel, streaming, groupable</div>
 <div class="mine"><b>polars-stats</b></div>
-<div class="giant"><b>statrs</b>the maths: the numbers, right</div>
+<div class="giant"><b>statrs</b>the maths: density, cdf, inverse, sampling</div>
 </div>
 <div class="stack side">
 <div class="giant"><b>scipy</b>the vocabulary, and the ruler</div>
@@ -358,7 +407,7 @@ class: divider
 # If the engine and the maths are borrowed, what is left for me to write?
 
 <!--
-The glue started very small.
+The glue started very small, and with the other job from the first slide: simulating.
 -->
 
 ---
@@ -414,7 +463,7 @@ Not supported. As if that were a mode the caller could switch off.
 <p v-click="2" class="answer"><b class="alarm">No</b>: the seed reproduced the chunk layout, not the query.</p>
 
 <!--
-Polars doesn't hand a plugin "the column". It hands it pieces. A column can live in several chunks, the thread pool splits work across cores, the streaming engine sends morsels, a group by sends one group at a time. My function runs once per piece, and every call restarts the generator from the same seed.
+Polars doesn't hand a plugin "the column". It hands it pieces. A column can be stored as several blocks, called chunks. The thread pool splits work across cores. The streaming engine sends morsels. A group by sends one group at a time. My function runs once per piece, and every call restarts the generator from the same seed.
 
 [click] So, a prediction. [pause] Same frame, same seed, in-memory engine against streaming engine. Same numbers? [pause] [click] No. The first rows of every piece repeat each other, and where the pieces start depends on the engine, not on your data. The seed was reproducing the chunk layout, not the query.
 
@@ -489,32 +538,11 @@ That fix came with a bill.
 <p class="footnote"><code>Pcg64Mcg</code> numbers: that day's benchmark, 1 June 2026</p>
 
 <!--
-My generator, ChaCha20, is a cryptographic one, and building one per row made sampling ten to twenty times slower. [click] The fix for the fix was `Pcg64Mcg`, which costs a handful of integer operations to build. On that day's benchmark, a million rows times a hundred draws went from about 5.9 seconds to 0.29. And `samples`, a thousand draws per row, is the first thousand values of that row's own stream.
+My generator, ChaCha20, is a cryptographic one, and building one per row made sampling ten to twenty times slower. [click] The fix for the fix was `Pcg64Mcg`, a small statistical generator that costs a handful of integer operations to build. On that day's benchmark, a million rows times a hundred draws went from about 5.9 seconds to 0.29. And `samples`, a thousand draws per row, is the first thousand values of that row's own stream.
 
 [click] One place where a giant said no: statrs draws a Binomial by flipping n coins, so n random numbers per draw. Binomial sampling borrows from another crate instead, `rand_distr`, whose cost doesn't grow with n. Everything else about the Binomial still comes from statrs.
 
 [click] Today a seeded column repeats across runs, chunk layouts, thread counts and both engines, and CI runs every test once per engine.
--->
-
----
-
-# A seeded column should belong to the data, not to the chunk layout
-
-<table class="compare">
-<thead><tr><th><code>seed=42</code>, 1M rows, Polars 1.44.2</th><th>re-run</th><th>in-memory vs streaming</th><th>1 chunk vs 4 chunks</th></tr></thead>
-<tbody>
-<tr><td>polars_rng</td><td colspan="3">no <code>seed</code> argument</td></tr>
-<tr><td>polars-random 0.5.0</td><td>same</td><td>different</td><td>different (column parameters)</td></tr>
-<tr><td>polars-stats 0.1.0</td><td>same</td><td>same</td><td>same</td></tr>
-</tbody>
-</table>
-
-<p class="caption">polars-random and polars_rng are good sampling-first plugins, and polars_rng's sampling catalogue is wider than polars-stats'</p>
-
-<p class="footnote">measured 2026-10-03</p>
-
-<!--
-And this turned out to be the one thing I couldn't find anywhere else. There are two good Polars plugins for sampling, polars-random and polars_rng, and for pure simulation polars_rng's catalogue is wider than polars-stats'. But polars_rng takes no seed at all. polars-random takes one, and on its latest release the same seed gives one column on the in-memory engine and a different one on streaming. For simulation, that's a reasonable trade. For testing a pipeline, I needed the seeded column to belong to the data, not to how Polars happened to cut it.
 -->
 
 ---
@@ -535,18 +563,22 @@ And this turned out to be the one thing I couldn't find anywhere else. There are
 <table class="frame spine-frame">
 <thead><tr><th>sensor</th><th>reading</th><th>z</th><th>upper_tail</th><th class="new">simulated</th></tr></thead>
 <tbody>
-<tr><td>temp-a</td><td>9.8</td><td>-0.4</td><td>0.655422</td><td class="todo">TODO</td></tr>
-<tr><td>temp-a</td><td>10.4</td><td>0.8</td><td>0.211855</td><td class="todo">TODO</td></tr>
-<tr><td>temp-a</td><td>40.0</td><td>60.0</td><td>0.0</td><td class="todo">TODO</td></tr>
-<tr><td>temp-b</td><td>99.4</td><td>-0.3</td><td>0.617911</td><td class="todo">TODO</td></tr>
-<tr><td>temp-b</td><td>101.2</td><td>0.6</td><td>0.274253</td><td class="todo">TODO</td></tr>
-<tr><td>temp-b</td><td>250.0</td><td>75.0</td><td>0.0</td><td class="todo">TODO</td></tr>
+<tr><td>temp-a</td><td>9.8</td><td>-0.4</td><td>0.655422</td><td>9.763219</td></tr>
+<tr><td>temp-a</td><td>10.4</td><td>0.8</td><td>0.211855</td><td>10.825292</td></tr>
+<tr><td>temp-a</td><td>40.0</td><td>60.0</td><td>0.0</td><td>11.172469</td></tr>
+<tr><td>temp-b</td><td>99.4</td><td>-0.3</td><td>0.617911</td><td>98.532788</td></tr>
+<tr><td>temp-b</td><td>101.2</td><td>0.6</td><td>0.274253</td><td>100.147242</td></tr>
+<tr><td>temp-b</td><td>250.0</td><td>75.0</td><td>0.0</td><td>97.717269</td></tr>
 </tbody>
 </table>
 
-<p class="footnote">&lt;TODO: simulated column: record <code>ps.Normal(mu="mu", sigma="sigma").sample(seed=42)</code> on the six-row frame&gt;</p>
+<p class="caption">polars-random and polars_rng: good sampling plugins, and polars_rng's catalogue is wider. Neither gave a seeded column identical on both engines.</p>
+
+<p class="footnote"><code>simulated</code> = <code>ps.Normal(mu="mu", sigma="sigma").sample(seed=42)</code>, identical on both engines · the measured comparison is backup slide B1</p>
 
 <!--
+So our frame gains its simulated column: one plausible reading per row, from that row's own sensor, the same on every run. Two other Polars plugins sample well, polars-random and polars_rng, and polars_rng's catalogue is wider than polars-stats'. Neither gave me a seeded column that stays identical across both engines, and that's the gap polars-stats fills.
+
 First pin on the strip: order.
 -->
 
@@ -578,7 +610,7 @@ Here's another comment from that first commit.
 <!--
 Roughly: Polars doesn't broadcast inputs into a plugin, so a one-value `pl.lit(p)` would draw a single sample that Polars then repeats across the frame. Broadcasting means stretching one value to the length of the column. So Python stretched every plain number before calling Rust. Handled.
 
-It handled the case I thought of. [click] But Polars also lets you write `pl.lit(0.5)`, or a column's mean, or its first value. Each is one row long, and only the running engine knows it, not the Python that builds the query. And the Rust helper that walks several columns together stops at the shortest one.
+It handled the case I thought of. [click] But Polars also lets you write `pl.lit(0.5)`, a constant wrapped as an expression, or a column's mean, or its first value. Each is one row long, and only the running engine knows it, not the Python that builds the query. And the Rust helper that walks several columns together stops at the shortest one.
 
 Prediction time.
 -->
@@ -601,7 +633,7 @@ Normal(mu=0.0, sigma=pl.lit(0.5)).cdf("x")
 <p v-click="1" class="caption center">height 1,000,000 on both · no error</p>
 
 <!--
-Version 0.0.1, straight from PyPI. A million rows, a Normal with sigma equal to `pl.lit(0.5)`, scored with `cdf`. The right answer has a million distinct values. How many do we get? [pause]
+Version 0.0.1, straight from PyPI, Python's package index. A million rows, a Normal with sigma equal to `pl.lit(0.5)`, scored with `cdf`. The right answer has a million distinct values. How many do we get? [pause]
 
 [click] In-memory: one. Row zero's answer, a million times. Streaming: ten, one per morsel. The right height, no error, no warning. That one I published.
 -->
@@ -658,7 +690,7 @@ The move: align in Rust, not in Python. [click] The first thing every plugin doe
 
 <p v-click="2" class="callout">Polars 1.44: each branch is evaluated only on the rows that select it</p>
 
-<p v-click="3" class="caption">same published wheel (0.0.1), same frame: Uniform, <code>min = 1</code>, <code>max = 0</code>, <code>x = -5</code></p>
+<p v-click="3" class="caption">same published package (0.0.1), same frame: Uniform, <code>min = 1</code>, <code>max = 0</code>, <code>x = -5</code></p>
 
 <div v-click="3" class="tiles">
 <div class="tile"><span class="label">Polars 1.43.2</span><span class="num word">ComputeError</span></div>
@@ -666,11 +698,11 @@ The move: align in Rust, not in Python. [click] The first thing every plugin doe
 </div>
 
 <!--
-Now, which rows run. Remember scipy's `nan` for a negative standard deviation? I wanted an error instead. But a Polars expression can't raise on a bad row. So for the methods simple enough to write as Polars arithmetic, the parameters went through a tiny Rust plugin whose only job was to check and raise. [click] And that check sat inside a `when / then / otherwise`, Polars' if-else, next to the null handling.
+Now, which rows run. Remember scipy's `nan` for a negative standard deviation? I wanted an error instead. But a Polars expression can't raise on a bad row. Some methods have a closed form, a formula you can write in one line, so I wrote those as Polars arithmetic, and sent the parameters through a tiny Rust plugin whose only job was to check and raise. [click] And that check sat inside a `when / then / otherwise`, Polars' if-else, next to the null handling.
 
 [click] Then Polars 1.44 shipped a good optimisation: evaluate each branch only on the rows that select it. For Polars' own expressions, that's pure win. For my validator, it meant it no longer saw the rows it existed to reject.
 
-[click] Same published wheel, same three-row frame: a Uniform whose maximum is below its minimum. On Polars 1.43: an error, as designed. On Polars 1.44: [pause] [click] zero. A quiet number where an error should be. And a plain `pip install` would give you exactly that pair.
+[click] Same published package, same three-row frame: a Uniform whose maximum is below its minimum. On Polars 1.43: an error, as designed. On Polars 1.44: [pause] [click] zero. A quiet number where an error should be. And a plain `pip install` would give you exactly that pair.
 -->
 
 ---
@@ -742,7 +774,7 @@ Every method is tested against scipy on the same inputs, plus property tests: a 
 
 All green. [click] At that point I believed the risky code was the code I couldn't read, the special functions inside statrs, because those are the hard parts. The algebra I'd written myself, one minus this, divided by that, was the safe part. I could read it.
 
-[click] But scipy and polars-stats both compute in 64-bit floating point. [pause] In the far tails both run out of digits, and two zeros agree perfectly. Parity can't tell you who's right where everybody saturates.
+[click] But scipy and polars-stats both compute in 64-bit floating point, about sixteen significant digits. [pause] In the far tails both run out of digits, and two zeros agree perfectly. That's not a scipy limit, it's a float64 limit: parity can't tell you who's right where everybody saturates.
 
 [click] So I brought a longer ruler: mpmath, a Python library that computes with as many digits as you ask for. Fifty, here, across every method and distribution, with parameters many orders of magnitude apart.
 -->
@@ -784,12 +816,14 @@ Bernoulli(p=1e-300).sf(0.5)
 <div v-click="4"><span>in float64</span><code>1 - 1e-300 == 1.0</code></div>
 </div>
 
-<p v-click="5" class="callout">compute it directly · standardise last, not first · in the tails, work in logarithms</p>
+<p v-click="5" class="callout">catastrophic cancellation</p>
+
+<p v-click="6" class="caption center">compute it directly, not as a difference · in the tails, work in logarithms</p>
 
 <!--
-My favourite. A Bernoulli coin with p equal to ten to the minus three hundred. What's the probability of a value above one half? [click] It's p, a perfectly representable number. [click] I returned zero. [click] I computed it as one minus the cdf, and the cdf is one minus p. [click] In 64-bit floats, one minus ten to the minus three hundred is exactly one. The p was gone before the subtraction even happened.
+My favourite. A Bernoulli coin with p equal to ten to the minus three hundred. What's the probability of a value above one half? [click] It's p, a perfectly representable number. [click] I returned zero. [click] I computed it as one minus the cdf, and the cdf is one minus p. [click] In 64-bit floats, one minus ten to the minus three hundred is exactly one. The p was gone before the subtraction even happened. [click] Subtracting two nearly equal numbers has a name: catastrophic cancellation.
 
-[click] The fixes were small: compute what you want directly, not as the difference of two nearly equal numbers; standardise last, not first; in the tails, work in logarithms.
+[click] The fixes were small: compute what you want directly, not as a difference, and in the tails, work in logarithms.
 -->
 
 ---
@@ -850,13 +884,13 @@ I could have patched that inside polars-stats and moved on. That fixes it for on
 <div class="card"><code>Beta.ln_pdf</code> near 1</div>
 <p class="note">one with my own PR folded into a contributor's</p>
 </div>
-<div v-click="1">
+<div>
 <h3>fixed and merged, awaiting release · 2</h3>
 <div class="card"><code>Beta.cdf</code> at large shapes</div>
 <div class="card"><code>LogNormal.pdf</code> left tail</div>
 <p class="note">both fixed by other contributors</p>
 </div>
-<div v-click="2">
+<div>
 <h3>open · 5</h3>
 <div class="card">Beta's inverse cdf, extreme lower tail</div>
 <div class="card"><code>Binomial.entropy</code> at <code>n = u64::MAX</code></div>
@@ -867,7 +901,7 @@ I could have patched that inside polars-stats and moved on. That fixes it for on
 <p class="footnote">status as of 2026-10-03; open ones are documented in polars-stats' accuracy page</p>
 
 <!--
-Three were fixed and released within days, in statrs 0.19.1, and one of those fixes folded in a small pull request of mine. [click] Two more were fixed by other contributors and are merged, waiting for the next release; that Beta cdf is one of them. [click] The rest are still open, including Beta's inverse cdf deep in the lower tail, which can panic and take the whole query down with it. Until they're fixed, the polars-stats docs list each one, with the regime where it bites and by how much.
+Three were fixed and released within days, two more are merged, that Beta cdf among them, and the rest are open and listed in the polars-stats docs.
 
 I had underrated that part of open source. A good bug report is a contribution: it cost me an evening, and it fixed the maths for everyone who uses statrs, not only for polars-stats.
 -->
@@ -1003,16 +1037,15 @@ What it costs: a much shorter catalogue than scipy's hundred-plus, and no fittin
 <table class="frame spine-frame">
 <thead><tr><th>sensor</th><th>reading</th><th>mu</th><th>sigma</th><th>z</th><th>upper_tail</th><th>simulated</th><th>log_tail</th></tr></thead>
 <tbody>
-<tr><td>temp-a</td><td>9.8</td><td>10.0</td><td>0.5</td><td>-0.4</td><td>0.655422</td><td class="todo">TODO</td><td>-0.422476</td></tr>
-<tr><td>temp-a</td><td>10.4</td><td>10.0</td><td>0.5</td><td>0.8</td><td>0.211855</td><td class="todo">TODO</td><td>-1.551851</td></tr>
-<tr><td>temp-a</td><td>40.0</td><td>10.0</td><td>0.5</td><td>60.0</td><td>0.0</td><td class="todo">TODO</td><td>-1805.013561</td></tr>
-<tr><td>temp-b</td><td>99.4</td><td>100.0</td><td>2.0</td><td>-0.3</td><td>0.617911</td><td class="todo">TODO</td><td>-0.48141</td></tr>
-<tr><td>temp-b</td><td>101.2</td><td>100.0</td><td>2.0</td><td>0.6</td><td>0.274253</td><td class="todo">TODO</td><td>-1.293704</td></tr>
-<tr><td>temp-b</td><td>250.0</td><td>100.0</td><td>2.0</td><td>75.0</td><td>0.0</td><td class="todo">TODO</td><td>-2817.736604</td></tr>
+<tr><td>temp-a</td><td>9.8</td><td>10.0</td><td>0.5</td><td>-0.4</td><td>0.655422</td><td>9.763219</td><td>-0.422476</td></tr>
+<tr><td>temp-a</td><td>10.4</td><td>10.0</td><td>0.5</td><td>0.8</td><td>0.211855</td><td>10.825292</td><td>-1.551851</td></tr>
+<tr><td>temp-a</td><td>40.0</td><td>10.0</td><td>0.5</td><td>60.0</td><td>0.0</td><td>11.172469</td><td>-1805.013561</td></tr>
+<tr><td>temp-b</td><td>99.4</td><td>100.0</td><td>2.0</td><td>-0.3</td><td>0.617911</td><td>98.532788</td><td>-0.48141</td></tr>
+<tr><td>temp-b</td><td>101.2</td><td>100.0</td><td>2.0</td><td>0.6</td><td>0.274253</td><td>100.147242</td><td>-1.293704</td></tr>
+<tr><td>temp-b</td><td>250.0</td><td>100.0</td><td>2.0</td><td>75.0</td><td>0.0</td><td>97.717269</td><td>-2817.736604</td></tr>
 </tbody>
 </table>
 
-<p class="footnote">&lt;TODO: simulated column, as on the order slide&gt;</p>
 
 <!--
 Back to the stack. I wrote none of Polars' engine and none of statrs' maths, and scipy gave me the vocabulary and the ruler. polars-stats, the thin strip in the middle, carries every pin: order, length, every row, digits. Every bug that mattered lived there, in a promise nobody had made me.
@@ -1032,6 +1065,12 @@ So if you take one thing home: borrow the engine, borrow the maths, and enforce 
 
 # Thank you to scipy, Polars and statrs
 
+<div class="cards giants">
+<div><h3>scipy</h3><div class="card">the vocabulary, and the ruler</div></div>
+<div><h3>Polars</h3><div class="card">the engine, and the door into it</div></div>
+<div><h3>statrs</h3><div class="card">the maths</div></div>
+</div>
+
 <div class="pair even credits">
 <div>
 <p>and to the people behind pyo3-polars, rand, mpmath and hypothesis</p>
@@ -1047,5 +1086,26 @@ So if you take one thing home: borrow the engine, borrow the maths, and enforce 
 </div>
 
 <!--
-Thank you to scipy, to Polars and to statrs, and to the people behind pyo3-polars, rand, mpmath and hypothesis. Thank you to the statrs contributors who turned my reports into fixes, to sidsri14, who contributed two distributions to polars-stats, and to camriddell, who fixed its docs. What I vouch for is the behaviour, and the tests that pin it. It's `pip install polars-stats`, and the docs are on the slide. Thank you.
+Thank you to the three giants: scipy for the vocabulary and the ruler, Polars for the engine and the door into it, statrs for the maths. Thank you to the statrs contributors who turned my reports into fixes, to sidsri14, who contributed two distributions to polars-stats, and to camriddell, who fixed its docs. What I vouch for is the behaviour, and the tests that pin it. It's `pip install polars-stats`, and the docs are on the slide. Thank you.
+-->
+
+---
+
+# B1 · A seeded column should belong to the data, not to the chunk layout
+
+<table class="compare">
+<thead><tr><th><code>seed=42</code>, 1M rows, Polars 1.44.2</th><th>re-run</th><th>in-memory vs streaming</th><th>1 chunk vs 4 chunks</th></tr></thead>
+<tbody>
+<tr><td>polars_rng</td><td colspan="3">no <code>seed</code> argument</td></tr>
+<tr><td>polars-random 0.5.0</td><td>same</td><td>different</td><td>different (column parameters)</td></tr>
+<tr><td>polars-stats 0.1.0</td><td>same</td><td>same</td><td>same</td></tr>
+</tbody>
+</table>
+
+<p class="caption">polars-random and polars_rng are good sampling-first plugins, and polars_rng's sampling catalogue is wider than polars-stats'</p>
+
+<p class="footnote">measured 2026-10-03</p>
+
+<!--
+Backup for Q&A, not spoken. polars_rng takes no seed; polars-random takes one, and on 0.5.0 the same seed gives one column on the in-memory engine and a different one on streaming, and differs between 1 and 4 chunks with column parameters. For simulation, that's a reasonable trade. For testing a pipeline, the seeded column has to belong to the data.
 -->

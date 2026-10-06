@@ -791,6 +791,10 @@
   opacity: 0.7;
 }
 
+.cards.giants {
+  margin-bottom: 1.2rem;
+}
+
 .conditions p {
   margin: 0.25rem 0;
 }
