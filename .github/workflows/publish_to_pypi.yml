@@ -66,13 +66,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
-          enable-cache: true
+          enable-cache: false
       - name: Set up Rust
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: true
       - name: Build abi3 wheel
         run: uvx maturin build --out dist
       - name: Sync project dependencies
@@ -99,15 +101,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           # Mirrors pull-request.yml's test-oldest: the polars floor is exercised on the
           # oldest python it publishes wheels for, not on the newest interpreter.
           python-version: "3.12"
-          enable-cache: true
+          enable-cache: false
       - name: Set up Rust
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: true
       - name: Build abi3 wheel
         run: uvx maturin build --out dist
       - name: Sync project dependencies
