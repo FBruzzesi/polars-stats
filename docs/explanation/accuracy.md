@@ -33,10 +33,10 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 ## Use the log methods in the tails, where they are log methods
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
-limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
+limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma` and the closed-form
 distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
 `DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the right methods for tail
-scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those ten: forming the complement quantises the tail mass to
+scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those eleven: forming the complement quantises the tail mass to
 `1.1e-16` absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
@@ -166,6 +166,28 @@ magnitudes are in the inherited limits below.
     reaches the hundreds (`shape = 0.01`) rather than saturating there. The audited range is `shape`
     in `1e-8` to `1e8` and `scale` in `1e-8` to `1e8`; past `shape ~ 6.7e153` the series argument
     `1 / shape ** 2` underflows and `variance` and `std` collapse to `0`, as they do in `scipy`.
+* **`Gamma` evaluates its own regularized incomplete gamma.** Every value-keyed method is `P(shape, rate x)`, its
+  complement or an inverse, computed in log space: the power series below the mean, Legendre's continued fraction
+  above it, DLMF 8.7.3 where the point and the shape are both small, and from `shape = 100` Temme's uniform
+  expansion (DLMF 8.12) within `0.3 shape` of the mean, where the series would need about `9 sqrt(shape)` terms.
+  The expansion's `erfc` is a scaled `erfcx` of its own, a Taylor polynomial below `2` and Laplace's continued
+  fraction above, not `statrs`' `erfc`. Four smaller limits hold inside the audited range:
+
+    * `pdf`, `cdf` and `sf` are the exponentials of their logs, so their relative error is the log's absolute
+      error: `1.3e-13` at `sf = e ** -705`. Where `rate x` is not exact, its rounding is magnified by the slope of
+      the log tail, about `37 sqrt(shape)` at the edge of `float64` range: `1.4e-11` relative at `Gamma(1e8, 3)`.
+    * Below `shape = 10` the prefactor's `ln Gamma(shape + 1)` is `statrs`' `ln_gamma`, whose `~1e-14` absolute
+      error the logs carry: `log_cdf` at the mean of `Gamma(9.999999999999998, 1)` is `2.4e-14` relative off,
+      against `1.6e-15` at `shape = 10`.
+    * `log_pdf` holds `~1e-15` absolute rather than relative where it crosses `0` because `ln rate` cancels
+      `(shape - 1) ln(rate x)`: `Gamma(2, 1e8).log_pdf(1e-16)` is `-1.0000004e-8` against a true
+      `-1.0000000021e-8`.
+    * `entropy` is `statrs`' closed form below `shape = 30`, which holds `1e-13` there, and its own asymptotic
+      series above, where the closed form cancels to `2.3e-8` relative at `shape = 1e8`.
+
+    `scipy`'s `gammainc` stops its power series at 2000 terms, so 5 standard deviations below the mean it returns
+    the lower tail `4.3e-6` relative off at `shape = 1e6` and `35%` off at `1e8`; parity against `scipy` is only
+    meaningful below `shape ~ 1e4`. The audited range is `shape` in `1e-8` to `1e8` and `rate` in `1e-8` to `1e8`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%

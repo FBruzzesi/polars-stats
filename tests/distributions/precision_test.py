@@ -21,7 +21,7 @@ import pytest
 from scipy.stats import binom as scipy_binom
 from scipy.stats import cauchy as scipy_cauchy
 
-from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Geometric, Pareto, Weibull
+from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Gamma, Geometric, Pareto, Weibull
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
 
 if TYPE_CHECKING:
@@ -879,3 +879,357 @@ def test_weibull_variance_agrees_across_the_series_crossover(regime: Regime, sha
     got = pl.DataFrame({"_": range(4)}).select(variance=dist.variance(), std=dist.std())
     assert got["variance"][0] == pytest.approx(variance, rel=1e-13, abs=0.0)
     assert got["std"][0] == pytest.approx(math.sqrt(variance), rel=1e-13, abs=0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# Gamma: the regularized incomplete gamma at the shapes where its textbook prefactor cancels (large)
+# or its complement does (small), in the tails past `float64` range, and the entropy at a large shape.
+# Every expected value is `mpmath` at 50 digits.
+# --------------------------------------------------------------------------------------------------
+
+# `(shape, x, cdf, sf)` five standard deviations either side of the mean. The textbook prefactor
+# `shape ln t - t - ln Gamma(shape)` rounds terms of order `shape ln shape` that cancel to `ln(shape) / 2`,
+# `1e-7` relative at `shape = 1e8`.
+_GAMMA_LARGE_SHAPE = [
+    (1e6, 995000.0, 2.7495803592700708e-7, 0.99999972504196407),
+    (1e6, 1005000.0, 0.99999970125098599, 2.9874901401146349e-7),
+    (1e8, 99950000.0, 2.8546421399586261e-7, 0.999999714535786),
+    (1e8, 100050000.0, 0.99999971215703131, 2.8784296868527811e-7),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "x", "cdf", "sf"), _GAMMA_LARGE_SHAPE, ids=lambda v: f"{v:.6g}")
+def test_gamma_cumulative_methods_keep_their_digits_at_a_large_shape(
+    regime: Regime, shape: float, x: float, cdf: float, sf: float
+) -> None:
+    """Five standard deviations from the mean, `cdf` and `sf` hold `1e-13` relative up to `shape = 1e8`.
+
+    From `shape = 10` the prefactor is `shape (ln(t / shape) - t / shape + 1)` less Stirling's remainder,
+    with the bracket read off `(t - shape) / shape`, so no term of order `shape ln shape` is rounded.
+    """
+    dist = _spelled(Gamma, regime, shape, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(cdf=dist.cdf("x"), sf=dist.sf("x"), log_cdf=dist.log_cdf("x"))
+    assert got["cdf"][0] == pytest.approx(cdf, rel=1e-13, abs=0.0)
+    assert got["sf"][0] == pytest.approx(sf, rel=1e-13, abs=0.0)
+    assert got["log_cdf"][0] == pytest.approx(math.log1p(-sf) if sf < cdf else math.log(cdf), rel=1e-13, abs=0.0)
+
+
+# `(shape, x, sf, log_sf)`: `1 - P` would carry `P`'s `1.1e-16` absolute into an upper tail of `1e-8` and below.
+_GAMMA_SMALL_SHAPE = [
+    (1e-8, 0.5, 5.5977359770995871e-9, -19.000903610756109),
+    (1e-6, 1e-3, 6.33152014144515e-6, -11.969970201911767),
+    (1e-8, 3.0, 1.3048381341654404e-10, -22.75977193198106),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "x", "sf", "log_sf"), _GAMMA_SMALL_SHAPE, ids=lambda v: f"{v:.3g}")
+def test_gamma_upper_tail_keeps_its_digits_at_a_small_shape(
+    regime: Regime, shape: float, x: float, sf: float, log_sf: float
+) -> None:
+    """At a small shape nearly all the mass sits at `0`, so `sf` is the small tail at every ordinary point.
+
+    Below `x = 1.1` it is DLMF 8.7.3, whose leading `1 - x ** shape / Gamma(1 + shape)` is `-expm1` of a
+    log formed from `ln Gamma(1 + shape)`'s own Taylor series: statrs' `ln_gamma(1.0 + shape)` rounds
+    `1 + shape` first, which alone is `5e-8` relative on the tail at `shape = 1e-8`.
+    """
+    dist = _spelled(Gamma, regime, shape, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(sf=dist.sf("x"), log_sf=dist.log_sf("x"))
+    assert got["sf"][0] == pytest.approx(sf, rel=1e-14, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(log_sf, rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "rate", "x", "log_sf"),
+    [(2.5, 1.0, 1e3, -989.92155032737345), (0.3, 4.0, 5e2, -2006.4167794805587), (1e4, 1.0, 2e4, -3074.0525113731376)],
+    ids=["shape=2.5", "shape=0.3", "shape=1e4"],
+)
+def test_gamma_log_sf_survives_the_survival_mass_underflowing(
+    regime: Regime, shape: float, rate: float, x: float, log_sf: float
+) -> None:
+    """`log_sf` is the log prefactor plus the log of the continued fraction, finite where `sf` is `e ** -3074`.
+
+    `cdf` on the same row is exactly `1`: its complement's `-expm1` would be `0 * inf` past `|ln sf| ~ 1420`,
+    so a small enough tail is subtracted from `1` directly.
+    """
+    dist = _spelled(Gamma, regime, shape, rate)
+    got = pl.DataFrame({"x": [x] * 4}).select(
+        sf=dist.sf("x"), log_sf=dist.log_sf("x"), cdf=dist.cdf("x"), log_cdf=dist.log_cdf("x")
+    )
+    assert got["sf"][0] == 0.0
+    assert got["log_sf"][0] == pytest.approx(log_sf, rel=1e-14, abs=0.0)
+    assert got["cdf"][0] == 1.0
+    assert got["log_cdf"][0] == 0.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "rate", "x", "log_cdf"),
+    [
+        (2.5, 1.0, 1e-200, -1152.4935200993699),
+        (50.0, 1.0, 1e-3, -493.8665112928519),
+        (1e4, 1.0, 5e3, -1936.3029753315976),
+    ],
+    ids=["shape=2.5", "shape=50", "shape=1e4"],
+)
+def test_gamma_log_cdf_survives_the_lower_mass_underflowing(
+    regime: Regime, shape: float, rate: float, x: float, log_cdf: float
+) -> None:
+    """`log_cdf` is the log prefactor plus the log of the series, finite where `cdf` is `e ** -1936`."""
+    dist = _spelled(Gamma, regime, shape, rate)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_cdf=dist.log_cdf("x"), sf=dist.sf("x"))
+    assert got["log_cdf"][0] == pytest.approx(log_cdf, rel=1e-14, abs=0.0)
+    assert got["sf"][0] == 1.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gamma_log_cdf_keeps_a_point_whose_scaled_value_underflows(regime: Regime) -> None:
+    """`Gamma(2, 0.3).log_cdf(1e-320)` is `2 ln(0.3e-320) - ln 2`, though `rate x` rounds to a subnormal.
+
+    Below the normal range the point's log is `ln rate + ln x`, not `ln(rate x)`: the subnormal product has
+    lost enough digits to move its log by `4.5e-7` relative. `pdf` on the same row is `rate ** 2 x` to one
+    subnormal ulp.
+    """
+    x, rate = 1e-320, 0.3
+    dist = _spelled(Gamma, regime, 2.0, rate)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_cdf=dist.log_cdf("x"), pdf=dist.pdf("x"))
+    expected = 2.0 * (math.log(rate) + math.log(x)) - math.log(2.0)
+    assert got["log_cdf"][0] == pytest.approx(expected, rel=1e-15, abs=0.0)
+    assert got["pdf"][0] == pytest.approx(rate**2 * x, rel=0.0, abs=5e-324)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "x", "sf"), [(2.5, 715.0, 4.3468944051673152e-307), (0.5, 730.0, 1.9252843911342151e-319)], ids=str
+)
+def test_gamma_sf_answers_below_the_exp_underflow_threshold(regime: Regime, shape: float, x: float, sf: float) -> None:
+    """`sf` stays nonzero down to the smallest subnormal, past the `e ** -709.78` where statrs returns `0`.
+
+    A linear tail is the `exp` of its log, so its relative error is the log's absolute error: `1.3e-13` at
+    `e ** -705`. The subnormal row holds to two of its ulps, all the precision a `1.9e-319` has.
+    """
+    dist = _spelled(Gamma, regime, shape, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(sf=dist.sf("x"))
+    assert got["sf"][0] == pytest.approx(sf, rel=1e-12, abs=2 * 5e-324)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gamma_density_survives_a_power_leaving_float64(regime: Regime) -> None:
+    """`Gamma(80, 1e-5).pdf(8e6)` is `4.46e-7`, where `rate ** shape` alone is `1e-400`.
+
+    The density is the exponential of its log, so no single factor of
+    `rate ** shape x ** (shape - 1) e ** (-rate x) / Gamma(shape)` is ever formed; statrs forms them
+    and returns `NaN` here.
+    """
+    dist = _spelled(Gamma, regime, 80.0, 1e-5)
+    got = pl.DataFrame({"x": [8e6] * 4}).select(pdf=dist.pdf("x"))
+    assert got["pdf"][0] == pytest.approx(4.4556665770350952e-7, rel=1e-14, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "pdf", "log_pdf"),
+    [(0.5, math.inf, math.inf), (1.0, 4.0, math.log(4.0)), (1.5, 0.0, -math.inf)],
+    ids=["shape<1", "shape=1", "shape>1"],
+)
+def test_gamma_density_at_the_origin_follows_the_shape(
+    regime: Regime, shape: float, pdf: float, log_pdf: float
+) -> None:
+    """`pdf(0)` is infinite below `shape = 1`, `rate` at it and `0` above it, as `scipy.stats.gamma`."""
+    dist = _spelled(Gamma, regime, shape, 4.0)
+    got = pl.DataFrame({"x": [0.0] * 4}).select(pdf=dist.pdf("x"), log_pdf=dist.log_pdf("x"))
+    assert got["pdf"][0] == pdf
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-15)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gamma_log_pdf_keeps_the_linear_term_at_unit_shape(regime: Regime) -> None:
+    """`Gamma(1, 1).log_pdf(1e-79)` is `-1e-79`: at `shape = 1` the log density is `-t` and nothing else.
+
+    `ln Gamma(shape)` is `0` exactly there, and the `(shape - 1) ln t` term vanishes rather than
+    cancelling a `shape ln t`, which would round the `-t` away.
+    """
+    x = 1e-79
+    dist = _spelled(Gamma, regime, 1.0, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_pdf=dist.log_pdf("x"))
+    assert got["log_pdf"][0] == -x
+
+
+# `(shape, rate, x, log_pdf, pdf)` at and just off `rate x = shape`, and one point in the bulk, below `shape = 0.2`.
+_GAMMA_SMALL_SHAPE_DENSITY = [
+    (1e-8, 1.0, 1e-8, -1.8843465087275504e-07, 0.9999998115653669),
+    (1e-8, 1.0, 9.99999999e-09, -1.8743465088847987e-07, 0.99999981256536668),
+    (1e-3, 2.0, 5e-4, 0.6858158188792466, 1.9853908943923007),
+    (0.1, 1.0, 3.0, -6.241463711535505, 0.0019470035845404411),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "rate", "x", "log_pdf", "pdf"), _GAMMA_SMALL_SHAPE_DENSITY, ids=lambda v: f"{v:.3g}")
+def test_gamma_log_pdf_keeps_its_digits_at_a_small_shape(
+    regime: Regime, shape: float, rate: float, x: float, log_pdf: float, pdf: float
+) -> None:
+    """`Gamma(1e-8, 1).log_pdf(1e-8)` is `-1.88e-7`, where `ln Gamma(shape)` and `-ln t` are both `18.4`.
+
+    Below `shape = 0.2` the pair is read as `ln(shape / t)`, from the exact difference `shape - t` near
+    `t = shape`: written term by term the two cancel to `2e-8` relative here, and a rounded `shape / t`
+    alone leaves `5e-10` at `x = 9.99999999e-9`.
+    """
+    dist = _spelled(Gamma, regime, shape, rate)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_pdf=dist.log_pdf("x"), pdf=dist.pdf("x"))
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=1e-14, abs=0.0)
+    assert got["pdf"][0] == pytest.approx(pdf, rel=1e-15, abs=0.0)
+
+
+# `(shape, rate, q, isf)`: the survival targets `ppf(1 - q)` cannot express at all, and one at a small shape.
+_GAMMA_DEEP_ISF = [
+    (2.0, 1.5, 1e-300, 464.88280758623506),
+    (0.05, 1.0, 1e-300, 681.60702731455832),
+    (100.0, 0.5, 1e-200, 1515.9084648225578),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "rate", "q", "isf"), _GAMMA_DEEP_ISF, ids=lambda v: f"{v:.3g}")
+def test_gamma_isf_resolves_a_survival_target_below_the_complement_floor(
+    regime: Regime, shape: float, rate: float, q: float, isf: float
+) -> None:
+    """`isf(1e-300)` solves `ln Q(shape, t) = ln q` itself, where `1 - q` is exactly `1`."""
+    dist = _spelled(Gamma, regime, shape, rate)
+    got = pl.DataFrame({"q": [q] * 4}).select(isf=dist.isf("q"))
+    assert got["isf"][0] == pytest.approx(isf, rel=1e-13, abs=0.0)
+
+
+# `(shape, rate, q, ppf)`: the left tail, where the quantile is `(q Gamma(shape + 1)) ** (1 / shape) / rate`
+# to leading order and a linear-scale Newton iteration on the cdf stalls on the vanishing density.
+_GAMMA_DEEP_PPF = [
+    (2.0, 1.5, 1e-300, 9.4280904158206338e-151),
+    (1e-3, 1.0, 0.5, 5.2442064082779784e-302),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "rate", "q", "ppf"), _GAMMA_DEEP_PPF, ids=lambda v: f"{v:.3g}")
+def test_gamma_ppf_keeps_relative_precision_in_the_left_tail(
+    regime: Regime, shape: float, rate: float, q: float, ppf: float
+) -> None:
+    """The inverse iterates on `ln t`, so a quantile of `5e-302` keeps relative precision.
+
+    `1e-13` rather than tighter: the log-scale solve carries `|ln t| * 1.1e-16` relative, `7.7e-14` at
+    `t = 5e-302`.
+    """
+    dist = _spelled(Gamma, regime, shape, rate)
+    got = pl.DataFrame({"q": [q] * 4}).select(ppf=dist.ppf("q"))
+    assert got["ppf"][0] == pytest.approx(ppf, rel=1e-13, abs=0.0)
+
+
+# `(shape, entropy)` at `rate = 2.5`, straddling the switch to the asymptotic series at `shape = 30`.
+_GAMMA_ENTROPY = [
+    (29.9, 2.1903351514886984),
+    (29.999, 2.1920253438735657),
+    (30.0, 2.1920423874136325),
+    (30.1, 2.1937438146103469),
+    (1e4, 5.1077846531519313),
+    (1e8, 9.7129881699733671),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "entropy"), _GAMMA_ENTROPY, ids=lambda v: f"{v:.4g}")
+def test_gamma_entropy_keeps_its_digits_at_a_large_shape(regime: Regime, shape: float, entropy: float) -> None:
+    """`Gamma(1e8, 2.5).entropy()` holds `1e-13` relative, where statrs' closed form is `2.3e-8` off.
+
+    `shape + ln Gamma(shape) + (1 - shape) psi(shape)` cancels terms of order `shape ln shape` down to
+    `ln(shape) / 2`; from `shape = 30` the entropy is its asymptotic series, and below it the closed form
+    holds `1e-13`.
+    """
+    dist = _spelled(Gamma, regime, shape, 2.5)
+    got = pl.DataFrame({"_": range(4)}).select(entropy=dist.entropy())
+    assert got["entropy"][0] == pytest.approx(entropy, rel=1e-13, abs=0.0)
+
+
+def test_gamma_holds_the_bulk_at_a_shape_past_any_series_budget() -> None:
+    """At `shape = 2e12` the bulk is Temme's expansion, where the series would need `~1.3e7` terms.
+
+    `P(shape, shape) = 1/2 + 1 / (3 sqrt(2 pi shape))` and the median is `shape - 1/3 + 8 / (405 shape)`,
+    both to `O(shape ** -3/2)`: the median holds `5e-16` relative, inside the `|ln t| * 1.1e-16` the log-scale
+    inverse carries.
+    """
+    shape = 2e12
+    dist = Gamma(shape=shape, rate=1.0)
+    got = pl.DataFrame({"x": [shape]}).select(cdf=dist.cdf("x"), median=dist.median())
+    assert got["cdf"][0] == pytest.approx(0.5 + 1.0 / (3.0 * math.sqrt(2.0 * math.pi * shape)), rel=1e-14, abs=0.0)
+    assert got["median"][0] == pytest.approx(shape - 1.0 / 3.0 + 8.0 / (405.0 * shape), rel=1e-15, abs=0.0)
+
+
+# `(seam, shape, x, log_cdf, log_sf)` on both sides of every switch between the incomplete gamma's regions,
+# at `rate = 1` so `t = x`: Cephes' split at `t = 0.5`, `t = 1.1` and `shape ln t = -0.4`, the Stirling
+# prefactor from `shape = 10`, Temme's expansion from `shape = 100` and inside `0.3 shape` of the mean, and
+# its `erfcx` switching from a Taylor polynomial to a continued fraction at `w = 2`.
+_GAMMA_SEAMS = [
+    ("t=0.5", 0.56, 0.49999999999999994, -0.43979002563659664, -1.0333068734729631),
+    ("t=0.5", 0.56, 0.5, -0.4397900256365966, -1.0333068734729631),
+    ("t=0.5", 0.56, 0.5000000000000001, -0.43979002563659647, -1.0333068734729633),
+    ("t=1.1", 1.15, 1.0999999999999999, -0.5012941373879154, -0.9307604993385232),
+    ("t=1.1", 1.15, 1.1, -0.5012941373879153, -0.9307604993385235),
+    ("t=1.1", 1.15, 1.1000000000000003, -0.5012941373879152, -0.9307604993385237),
+    ("shape*ln(t)=-0.4", 0.4, 0.3678794411714423, -0.37992156645103786, -1.1517442692242488),
+    ("shape*ln(t)=-0.4", 0.4, 0.36787944117144233, -0.3799215664510378, -1.1517442692242488),
+    ("shape*ln(t)=-0.4", 0.4, 0.3678794411714424, -0.37992156645103775, -1.151744269224249),
+    ("shape=10", 9.999999999999998, 10.0, -0.6123596078537543, -0.7810395684962785),
+    ("shape=10", 9.999999999999998, 25.0, -0.0002215011678213132, -8.415193444701625),
+    ("shape=10", 10.0, 10.0, -0.6123596078537547, -0.781039568496278),
+    ("shape=10", 10.0, 25.0, -0.0002215011678213136, -8.415193444701623),
+    ("shape=100", 99.99999999999999, 110.0, -0.17230628158645353, -1.8433980649510182),
+    ("shape=100", 100.0, 110.0, -0.17230628158645392, -1.843398064951016),
+    ("|t-shape|=0.3*shape", 1000.0, 699.9999999999999, -59.85147851292529, -1.0158583345332718e-26),
+    ("|t-shape|=0.3*shape", 1000.0, 700.0, -59.85147851292524, -1.0158583345333217e-26),
+    ("|t-shape|=0.3*shape", 1000.0, 700.0000000000001, -59.85147851292519, -1.0158583345333715e-26),
+    ("|t-shape|=0.3*shape", 1000.0, 1299.9999999999998, -1.8736155715786546e-18, -40.81866164901851),
+    ("|t-shape|=0.3*shape", 1000.0, 1300.0, -1.8736155715785553e-18, -40.818661649018566),
+    ("|t-shape|=0.3*shape", 1000.0, 1300.0000000000002, -1.8736155715784555e-18, -40.818661649018615),
+    ("erfcx w=2", 1000.0, 1092.1290262434488, -0.0022661064301416566, -6.09082498843765),
+    ("erfcx w=2", 1000.0, 1092.129026243449, -0.0022661064301416085, -6.090824988437672),
+    ("erfcx w=2", 1000.0, 1092.1290262434493, -0.0022661064301415603, -6.090824988437693),
+]
+
+# `(shape, x, log_pdf)` either side of the density's switches at `shape = 0.2` and `shape = 10`.
+_GAMMA_DENSITY_SEAMS = [
+    (0.19999999999999998, 0.2, -0.43651349248350435),
+    (0.2, 0.2, -0.43651349248350424),
+    (0.19999999999999998, 1.5, -3.348435908917316),
+    (0.2, 1.5, -3.348435908917316),
+    (9.999999999999998, 10.0, -2.0785616431350586),
+    (10.0, 10.0, -2.0785616431350586),
+]
+
+# Below `shape = 10` the prefactor's `ln Gamma(shape + 1)` is statrs', whose `~1e-14` absolute error the logs
+# carry: `2.4e-14` relative on `log_cdf` at the mean of `Gamma(9.999999999999998, 1)`, `1.6e-15` at `shape = 10`.
+_GAMMA_SEAM_RTOL = 3e-14
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(
+    ("shape", "x", "log_cdf", "log_sf"), [pytest.param(*row, id=f"{seam}:x={row[1]!r}") for seam, *row in _GAMMA_SEAMS]
+)
+def test_gamma_tails_hold_on_both_sides_of_every_region_seam(
+    regime: Regime, shape: float, x: float, log_cdf: float, log_sf: float
+) -> None:
+    """Both logs match mpmath at a seam, one ulp below it and one above it, so a branch that breaks shows up here."""
+    dist = _spelled(Gamma, regime, shape, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_cdf=dist.log_cdf("x"), log_sf=dist.log_sf("x"))
+    assert got["log_cdf"][0] == pytest.approx(log_cdf, rel=_GAMMA_SEAM_RTOL, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(log_sf, rel=_GAMMA_SEAM_RTOL, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("shape", "x", "log_pdf"), _GAMMA_DENSITY_SEAMS, ids=repr)
+def test_gamma_log_pdf_holds_on_both_sides_of_its_shape_seams(
+    regime: Regime, shape: float, x: float, log_pdf: float
+) -> None:
+    """`log_pdf` matches mpmath one ulp either side of `shape = 0.2` and `shape = 10`."""
+    dist = _spelled(Gamma, regime, shape, 1.0)
+    got = pl.DataFrame({"x": [x] * 4}).select(log_pdf=dist.log_pdf("x"))
+    assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=_GAMMA_SEAM_RTOL, abs=0.0)

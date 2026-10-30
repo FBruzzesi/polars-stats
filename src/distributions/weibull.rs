@@ -9,8 +9,8 @@ use statrs::distribution::Weibull;
 use statrs::function::gamma::ln_gamma;
 
 use crate::distributions::{
-    coerce_f64, expm1, exponential, on_unit_interval, param_keyed, scale_exp, validated_pair,
-    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain, Sides,
+    coerce_f64, expm1, exponential, on_unit_interval, param_keyed, polynomial, scale_exp,
+    validated_pair, value_keyed_derived_ternary, value_keyed_scalar, ParamDomain, Sides,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -342,11 +342,7 @@ const LN_GAMMA_RATIO_SERIES: [f64; 26] = [
 fn second_moment_terms(a: f64) -> (f64, f64) {
     let ln_second_moment = ln_gamma(1.0 + 2.0 * a);
     let ln_gamma_ratio = if a < LN_GAMMA_RATIO_SERIES_BELOW {
-        let tail = LN_GAMMA_RATIO_SERIES
-            .iter()
-            .rev()
-            .fold(0.0, |acc, coefficient| acc * a + coefficient);
-        a * a * tail
+        a * a * polynomial(&LN_GAMMA_RATIO_SERIES, a)
     } else {
         ln_second_moment - 2.0 * ln_gamma(1.0 + a)
     };

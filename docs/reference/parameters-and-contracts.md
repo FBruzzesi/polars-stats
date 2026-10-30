@@ -96,6 +96,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Beta(a, b)` | `a > 0`, `b > 0` | both finite |
 | `Cauchy(loc, scale)` | `scale > 0` | both finite |
 | `Exponential(rate)` | `rate > 0` | finite |
+| `Gamma(shape, rate)` | `shape > 0`, `rate > 0` | both finite |
 | `LogNormal(mu, sigma)` | `sigma > 0` | both finite |
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
 | `Pareto(scale, shape)` | `scale > 0`, `shape > 0` | both finite |
@@ -131,7 +132,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `Exponential`, `LogNormal`, `Normal`, `Pareto`, `Uniform`, `Weibull` | `Float64` |
+| `Beta`, `Cauchy`, `Exponential`, `Gamma`, `LogNormal`, `Normal`, `Pareto`, `Uniform`, `Weibull` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|
