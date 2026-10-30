@@ -14,14 +14,25 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
 from scipy.stats import cauchy as scipy_cauchy
 
-from polars_stats import Beta, Binomial, Cauchy, DiscreteUniform, Exponential, Gamma, Geometric, Pareto, Weibull
+from polars_stats import (
+    Beta,
+    Binomial,
+    Cauchy,
+    DiscreteUniform,
+    Exponential,
+    Gamma,
+    Geometric,
+    Pareto,
+    Poisson,
+    Weibull,
+)
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
 
 if TYPE_CHECKING:
@@ -1233,3 +1244,83 @@ def test_gamma_log_pdf_holds_on_both_sides_of_its_shape_seams(
     dist = _spelled(Gamma, regime, shape, 1.0)
     got = pl.DataFrame({"x": [x] * 4}).select(log_pdf=dist.log_pdf("x"))
     assert got["log_pdf"][0] == pytest.approx(log_pdf, rel=_GAMMA_SEAM_RTOL, abs=0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# Poisson: a point past every gamma shape the incomplete gamma is built for, and the entropy's two forms.
+# --------------------------------------------------------------------------------------------------
+
+_POISSON_RATE = 4.5
+_POISSON_LOG_MASS_AT_1E300 = 1e300 * (math.log(_POISSON_RATE) - math.log(1e300) + 1.0)
+"""Stirling's leading terms of `ln(rate ** k e ** -rate / k!)` at `k = 1e300`; the rest is below `1e-297` of it."""
+
+
+class _ValueKeyed(TypedDict):
+    pmf: float
+    log_pmf: float
+    cdf: float
+    log_cdf: float
+    sf: float
+    log_sf: float
+
+
+_POISSON_FAR_POINTS: dict[str, _ValueKeyed] = {
+    "1e300": {
+        "pmf": 0.0,
+        "log_pmf": _POISSON_LOG_MASS_AT_1E300,
+        "cdf": 1.0,
+        "log_cdf": 0.0,
+        "sf": 0.0,
+        "log_sf": _POISSON_LOG_MASS_AT_1E300,
+    },
+    "1e308": {"pmf": 0.0, "log_pmf": -math.inf, "cdf": 1.0, "log_cdf": 0.0, "sf": 0.0, "log_sf": -math.inf},
+    "inf": {"pmf": 0.0, "log_pmf": -math.inf, "cdf": 1.0, "log_cdf": 0.0, "sf": 0.0, "log_sf": -math.inf},
+}
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("point", "expected"), _POISSON_FAR_POINTS.items(), ids=list(_POISSON_FAR_POINTS))
+def test_poisson_far_points_saturate_without_nan(regime: Regime, point: str, expected: _ValueKeyed) -> None:
+    """Every value-keyed method answers far up the support.
+
+    At `1e300` the log mass and `log_sf` are a finite `-6.9e302`; at `1e308` they are past `f64` and round to `-inf`;
+    `+inf`, which no gamma shape stands for, answers the limit.
+    """
+    dist = _spelled(Poisson, regime, _POISSON_RATE)
+    got = pl.DataFrame({"k": [float(point)] * 4}).select(
+        pmf=dist.pmf("k"),
+        log_pmf=dist.log_pmf("k"),
+        cdf=dist.cdf("k"),
+        log_cdf=dist.log_cdf("k"),
+        sf=dist.sf("k"),
+        log_sf=dist.log_sf("k"),
+    )
+    assert got.row(0, named=True) == pytest.approx(expected, rel=1e-12)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_poisson_inverses_at_the_largest_rates_are_the_neighbouring_floats(regime: Regime) -> None:
+    """Each quantile at `rate = 1e308` is `rate` itself or the float above it.
+
+    A standard deviation there is far below one float spacing, so the answer is the first of the two whose tail has
+    reached `q`.
+    """
+    rate = 1e308
+    above = math.nextafter(rate, math.inf)
+    dist = _spelled(Poisson, regime, rate)
+    got = pl.DataFrame({"q": [0.1, 0.9]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got.to_dict(as_series=False) == {"ppf": [rate, above], "isf": [above, rate]}
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_poisson_entropy_is_finite_at_the_largest_rate(regime: Regime) -> None:
+    """`ln(2 pi e rate) / 2` is read as `(ln(2 pi e) + ln(rate)) / 2`: the product itself overflows past `1.05e307`."""
+    got = pl.DataFrame({"i": [0] * 4}).select(entropy=_spelled(Poisson, regime, 1e308).entropy())["entropy"][0]
+    assert got == pytest.approx(0.5 * (math.log(2.0 * math.pi * math.e) + math.log(1e308)), rel=1e-15)
+
+
+def test_poisson_entropy_is_continuous_where_the_sum_gives_way_to_the_series() -> None:
+    """One ulp below `rate = 1e3` is the support sum, `1e3` itself the asymptotic series: they meet to `2.3e-14`."""
+    below, at = math.nextafter(1e3, 0.0), 1e3
+    got = pl.DataFrame({"rate": [below, at]}).select(entropy=Poisson(pl.col("rate")).entropy())["entropy"]
+    assert got[0] == pytest.approx(got[1], rel=5e-14)

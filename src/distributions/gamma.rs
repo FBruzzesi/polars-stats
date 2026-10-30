@@ -321,13 +321,13 @@ fn erfcx(w: f64) -> f64 {
 
 /// Which regularized incomplete gamma: `P(a, t)` below `t`, or `Q(a, t) = 1 - P(a, t)` above it.
 #[derive(Clone, Copy, PartialEq)]
-enum Tail {
+pub(super) enum Tail {
     Lower,
     Upper,
 }
 
 impl Tail {
-    fn complement(self) -> Self {
+    pub(super) fn complement(self) -> Self {
         match self {
             Self::Lower => Self::Upper,
             Self::Upper => Self::Lower,
@@ -336,7 +336,7 @@ impl Tail {
 }
 
 /// The smaller of `P` and `Q` at a point, on the log scale; the other one is its complement.
-struct Tails {
+pub(super) struct Tails {
     /// `ln(t^a e^-t / Gamma(a + 1))`.
     ln_prefactor: f64,
     smaller: Tail,
@@ -344,7 +344,7 @@ struct Tails {
 }
 
 impl Tails {
-    fn ln_probability(&self, tail: Tail) -> f64 {
+    pub(super) fn ln_probability(&self, tail: Tail) -> f64 {
         if self.smaller == tail {
             self.ln_smaller
         } else {
@@ -355,7 +355,7 @@ impl Tails {
     /// The complement is `-expm1` of the smaller tail's log only while that tail is not small: the
     /// `sinh` identity behind [`expm1`] overflows past `|ln| ~ 1420`, and below `e^-1` the plain
     /// `1 - exp` has nothing to cancel.
-    fn probability(&self, tail: Tail) -> f64 {
+    pub(super) fn probability(&self, tail: Tail) -> f64 {
         if self.smaller == tail {
             self.ln_smaller.exp()
         } else if self.ln_smaller > -1.0 {
@@ -370,7 +370,7 @@ impl Tails {
 ///
 /// Every evaluation takes the point twice, as `t` and as `u = ln t`, so a `t` that has underflowed
 /// keeps its logarithm: `a ln t` is where a small point's digits live.
-struct IncompleteGamma {
+pub(super) struct IncompleteGamma {
     a: f64,
     ln_a: f64,
     /// `ln Gamma(a + 1)`, Stirling's formula from [`STIRLING_FROM`] on, so no shape of that size
@@ -383,7 +383,7 @@ struct IncompleteGamma {
 }
 
 impl IncompleteGamma {
-    fn new(a: f64) -> Self {
+    pub(super) fn new(a: f64) -> Self {
         let ln_a = a.ln();
         let stirling_offset = (a >= STIRLING_FROM).then(|| {
             0.5 * (LN_2PI + ln_a) + polynomial(&STIRLING_REMAINDER_SERIES, 1.0 / (a * a)) / a
@@ -410,7 +410,7 @@ impl IncompleteGamma {
     /// `ln(t^a e^-t / Gamma(a + 1))`. From [`STIRLING_FROM`] on it is
     /// `a (ln(t / a) - t / a + 1) - ln(2 pi a) / 2 - mu(a)`, which has no `a ln a` to cancel: near the
     /// mean the bracket is [`ln_1p_mx`] of the exact excess `(t - a) / a`.
-    fn ln_prefactor(&self, t: f64, u: f64) -> f64 {
+    pub(super) fn ln_prefactor(&self, t: f64, u: f64) -> f64 {
         let a = self.a;
         let Some(stirling_offset) = self.stirling_offset else {
             return a * u - t - self.ln_gamma_1p;
@@ -455,7 +455,7 @@ impl IncompleteGamma {
     /// Both tails at `t > 0` finite, by the region split of Cephes' `igamc`: the power series for `P`
     /// below the mean, Legendre's continued fraction for `Q` above it, and DLMF 8.7.3 for `Q` where
     /// `t` is small and so is the shape. From [`TEMME_FROM`] on the bulk is Temme's expansion instead.
-    fn tails(&self, t: f64, u: f64) -> Tails {
+    pub(super) fn tails(&self, t: f64, u: f64) -> Tails {
         let a = self.a;
         let temme_excess = (a >= TEMME_FROM)
             .then(|| (t - a) / a)
@@ -949,7 +949,7 @@ const ENTROPY_SERIES: [f64; 8] = [
     0.004166666666666667,
 ];
 
-const LN_2PI_E: f64 = 2.8378770664093453;
+pub(super) const LN_2PI_E: f64 = 2.8378770664093453;
 
 /// Differential entropy (nats), `shape - ln(rate) + ln Gamma(shape) + (1 - shape) psi(shape)`:
 /// digamma has no Polars expression to move to.

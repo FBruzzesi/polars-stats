@@ -46,10 +46,10 @@ polars-core = { version = "0.55.2", default-features = false }
 # identical output.
 statrs = { version = "0.19.1", default-features = false, features = ["std", "rand"] }
 rand = "0.10"
-# The binomial sampler's seeded output depends on rand_distr's draw algorithm (BINV/BTPE, plus a
-# Poisson approximation when `1 - p == 1.0`) and its per-draw uniform consumption: a bump can change
-# it. The committed Cargo.lock pins the exact build version; treat any update as a deliberate,
-# changelog-recorded seeded-output change.
+# The binomial and Poisson samplers' seeded output depends on rand_distr's draw algorithms (BINV/BTPE,
+# plus a Poisson approximation when `1 - p == 1.0`; Knuth/PD for the Poisson draw) and their per-draw
+# uniform consumption: a bump can change it. The committed Cargo.lock pins the exact build version;
+# treat any update as a deliberate, changelog-recorded seeded-output change.
 rand_distr = "0.6"
 rand_pcg = "0.10"
 

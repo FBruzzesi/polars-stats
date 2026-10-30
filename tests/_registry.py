@@ -29,6 +29,7 @@ from polars_stats import (
     LogNormal,
     Normal,
     Pareto,
+    Poisson,
     Uniform,
     Weibull,
     is_continuous,
@@ -404,6 +405,35 @@ _GEOMETRIC = DistSpec(
     support=lambda p: [float(k) for k in range(1, _geometric_support_limit(p[0]) + 1)],
 )
 
+
+def poisson_support_limit(rate: float) -> int:
+    """Ten standard deviations past the mean, then 40 more.
+
+    The Chernoff bound `P(X > k) <= e ** -rate (e rate / k) ** k` puts the mass past it below `e ** -77` for every
+    `rate` the strategy draws."""
+    return ceil(rate + 10.0 * sqrt(rate) + 40.0)
+
+
+_POISSON = DistSpec(
+    name="poisson",
+    cls=Poisson,
+    continuous=False,
+    parameters=(Param("rate", "rate"),),
+    # A non-integral `example` keeps the mode unique. `rate = 0` is refused, as in statrs and `rand_distr`; scipy reads
+    # it as a point mass at `0`.
+    param_strategy=st.tuples(_finite(0.05, 50.0)),
+    example=(4.5,),
+    eval_range=lambda p: (-1.0, float(poisson_support_limit(p[0]) + 1)),
+    bounds=(0.0, inf),
+    on_support_point=2.0,
+    sample_dtype=pl.UInt64(),
+    invalid=(
+        InvalidCase("rate=0", (0.0,), "rate must be"),
+        InvalidCase("rate=-1", (-1.0,), "rate must be"),
+    ),
+    support=lambda p: [float(k) for k in range(poisson_support_limit(p[0]) + 1)],
+)
+
 _DISCRETE_UNIFORM = DistSpec(
     name="discreteuniform",
     cls=DiscreteUniform,
@@ -691,6 +721,7 @@ ALL_SPECS = [
     _BINOMIAL,
     _DISCRETE_UNIFORM,
     _GEOMETRIC,
+    _POISSON,
     _NORMAL,
     _CAUCHY,
     _UNIFORM,

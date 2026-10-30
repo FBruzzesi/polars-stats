@@ -28,6 +28,7 @@ pub mod geometric;
 pub mod lognormal;
 pub mod normal;
 pub mod pareto;
+pub mod poisson;
 pub mod uniform;
 pub mod weibull;
 

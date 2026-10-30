@@ -34,6 +34,7 @@ from scipy.stats import (
     lognorm,
     norm,
     pareto,
+    poisson,
     randint,
     uniform,
     weibull_min,
@@ -51,6 +52,7 @@ from polars_stats import (
     LogNormal,
     Normal,
     Pareto,
+    Poisson,
     Uniform,
     Weibull,
 )
@@ -147,6 +149,10 @@ def _geometric(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Geometric(p=params.plugin("p")), geom(params.scipy("p"))
 
 
+def _poisson(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Poisson(rate=params.plugin("rate")), poisson(params.scipy("rate"))
+
+
 # Ordered domains (`min` below `max`) are kept non-overlapping so every draw is a valid
 # parameterisation. Keyed by each comparison's own name, which is also its report file name.
 REGISTRY: dict[str, Comparison] = {
@@ -207,6 +213,7 @@ REGISTRY: dict[str, Comparison] = {
             build=_discrete_uniform,
         ),
         Comparison(name="geometric", params={"p": ParamSpec(0.3, 0.1, 0.9)}, build=_geometric),
+        Comparison(name="poisson", params={"rate": ParamSpec(4.5, 0.5, 20.0)}, build=_poisson),
     )
 }
 
