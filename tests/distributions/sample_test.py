@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
-from polars_stats import Bernoulli, DiscreteUniform, Geometric, Uniform
+from polars_stats import Bernoulli, DiscreteUniform, Geometric, Poisson, Uniform
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
@@ -257,6 +257,43 @@ def test_a_geometric_draw_saturates_where_the_trial_count_outgrows_uint64() -> N
 
     _low, high = min_max(_frame(4_000).select(z=Geometric(p=1e-3).sample(seed=_SEED))["z"])
     assert high < float(2**64 - 1)
+
+
+@pytest.mark.parametrize("rate", [4.5, 1e6, 1e12, 1e16], ids=lambda rate: f"rate={rate:g}")
+def test_a_poisson_draw_tracks_the_rate_into_the_large_rate_regime(rate: float) -> None:
+    """The draw keeps a Poisson's mean, variance and shape where a rejection test on `k ln(rate) - ln(k!)` cancels.
+
+    statrs' rejection sampler does, and from `rate ~ 1e15` the cancellation makes it accept its logistic proposal
+    outright. That proposal has the Poisson's mean and variance, so only the shape shows it: an excess kurtosis of
+    `1.0` at `rate = 1e16` where a Poisson's is `1 / rate`. The fourth moment is standardised by the known `rate`, so
+    its allowance is the normal-theory standard error of `mean(z ** 4)` with known moments, `sqrt(96 / n)`.
+    """
+    drawn = _frame(_CLT_ROWS).select(z=Poisson(rate).sample(seed=_SEED))["z"].cast(pl.Float64)
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - rate) <= _CLT_SIGMAS * math.sqrt(rate / _CLT_ROWS)
+    assert variance == pytest.approx(rate, rel=_CLT_SIGMAS * math.sqrt(2.0 / _CLT_ROWS))
+    fourth_moment = (((drawn - rate) / math.sqrt(rate)) ** 4).mean()
+    assert isinstance(fourth_moment, float)
+    assert abs(fourth_moment - 3.0 - 1.0 / rate) <= _CLT_SIGMAS * math.sqrt(96.0 / _CLT_ROWS)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_poisson_sample_refuses_a_rate_past_the_uint64_count(regime: Regime) -> None:
+    """Past `rate = 1.844e19` a draw no longer fits a `UInt64`, so both samplers refuse it and nothing else does.
+
+    `cdf` at the mean is only pinned near `1/2`: past `2 ** 53` the shape `k + 1` rounds to `k`, so it answers for the
+    neighbouring point, `1.3e-11` away here.
+    """
+    dist = SPECS_BY_NAME["poisson"].build(regime, params=(1e20,))
+    frame = _frame(4)
+    with pytest.raises(pl.exceptions.ComputeError, match=r"rate must be at most 1\.844e19"):
+        frame.select(dist.sample(seed=_SEED))
+    with pytest.raises(pl.exceptions.ComputeError, match=r"rate must be at most 1\.844e19"):
+        frame.select(dist.samples(size=2, seed=_SEED))
+    cdf = frame.select(cdf=dist.cdf(1e20))["cdf"][0]
+    assert cdf == pytest.approx(0.5, abs=1e-9)
 
 
 def test_a_bernoulli_draw_at_an_extreme_p_is_deterministic() -> None:

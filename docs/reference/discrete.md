@@ -23,3 +23,5 @@ classes follow, alphabetically, and list only what they define or override.
 ::: polars_stats.DiscreteUniform
 
 ::: polars_stats.Geometric
+
+::: polars_stats.Poisson

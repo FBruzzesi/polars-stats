@@ -104,18 +104,18 @@ path is selected only when the parameters are known scalars, so nothing column-v
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
-`pareto_shape`, `weibull_scale`, `gamma_rate`) so an invalid parameterisation raises the same `ComputeError` as the
-sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid parameters raise"). With
-column parameters that plugin checks each parameter column once, over the whole column, before any row is built.
+`pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`) so an invalid parameterisation raises the same
+`ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid
+parameters raise"). With column parameters that plugin checks each parameter column once, over the whole column, before
+any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
-The validated quantity (or, for `Beta.entropy`, `Binomial.entropy`, `Gamma.entropy` and `Weibull`'s `mean` /
-`variance` / `std`, the moment itself) is returned behind a
-`pl.when(...)` validity gate. Nothing in the expression is longer than one row, so the moment is a *scalar* column that
-polars broadcasts wherever it meets a longer one; only the standalone height differs
-(`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no new plugin and no kwargs, only the existing
-validators called on fewer rows. The two spellings can disagree in the last bit; see
-[Numerical accuracy](accuracy.md#structural).
+The validated quantity (or, for `Beta.entropy`, `Binomial.entropy`, `Gamma.entropy`, `Poisson.entropy` and
+`Weibull`'s `mean` / `variance` / `std`, the moment itself) is returned behind a `pl.when(...)` validity gate. Nothing
+in the expression is longer than one row, so the moment is a *scalar* column that polars broadcasts wherever it meets a
+longer one; only the standalone height differs (`df.select(Normal(0.0, 1.0).variance())` is one row). This needs no
+new plugin and no kwargs, only the existing validators called on fewer rows. The two spellings can disagree in the last
+bit; see [Numerical accuracy](accuracy.md#structural).
 
 It is the same "constant parameters take a fast path" idea as the sampler, applied to validation: nothing leaves Rust,
 and the raise contract is unchanged (pinned by `moment_test.py` and the `*_scalar` validation tests). For a constant,
@@ -140,14 +140,24 @@ is any stream shared across rows. The per-row stream is what makes `samples(size
 It also runs as a single native plugin call that fills the whole `Array(inner, size)` column in one pass, replacing an
 earlier construction of `size` separate `sample` calls glued by `concat_arr`.
 
-### Binomial sampling uses `rand_distr`, not `statrs`
+### Binomial and Poisson sampling use `rand_distr`, not `statrs`
 
 `statrs` (still true on 0.19) implements `Distribution<u64> for Binomial` as `(0..n).fold(...)`, one uniform draw per
 trial, so a sampled row costs `n` RNG draws. At `n = 10_000` that is 10,000 uniforms per row, turning the sampler
 `O(n)`; the constant-factor wins over scipy held only for small `n`. The binomial sampler therefore draws from
 `rand_distr::Binomial` (inversion for small `n*p`, BTPE otherwise, both `O(1)`-amortised), keeping sampling time flat
-in `n`. This is the one place sampling
-does not go through `statrs`; every value-keyed method (`pmf`, `cdf`, `ppf`, ...) still builds the `statrs` distribution.
+in `n`. Every binomial value-keyed method (`pmf`, `cdf`, `ppf`, ...) still builds the `statrs` distribution.
+
+The Poisson sampler draws from `rand_distr::Poisson` for accuracy, and is faster for it: the two tie at `rate = 4.5`,
+where both are Knuth's, and `rand_distr` is 2.5x to 3.5x faster from `rate = 20`. `statrs`' rejection sampler
+accepts a candidate `k` by comparing against `k ln(rate) - ln(k!)` less `rate`, terms of size `rate ln(rate)` that cancel
+to a number of order `ln(rate)`. The comparison is off by `5.5e-3` in the log at `rate = 1e12` and by more than a
+factor of `e` from `1e15`, where it accepts its logistic proposal outright. That proposal shares the Poisson's mean
+and variance, so the draws look right on both, but carry its excess kurtosis: `1.0` at `rate = 1e16`, where a
+Poisson's is `1e-16`. `rand_distr`'s (Knuth's product of uniforms below `rate = 12`, Ahrens and Dieter's PD above it)
+reads the same ratio off `ln(1 + v)` with `v = (rate - k) / k`, which has nothing to cancel. Its draws are `UInt64`
+counts, so the sampler refuses a `rate` past `1.844e19`, the largest it accepts; every other Poisson method still
+answers there.
 
 ### Invalid parameters raise, they never silently null
 

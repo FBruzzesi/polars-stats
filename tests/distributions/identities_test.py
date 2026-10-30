@@ -18,7 +18,19 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polars_stats import Bernoulli, Beta, Binomial, Exponential, Gamma, Geometric, Normal, Pareto, Uniform, Weibull
+from polars_stats import (
+    Bernoulli,
+    Beta,
+    Binomial,
+    Exponential,
+    Gamma,
+    Geometric,
+    Normal,
+    Pareto,
+    Poisson,
+    Uniform,
+    Weibull,
+)
 from tests._polars_compat import assert_series_equal
 from tests._registry import point_column
 
@@ -298,6 +310,48 @@ def test_integer_shape_gamma_log_sf_is_the_poisson_sum(shape: int) -> None:
     expected = [-t + math.log(math.fsum(t**k / math.factorial(k) for k in range(shape))) for t in ts]
     got = pl.DataFrame({"x": [t / 2.0 for t in ts]}).select(r=Gamma(shape=float(shape), rate=2.0).log_sf(pl.col("x")))
     assert_series_equal(got["r"], pl.Series(values=expected), rel_tol=1e-13, abs_tol=0.0, check_names=False)
+
+
+# --------------------------------------------------------------------------------------------------
+# Poisson(rate) at `k` is Gamma(k + 1, 1) at `rate`: `P(X <= k)` is the gamma's upper tail there and `P(X > k)` its
+# lower one, the roles flipped, and the mass is the gamma's density.
+# --------------------------------------------------------------------------------------------------
+
+_POISSON_RATES = [0.3, 4.5, 150.0]
+_POISSON_KS = [0.0, 3.0, 99.0, 100.0, 1000.0]  # straddling the incomplete gamma's switch to Temme at shape 100
+_POISSON_TAILS_AS_GAMMA: list[tuple[Method, Method]] = [
+    ("cdf", "sf"),
+    ("log_cdf", "log_sf"),
+    ("sf", "cdf"),
+    ("log_sf", "log_cdf"),
+]
+
+
+def _gamma_at_rate(method: Method, rate: float) -> pl.Series:
+    """`method` of `Gamma(k + 1, 1)` at `rate`, one row per `k` in `_POISSON_KS`."""
+    frame = pl.DataFrame({"shape": [k + 1.0 for k in _POISSON_KS]})
+    return frame.select(r=getattr(Gamma(shape=pl.col("shape"), rate=1.0), method)(rate))["r"]
+
+
+@pytest.mark.parametrize("rate", _POISSON_RATES, ids=lambda rate: f"rate={rate}")
+@pytest.mark.parametrize(("method", "gamma_method"), _POISSON_TAILS_AS_GAMMA, ids=str)
+def test_poisson_tails_are_the_gamma_tails_at_shape_k_plus_one(
+    rate: float, method: Method, gamma_method: Method
+) -> None:
+    """Bit for bit: both read one incomplete gamma at `t = rate`, so a swapped tail would be off by its complement."""
+    via_poisson = pl.DataFrame({"k": _POISSON_KS}).select(r=getattr(Poisson(rate), method)(pl.col("k")))["r"]
+    assert_series_equal(via_poisson, _gamma_at_rate(gamma_method, rate), rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+@pytest.mark.parametrize("rate", _POISSON_RATES, ids=lambda rate: f"rate={rate}")
+def test_poisson_log_pmf_is_the_gamma_log_density_at_shape_k_plus_one(rate: float) -> None:
+    """`rate ** k e ** -rate / k!` is the `Gamma(k + 1, 1)` density at `rate`.
+
+    `1e-13` rather than bit equality: the mass is the prefactor at shape `k`, the density the one at `k + 1` less
+    `ln((k + 1) / rate)`, so the two spellings round differently.
+    """
+    via_poisson = pl.DataFrame({"k": _POISSON_KS}).select(r=Poisson(rate).log_pmf(pl.col("k")))["r"]
+    assert_series_equal(via_poisson, _gamma_at_rate("log_pdf", rate), rel_tol=1e-13, abs_tol=0.0, check_names=False)
 
 
 # --------------------------------------------------------------------------------------------------

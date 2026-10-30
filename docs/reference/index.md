@@ -27,6 +27,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Binomial(n, p)` | discrete | `n >= 0`, `0 <= p <= 1` | `binom(n, p)` |
 | `DiscreteUniform(min, max)` | discrete | `min <= max`, both inclusive | `randint(low=min, high=max + 1)`; **`max` is inclusive** |
 | `Geometric(p)` | discrete | `0 < p <= 1` | `geom(p)` |
+| `Poisson(rate)` | discrete | `rate > 0` | `poisson(mu=rate)`; `mu = 0` is a point mass there and raises here |
 
 Each class names its parameters after the distribution's conventional parameters. `Normal` and `LogNormal` default to
 `mu=0.0, sigma=1.0`; the others have no defaults. Parameter values are validated at evaluation, not at construction.
