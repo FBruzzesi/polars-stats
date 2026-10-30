@@ -88,9 +88,9 @@ features = [
     "search.highlight",
 ]
 
-#[project.theme.font]
-#text = "Inter"
-#code = "Jetbrains Mono"
+[project.theme.font]
+text = "Inter"
+code = "Jetbrains Mono"
 
 [[project.theme.palette]]
 scheme = "default"
