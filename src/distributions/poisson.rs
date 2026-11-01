@@ -25,6 +25,11 @@ use crate::rng::{
 
 const RATE: ParamDomain = ParamDomain::positive("rate");
 
+/// `P(X <= k)`, the upper incomplete gamma at shape `floor(k) + 1`.
+const CDF: Tail = Tail::Upper;
+/// `P(X > k)`, the lower one.
+const SF: Tail = Tail::Lower;
+
 /// Constant parameter, deserialised once per call; every `_scalar` twin checks it once here.
 #[derive(serde::Deserialize)]
 struct PoissonParams {
@@ -54,10 +59,9 @@ fn poisson_rate(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 /// Relative slack on the inverses' step comparison, as `binomial.rs`'s `PPF_CDF_TOL`. The tails are
-/// compared as logs, where a relative slack is an absolute one, so a quantile computed on a step,
-/// `cdf(k)` itself, inverts to `k` whichever way its last ulp rounded. That holds while `1 - q`
-/// resolves the tail it is compared against: below a tail mass of about `5e-5` the rounding of `q`
-/// itself outgrows the slack, and the answer can be `k + 1`.
+/// compared as logs, where it is an absolute slack, so `cdf(k)` or `sf(k)` itself inverts to `k`
+/// whichever way its last ulp rounded. Once the tail compared is `1 - q` below about `5e-5`, the
+/// rounding of `q` exceeds the slack and the answer can be `k + 1`.
 const STEP_TOLERANCE: f64 = 1e-12;
 
 /// `ln(k!)` for `k = 0..=9`, correctly rounded: the shapes below `gamma.rs`'s Stirling switch, where
@@ -90,16 +94,16 @@ impl Poisson {
     }
 
     /// Both tails at a point `k >= 0`, or `None` at `k = +inf`, which no gamma shape stands for and
-    /// which has the whole mass below it. `Tail::Upper` is `P(X <= k)`.
+    /// which has the whole mass below it.
     fn tails_at(&self, k: f64) -> Option<Tails> {
         k.is_finite()
             .then(|| IncompleteGamma::new(k.floor() + 1.0).tails(self.rate, self.ln_rate))
     }
 
-    /// `ln(rate^k e^-rate / k!)` at a support point: the prefactor at shape `k`, not the density at
-    /// shape `k + 1`, which past `2^53` rounds to a neighbouring float. Below `k = 10` it is the same
-    /// sum with `ln(k!)` from [`LN_FACTORIALS`], so `k = 0` builds no gamma of shape `0`. Forced
-    /// inline: left as a call, the entropy's support sum runs 1.5x to 2.4x slower.
+    /// `ln(rate^k e^-rate / k!)` at a support point, the prefactor at shape `k`: the density at shape
+    /// `k + 1` would read a neighbouring float past `2^53`. Below `k = 10` the factorial comes from
+    /// [`LN_FACTORIALS`], so no gamma of shape `0` is built. Forced inline: as a call, the entropy's
+    /// support sum runs 1.5x to 2.4x slower.
     #[inline(always)]
     fn ln_mass(&self, k: f64) -> f64 {
         match LN_FACTORIALS.get(k as usize) {
@@ -109,32 +113,30 @@ impl Poisson {
     }
 
     /// The smallest support point where `tail` has reached the level `exp(ln_target)`: `P(X <= k) >=`
-    /// it for `Tail::Upper`, `P(X > k) <=` it for `Tail::Lower`, each within [`STEP_TOLERANCE`].
+    /// it for [`CDF`], `P(X > k) <=` it for [`SF`], each within [`STEP_TOLERANCE`].
     ///
-    /// `0` is tried first, before `seed` is computed: it is the answer for most levels at a small
-    /// `rate`. Otherwise it gallops outward from `seed` until `lo` has not reached the level and `hi`
-    /// has, then bisects on the integers. The first step is one float spacing at `seed`, so no step
-    /// vanishes above `2^53`. `+inf` reaches either level, so the gallop up ends, and the bisection
-    /// ends where no float lies strictly inside the bracket.
-    fn smallest_reaching(&self, tail: Tail, ln_target: f64, seed: impl FnOnce() -> f64) -> f64 {
+    /// The gallop out from `seed` starts at one float spacing, so no step vanishes above `2^53`. Down,
+    /// it stops at `0`; up, it ends because `+inf` reaches either level. The bisection ends once no
+    /// float lies strictly inside the bracket.
+    fn smallest_reaching(&self, tail: Tail, ln_target: f64, seed: f64) -> f64 {
         let reached = |k: f64| {
-            self.tails_at(k).is_none_or(|tails| match tail {
-                Tail::Upper => tails.ln_probability(tail) >= ln_target - STEP_TOLERANCE,
-                Tail::Lower => tails.ln_probability(tail) <= ln_target + STEP_TOLERANCE,
+            self.tails_at(k).is_none_or(|tails| {
+                let ln_probability = tails.ln_probability(tail);
+                if tail == CDF {
+                    ln_probability >= ln_target - STEP_TOLERANCE
+                } else {
+                    ln_probability <= ln_target + STEP_TOLERANCE
+                }
             })
         };
-        if reached(0.0) {
-            return 0.0;
-        }
-        let seed = seed().clamp(1.0, f64::MAX);
         let mut step = (seed * f64::EPSILON).max(1.0);
         let (mut lo, mut hi) = if reached(seed) {
             let mut hi = seed;
             loop {
-                let below = hi - step;
-                if below <= 0.0 {
-                    break (0.0, hi);
+                if hi == 0.0 {
+                    return 0.0;
                 }
+                let below = (hi - step).max(0.0);
                 if !reached(below) {
                     break (below, hi);
                 }
@@ -165,32 +167,32 @@ impl Poisson {
         }
     }
 
-    /// The smallest `k` with `P(X <= k) >= q` for `Tail::Upper`, or with `P(X > k) <= q` for
-    /// `Tail::Lower`, for `q` in `[0, 1]`. Past `q = 1/2` it compares the other tail at `ln(1 - q)`,
-    /// exact by Sterbenz, so the comparison is always on the smaller tail. `P(X > k)` never reaches
-    /// `0`, so that target is the open end of the support.
+    /// The smallest `k` with `P(X <= k) >= q` for [`CDF`], or with `P(X > k) <= q` for [`SF`], for
+    /// `q` in `[0, 1]`. Past `q = 1/2` it compares the other tail at `ln(1 - q)`, exact by Sterbenz,
+    /// so the comparison is always on the smaller tail. A target of `ln 0` is the support edge:
+    /// `ppf(0)` and `isf(1)` are `0`, and `ppf(1)` and `isf(0)` are `+inf`, which `P(X > k)` never
+    /// reaches.
     ///
     /// The search is seeded at the continuity-corrected Cornish-Fisher estimate
     /// `rate + z sqrt(rate) + (z^2 - 1) / 6 - 1/2`, `z` the normal quantile of the cdf level: in the
-    /// bulk the gallop brackets the answer in a few evaluations, where a search from `0` takes
+    /// bulk the gallop brackets the answer in two or three evaluations, where a search from `0` takes
     /// `log2(rate)`.
     fn quantile(&self, tail: Tail, q: f64) -> f64 {
-        let seed = || {
-            let z = match tail {
-                Tail::Upper => -SQRT_2 * erfc_inv(2.0 * q),
-                Tail::Lower => SQRT_2 * erfc_inv(2.0 * q),
-            };
-            (self.rate + z * self.rate.sqrt() + (z * z - 1.0) / 6.0 - 0.5).ceil()
-        };
-        let (tail, ln_target) = if q <= 0.5 {
+        let (smaller, ln_target) = if q <= 0.5 {
             (tail, q.ln())
         } else {
             (tail.complement(), (-q).ln_1p())
         };
-        if tail == Tail::Lower && ln_target == f64::NEG_INFINITY {
-            return f64::INFINITY;
+        if ln_target == f64::NEG_INFINITY {
+            return if smaller == CDF { 0.0 } else { f64::INFINITY };
         }
-        self.smallest_reaching(tail, ln_target, seed)
+        let z = if tail == CDF {
+            -SQRT_2 * erfc_inv(2.0 * q)
+        } else {
+            SQRT_2 * erfc_inv(2.0 * q)
+        };
+        let seed = (self.rate + z * self.rate.sqrt() + (z * z - 1.0) / 6.0 - 0.5).ceil();
+        self.smallest_reaching(smaller, ln_target, seed.clamp(0.0, f64::MAX))
     }
 }
 
@@ -213,7 +215,7 @@ fn cdf_value(poisson: &Poisson, k: f64) -> Option<f64> {
     } else {
         poisson
             .tails_at(k)
-            .map_or(1.0, |tails| tails.probability(Tail::Upper))
+            .map_or(1.0, |tails| tails.probability(CDF))
     })
 }
 
@@ -223,7 +225,7 @@ fn ln_cdf_value(poisson: &Poisson, k: f64) -> Option<f64> {
     } else {
         poisson
             .tails_at(k)
-            .map_or(0.0, |tails| tails.ln_probability(Tail::Upper))
+            .map_or(0.0, |tails| tails.ln_probability(CDF))
     })
 }
 
@@ -233,7 +235,7 @@ fn sf_value(poisson: &Poisson, k: f64) -> Option<f64> {
     } else {
         poisson
             .tails_at(k)
-            .map_or(0.0, |tails| tails.probability(Tail::Lower))
+            .map_or(0.0, |tails| tails.probability(SF))
     })
 }
 
@@ -243,16 +245,16 @@ fn ln_sf_value(poisson: &Poisson, k: f64) -> Option<f64> {
     } else {
         poisson
             .tails_at(k)
-            .map_or(f64::NEG_INFINITY, |tails| tails.ln_probability(Tail::Lower))
+            .map_or(f64::NEG_INFINITY, |tails| tails.ln_probability(SF))
     })
 }
 
 fn ppf_value(poisson: &Poisson, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| poisson.quantile(Tail::Upper, q), q)
+    on_unit_interval(&|q| poisson.quantile(CDF, q), q)
 }
 
 fn isf_value(poisson: &Poisson, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| poisson.quantile(Tail::Lower, q), q)
+    on_unit_interval(&|q| poisson.quantile(SF, q), q)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -359,9 +361,9 @@ const ENTROPY_TERM_FRACTION: f64 = f64::EPSILON / 2.0;
 /// Shannon entropy (nats). From [`ENTROPY_SERIES_FROM`] it is the asymptotic series, its
 /// `ln(2 pi e rate)` read as `ln(2 pi e) + ln(rate)`, which stays finite where the product overflows.
 /// Below, `-sum p ln p` over the support from the mode outward, each mass through the `ln_pmf` body.
-/// A direction ends once a term is below [`ENTROPY_TERM_FRACTION`] of the sum. Away from the mode
-/// the terms fall with the masses, except from `k = 0` to `1` below `rate = 1`, where `pmf(0)`
-/// exceeds `1 / e`; each term is added before the test, which steps over that one rise.
+/// The terms fall with the masses away from the mode, except from `k = 0` to `1` below `rate = 1`,
+/// where `pmf(0)` exceeds `1 / e`; each term is added before the stopping test, which steps over that
+/// one rise.
 fn entropy(rate: f64) -> f64 {
     if rate >= ENTROPY_SERIES_FROM {
         let inverse_rate = rate.recip();
@@ -369,18 +371,18 @@ fn entropy(rate: f64) -> f64 {
             - polynomial(&ENTROPY_SERIES, inverse_rate) * inverse_rate;
     }
     let poisson = Poisson::new(rate);
-    let term = |k: f64| {
+    let entropy_term = |k: f64| {
         let ln_mass = poisson.ln_mass(k);
         -ln_mass.exp() * ln_mass
     };
     let mode = rate.floor();
-    let mut sum = term(mode);
+    let mut sum = entropy_term(mode);
     for direction in [-1.0, 1.0] {
         let mut k = mode + direction;
         while k >= 0.0 {
-            let added = term(k);
-            sum += added;
-            if added <= ENTROPY_TERM_FRACTION * sum {
+            let term = entropy_term(k);
+            sum += term;
+            if term <= ENTROPY_TERM_FRACTION * sum {
                 break;
             }
             k += direction;
@@ -389,7 +391,8 @@ fn entropy(rate: f64) -> f64 {
     sum
 }
 
-/// Shannon entropy (nats): a support sum with no Polars expression to move to.
+/// Shannon entropy (nats): the support sum below [`ENTROPY_SERIES_FROM`] has no Polars expression to
+/// move to.
 #[polars_expr(output_type=Float64)]
 fn poisson_entropy(inputs: &[Series]) -> PolarsResult<Series> {
     let rate = coerce_f64(&inputs[0])?;

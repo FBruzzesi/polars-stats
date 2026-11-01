@@ -1155,7 +1155,8 @@ def geometric_points(params: Params, rng: random.Random, count: int) -> list[Poi
 
 
 # Poisson oracles. `P(X <= k)` and `P(X > k)` are the gamma oracles' upper and lower tails at shape `floor(k) + 1`
-# and `t = rate`, so the Kummer form carries the lower tail at `rate = 1e8` here too; the mass is its log at 50 digits.
+# and `t = rate`, so the Kummer form carries the lower tail at `rate = 1e8` here too; the mass is `exp` of its 50-digit
+# log.
 
 
 def poisson_log_pmf(params: Params, x: float) -> mp.mpf:
@@ -1258,21 +1259,15 @@ def _poisson_underflow_points(rate: float) -> list[float]:
 
     Past them the linear tail is `0.0` and only `log_cdf` / `log_sf` still answer, so the audit straddles each.
     """
-    points: list[float] = []
+
+    def underflows(k: int) -> bool:
+        return _poisson_ln_mass(rate, k) < LOG_SMALLEST_SUBNORMAL
+
     mode = math.floor(rate)
-    for direction in (1, -1):
-        if direction < 0 and _poisson_ln_mass(rate, 0) >= LOG_SMALLEST_SUBNORMAL:
-            continue
-
-        def support_point(offset: int, direction: int = direction) -> int:
-            return max(0, mode + direction * offset)
-
-        def underflows(offset: int, support_point: Callable[[int], int] = support_point) -> bool:
-            return _poisson_ln_mass(rate, support_point(offset)) < LOG_SMALLEST_SUBNORMAL
-
-        crossing = support_point(int(smallest_from(1, underflows)))
-        points.extend(float(k) for k in (crossing - 1, crossing, crossing + 1) if k >= 0)
-    return points
+    crossings = [int(smallest_from(mode, underflows))]
+    if underflows(0):
+        crossings.append(int(smallest_satisfying(mode, lambda k: not underflows(k))) - 1)
+    return [float(k) for crossing in crossings for k in (crossing - 1, crossing, crossing + 1) if k >= 0]
 
 
 def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
