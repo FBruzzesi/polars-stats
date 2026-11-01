@@ -128,6 +128,7 @@ _DENSITY_AT_ENDPOINT: dict[str, dict[float, tuple[float, float]]] = {
     "binomial": {0.0: (0.65**7, 7 * math.log(0.65)), 7.0: (0.35**7, 7 * math.log(0.35))},
     "discreteuniform": {1.0: (1 / 6, math.log(1 / 6)), 6.0: (1 / 6, math.log(1 / 6))},
     "geometric": {1.0: (0.3, math.log(0.3))},
+    "poisson": {0.0: (math.exp(-4.5), -4.5)},
 }
 
 

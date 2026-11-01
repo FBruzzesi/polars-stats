@@ -13,6 +13,7 @@ from polars_stats.distributions._geometric import Geometric
 from polars_stats.distributions._lognormal import LogNormal
 from polars_stats.distributions._normal import Normal
 from polars_stats.distributions._pareto import Pareto
+from polars_stats.distributions._poisson import Poisson
 from polars_stats.distributions._uniform import Uniform
 from polars_stats.distributions._weibull import Weibull
 
@@ -30,6 +31,7 @@ __all__ = (
     "LogNormal",
     "Normal",
     "Pareto",
+    "Poisson",
     "Uniform",
     "Weibull",
     "__version__",

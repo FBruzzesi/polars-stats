@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         "lognormal",
         "normal",
         "pareto",
+        "poisson",
         "uniform",
         "weibull",
     ]

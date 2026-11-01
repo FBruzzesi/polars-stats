@@ -72,6 +72,7 @@ from polars_stats import (
     LogNormal,
     Normal,
     Pareto,
+    Poisson,
     Uniform,
     Weibull,
 )
@@ -204,13 +205,13 @@ def solve_monotone(residual: Callable[[mp.mpf], mp.mpf], seed: float) -> mp.mpf:
     return root
 
 
-def smallest_satisfying(n: int, holds: Callable[[int], bool]) -> mp.mpf:
-    """Smallest `k` in `[0, n]` where a monotone `holds` turns true: the discrete [`solve_monotone`].
+def smallest_satisfying(n: int, holds: Callable[[int], bool], *, lo: int = 0) -> mp.mpf:
+    """Smallest `k` in `[lo, n]` where a monotone `holds` turns true: the discrete [`solve_monotone`].
 
     Shared by `ppf` and `isf`, which differ only in the predicate. A discrete inverse is where no
     tolerance absorbs an off-by-one (see [`bernoulli_ppf`]), so the index arithmetic exists once.
     """
-    lo, hi = 0, n
+    hi = n
     while lo < hi:
         mid = lo + (hi - lo) // 2
         if holds(mid):
@@ -218,6 +219,26 @@ def smallest_satisfying(n: int, holds: Callable[[int], bool]) -> mp.mpf:
         else:
             lo = mid + 1
     return mp.mpf(lo)
+
+
+def smallest_from(start: int, holds: Callable[[int], bool]) -> mp.mpf:
+    """[`smallest_satisfying`] over `k >= 0` with no upper bound, bracketed by galloping outward from `start`.
+
+    Seeded from the library's answer, a correct one costs two evaluations, at it and at its predecessor. Python
+    integers keep the search exact at any `k`, where the library's own search runs in `float64`.
+    """
+    step = 1
+    if holds(start):
+        hi = start
+        while hi - step >= 0 and holds(hi - step):
+            hi -= step
+            step *= 2
+        return smallest_satisfying(hi, holds, lo=max(hi - step + 1, 0))
+    lo = start
+    while not holds(lo + step):
+        lo += step
+        step *= 2
+    return smallest_satisfying(lo + step, holds, lo=lo + 1)
 
 
 # Normal and LogNormal oracles.
@@ -1133,6 +1154,141 @@ def geometric_points(params: Params, rng: random.Random, count: int) -> list[Poi
     return points
 
 
+# Poisson oracles. `P(X <= k)` and `P(X > k)` are the gamma oracles' upper and lower tails at shape `floor(k) + 1`
+# and `t = rate`, so the Kummer form carries the lower tail at `rate = 1e8` here too; the mass is `exp` of its 50-digit
+# log.
+
+
+def poisson_log_pmf(params: Params, x: float) -> mp.mpf:
+    """`-rate + k ln(rate) - ln(k!)` on the non-negative integers, `-inf` off them and at `+inf`."""
+    if x < 0 or not math.isfinite(x) or not x.is_integer():
+        return mp.ninf
+    rate = mp.mpf(params[0])
+    return -rate + int(x) * mp.log(rate) - mp.loggamma(int(x) + 1)
+
+
+def poisson_pmf(params: Params, x: float) -> mp.mpf:
+    """`exp` of [`poisson_log_pmf`]."""
+    return exp_neg(-poisson_log_pmf(params, x))
+
+
+def poisson_ln_tail(params: Params, x: float, tail: GammaTail) -> mp.mpf:
+    """`ln Q(floor(x) + 1, rate) = ln P(X <= x)` or `ln P(floor(x) + 1, rate) = ln P(X > x)`, with support limits."""
+    if x < 0:
+        return mp.ninf if tail == "Q" else mp.mpf(0)
+    if math.isinf(x):
+        return mp.mpf(0) if tail == "Q" else mp.ninf
+    return gamma_ln_standard_tail(mp.mpf(math.floor(x) + 1), mp.mpf(params[0]), tail)
+
+
+def poisson_log_cdf(params: Params, x: float) -> mp.mpf:
+    """`ln P(X <= x)`, the upper incomplete gamma: the roles flip against the gamma's own."""
+    return poisson_ln_tail(params, x, "Q")
+
+
+def poisson_log_sf(params: Params, x: float) -> mp.mpf:
+    """`ln P(X > x)`, the lower incomplete gamma."""
+    return poisson_ln_tail(params, x, "P")
+
+
+def poisson_cdf(params: Params, x: float) -> mp.mpf:
+    """`P(X <= x)`."""
+    return exp_neg(-poisson_log_cdf(params, x))
+
+
+def poisson_sf(params: Params, x: float) -> mp.mpf:
+    """`P(X > x)`."""
+    return exp_neg(-poisson_log_sf(params, x))
+
+
+def poisson_quantile(params: Params, q: float, seed: float, tail: GammaTail) -> mp.mpf:
+    """The smallest `k` with `P(X <= k) >= q` (`tail = "Q"`) or `P(X > k) <= q` (`tail = "P"`), compared in logs.
+
+    `q` is a double, so a 50-digit tail decides every comparison exactly unless it agrees with `q` to 50 digits.
+    """
+    if q <= 0:
+        return mp.mpf(0) if tail == "Q" else mp.inf
+    if q >= 1:
+        return mp.inf if tail == "Q" else mp.mpf(0)
+    target = mp.log(mp.mpf(q))
+    start = int(seed) if math.isfinite(seed) and seed >= 0 else math.floor(params[0])
+    if tail == "Q":
+        return smallest_from(start, lambda k: poisson_log_cdf(params, float(k)) >= target)
+    return smallest_from(start, lambda k: poisson_log_sf(params, float(k)) <= target)
+
+
+def poisson_ppf(params: Params, q: float, seed: float) -> mp.mpf:
+    """Smallest support point with `cdf(k) >= q`."""
+    return poisson_quantile(params, q, seed, "Q")
+
+
+def poisson_isf(params: Params, q: float, seed: float) -> mp.mpf:
+    """Smallest support point with `sf(k) <= q`."""
+    return poisson_quantile(params, q, seed, "P")
+
+
+def poisson_entropy(params: Params, _x: float) -> mp.mpf:
+    """`-sum_k pmf(k) ln pmf(k)` outward from the mode, until a term is below `1e-45` of the sum."""
+    rate = mp.mpf(params[0])
+    ln_rate = mp.log(rate)
+
+    def term(k: int) -> mp.mpf:
+        ln_mass = -rate + k * ln_rate - mp.loggamma(k + 1)
+        return -(mp.e**ln_mass) * ln_mass
+
+    mode = math.floor(params[0])
+    total = term(mode)
+    for direction in (-1, 1):
+        k = mode + direction
+        while k >= 0:
+            step = term(k)
+            total += step
+            if k != 1 and step < mp.mpf(10) ** -45 * total:
+                break
+            k += direction
+    return total
+
+
+def _poisson_ln_mass(rate: float, k: int) -> float:
+    """`ln pmf(k)` in `float64`, to place probes only: its cancellation at a large `rate` moves a probe, no result."""
+    return -rate + k * math.log(rate) - math.lgamma(k + 1)
+
+
+def _poisson_underflow_points(rate: float) -> list[float]:
+    """The support points where the mass crosses `2**-1074` above the mean and, where it does, below it.
+
+    Past them the linear tail is `0.0` and only `log_cdf` / `log_sf` still answer, so the audit straddles each.
+    """
+
+    def underflows(k: int) -> bool:
+        return _poisson_ln_mass(rate, k) < LOG_SMALLEST_SUBNORMAL
+
+    mode = math.floor(rate)
+    crossings = [int(smallest_from(mode, underflows))]
+    if underflows(0):
+        crossings.append(int(smallest_satisfying(mode, lambda k: not underflows(k))) - 1)
+    return [float(k) for crossing in crossings for k in (crossing - 1, crossing, crossing + 1) if k >= 0]
+
+
+def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """Poisson support probes: off the support, the mode, both underflow crossings, and far up to `+inf`.
+
+    Around the mean in steps of `sqrt(rate)` out to `30`, plus random support points around the mean and
+    log-uniform above it, out to `100 rate`.
+    """
+    rate = params[0]
+    mode = math.floor(rate)
+    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(mode), float(mode + 1), float(max(mode - 1, 0))}
+    danger |= {float(max(0, round(rate + c * math.sqrt(rate)))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
+    danger |= set(_poisson_underflow_points(rate))
+    danger |= {float(math.ceil(10 * rate + 1000)), 1e300, math.inf}
+    points: list[Point] = [(v, "danger") for v in sorted(danger)]
+    points.extend((float(max(0, round(rate + math.sqrt(rate) * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
+    top = math.log10(100.0 * max(rate, 1.0))
+    points.extend((float(round(10.0 ** rng.uniform(0.0, top))), "random") for _ in range(count))
+    return points
+
+
 # DiscreteUniform oracles. `params` is `(min, max)`, both bounds inclusive.
 
 
@@ -1929,6 +2085,44 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     entropy=geometric_entropy,
                     tolerance=CLOSED_FORM_RTOL,
                 ),
+            ),
+        ),
+        DistributionSpec(
+            name="Poisson",
+            build=lambda p: Poisson(rate=p[0]),
+            param_names=("rate",),
+            # `99.5` and `100` put the shapes near the mean on both sides of the incomplete gamma's switch to Temme's
+            # expansion at `100`; `1e8` matches the Gamma sweep, past which the Kummer oracle stops converging.
+            params=(
+                (1e-8,),
+                (1e-3,),
+                (0.5,),
+                (1.0,),
+                (4.5,),
+                (30.0,),
+                (99.5,),
+                (100.0,),
+                (1e3,),
+                (1e4,),
+                (1e6,),
+                (1e8,),
+            ),
+            methods=(
+                AuditedMethod("pmf", poisson_pmf, SPECIAL_RTOL, poisson_points),
+                AuditedMethod("log_pmf", poisson_log_pmf, LOG_RTOL, poisson_points),
+                AuditedMethod("cdf", poisson_cdf, SPECIAL_RTOL, poisson_points),
+                AuditedMethod("log_cdf", poisson_log_cdf, LOG_RTOL, poisson_points),
+                AuditedMethod("sf", poisson_sf, SPECIAL_RTOL, poisson_points),
+                AuditedMethod("log_sf", poisson_log_sf, LOG_RTOL, poisson_points),
+                AuditedMethod("ppf", poisson_ppf, DISCRETE_PPF_RTOL, quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", poisson_isf, DISCRETE_PPF_RTOL, survival_points, seeded_oracle=True),
+                AuditedMethod("mean", lambda p, _x: mp.mpf(p[0]), CLOSED_FORM_RTOL),
+                AuditedMethod("variance", lambda p, _x: mp.mpf(p[0]), CLOSED_FORM_RTOL),
+                AuditedMethod("std", sqrt_of(lambda p, _x: mp.mpf(p[0])), CLOSED_FORM_RTOL),
+                AuditedMethod("median", at_median_seeded(poisson_ppf), DISCRETE_PPF_RTOL, seeded_oracle=True),
+                # The sum costs `~20 sqrt(rate)` 50-digit log-gammas, so it stops at `1e5`; the asymptotic series the
+                # library switches to at `100` only gains digits as `rate` grows.
+                AuditedMethod("entropy", poisson_entropy, SPECIAL_RTOL, max_first_param=1e5),
             ),
         ),
         DistributionSpec(
