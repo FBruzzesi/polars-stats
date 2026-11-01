@@ -148,16 +148,14 @@ trial, so a sampled row costs `n` RNG draws. At `n = 10_000` that is 10,000 unif
 `rand_distr::Binomial` (inversion for small `n*p`, BTPE otherwise, both `O(1)`-amortised), keeping sampling time flat
 in `n`. Every binomial value-keyed method (`pmf`, `cdf`, `ppf`, ...) still builds the `statrs` distribution.
 
-The Poisson sampler draws from `rand_distr::Poisson` for accuracy, and is faster for it: the two tie at `rate = 4.5`,
-where both are Knuth's, and `rand_distr` is 2.5x to 3.5x faster from `rate = 20`. `statrs`' rejection sampler
-accepts a candidate `k` by comparing against `k ln(rate) - ln(k!)` less `rate`, terms of size `rate ln(rate)` that cancel
-to a number of order `ln(rate)`. The comparison is off by `5.5e-3` in the log at `rate = 1e12` and by more than a
-factor of `e` from `1e15`, where it accepts its logistic proposal outright. That proposal shares the Poisson's mean
-and variance, so the draws look right on both, but carry its excess kurtosis: `1.0` at `rate = 1e16`, where a
-Poisson's is `1e-16`. `rand_distr`'s (Knuth's product of uniforms below `rate = 12`, Ahrens and Dieter's PD above it)
-reads the same ratio off `ln(1 + v)` with `v = (rate - k) / k`, which has nothing to cancel. Its draws are `UInt64`
-counts, so the sampler refuses a `rate` past `1.844e19`, the largest it accepts; every other Poisson method still
-answers there.
+The Poisson sampler draws from `rand_distr::Poisson` for accuracy, and is no slower for it: the two tie at `rate = 4.5`,
+where both use Knuth's method, and `rand_distr` is 2.5x to 3.5x faster from `rate = 20`. `statrs`' rejection sampler
+accepts a candidate `k` by comparing against `k ln(rate) - ln(k!)` less `rate`, terms of size `rate ln(rate)` that
+cancel to a number of order `ln(rate)`. The comparison is off by `5.5e-3` in the log at `rate = 1e12` and by more than a
+factor of `e` from `1e15`, where it accepts its logistic proposal outright. That proposal shares the Poisson's mean and
+variance, so the draws look right on both, but carry its excess kurtosis: `1.0` at `rate = 1e16`, where a Poisson's is
+`1e-16`. `rand_distr`'s (Knuth's product of uniforms below `rate = 12`, Ahrens and Dieter's PD above it) reads the same
+ratio off `ln(1 + v)` with `v = (rate - k) / k`, which has nothing to cancel.
 
 ### Invalid parameters raise, they never silently null
 

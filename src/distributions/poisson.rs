@@ -4,7 +4,7 @@
 //! `rate ln(rate)`-sized terms cancel to an error of `2.5e-7` in the log at `rate = 1e8`; Stirling's form of the
 //! prefactor has nothing to cancel.
 
-use std::f64::consts::SQRT_2;
+use std::f64::consts::{LN_2, SQRT_2};
 
 use polars::prelude::arity::unary_elementwise;
 use polars::prelude::*;
@@ -55,8 +55,25 @@ fn poisson_rate(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Relative slack on the inverses' step comparison, as `binomial.rs`'s `PPF_CDF_TOL`. The tails are
 /// compared as logs, where a relative slack is an absolute one, so a quantile computed on a step,
-/// `cdf(k)` itself, inverts to `k` whichever way its last ulp rounded.
+/// `cdf(k)` itself, inverts to `k` whichever way its last ulp rounded. That holds while `1 - q`
+/// resolves the tail it is compared against: below a tail mass of about `5e-5` the rounding of `q`
+/// itself outgrows the slack, and the answer can be `k + 1`.
 const STEP_TOLERANCE: f64 = 1e-12;
+
+/// `ln(k!)` for `k = 0..=9`, correctly rounded: the shapes below `gamma.rs`'s Stirling switch, where
+/// [`IncompleteGamma`] reads `ln Gamma(k + 1)` off statrs' `ln_gamma`, which is up to `3e-14` off.
+const LN_FACTORIALS: [f64; 10] = [
+    0.0,
+    0.0,
+    LN_2,
+    1.791759469228055,
+    3.1780538303479458,
+    4.787491742782046,
+    6.579251212010101,
+    8.525161361065415,
+    10.60460290274525,
+    12.801827480081469,
+];
 
 /// `rate` and `ln(rate)`, the `(t, u)` pair every incomplete-gamma evaluation takes.
 struct Poisson {
@@ -80,13 +97,14 @@ impl Poisson {
     }
 
     /// `ln(rate^k e^-rate / k!)` at a support point: the prefactor at shape `k`, not the density at
-    /// shape `k + 1`, which rounds to `k` past `2^53`. `k = 0` is `-rate` outright, so no gamma of
-    /// shape `0` is built.
+    /// shape `k + 1`, which past `2^53` rounds to a neighbouring float. Below `k = 10` it is the same
+    /// sum with `ln(k!)` from [`LN_FACTORIALS`], so `k = 0` builds no gamma of shape `0`. Forced
+    /// inline: left as a call, the entropy's support sum runs 1.5x to 2.4x slower.
+    #[inline(always)]
     fn ln_mass(&self, k: f64) -> f64 {
-        if k == 0.0 {
-            -self.rate
-        } else {
-            IncompleteGamma::new(k).ln_prefactor(self.rate, self.ln_rate)
+        match LN_FACTORIALS.get(k as usize) {
+            Some(ln_factorial) => k * self.ln_rate - self.rate - ln_factorial,
+            None => IncompleteGamma::new(k).ln_prefactor(self.rate, self.ln_rate),
         }
     }
 
@@ -94,8 +112,8 @@ impl Poisson {
     /// it for `Tail::Upper`, `P(X > k) <=` it for `Tail::Lower`, each within [`STEP_TOLERANCE`].
     ///
     /// `0` is tried first, before `seed` is computed: it is the answer for most levels at a small
-    /// `rate`. Otherwise galloped outward from `seed` until `lo` has not reached the level and `hi`
-    /// has, then bisected on the integers. The first step is one float spacing at `seed`, so no step
+    /// `rate`. Otherwise it gallops outward from `seed` until `lo` has not reached the level and `hi`
+    /// has, then bisects on the integers. The first step is one float spacing at `seed`, so no step
     /// vanishes above `2^53`. `+inf` reaches either level, so the gallop up ends, and the bisection
     /// ends where no float lies strictly inside the bracket.
     fn smallest_reaching(&self, tail: Tail, ln_target: f64, seed: impl FnOnce() -> f64) -> f64 {
@@ -317,13 +335,23 @@ fn poisson_isf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<
     kwargs.value_keyed(&inputs[0], isf_value)
 }
 
-/// From this `rate` the entropy is statrs' three-term asymptotic series, `2.3e-14` relative here and
-/// falling as `rate^-4`; below it the support sum, whose length grows as `sqrt(rate)`.
-const ENTROPY_SERIES_FROM: f64 = 1e3;
+/// From this `rate` the entropy is its asymptotic series, truncated `8e-17` relative here and falling
+/// as `rate^-9`; below it the support sum, whose length grows as `sqrt(rate)`.
+const ENTROPY_SERIES_FROM: f64 = 100.0;
 
-/// The coefficients of `rate^-1`, `rate^-2` and `rate^-3` the asymptotic series subtracts from
-/// `ln(2 pi e rate) / 2`.
-const ENTROPY_SERIES: [f64; 3] = [1.0 / 12.0, 1.0 / 24.0, 19.0 / 360.0];
+/// The coefficients `c_j` of `rate^-j`, `j = 1..=8`, the asymptotic series subtracts from
+/// `ln(2 pi e rate) / 2`: Stirling's series of `ln X!` expanded about `rate` and averaged over the
+/// Poisson central moments of `X`. The first three are statrs' series.
+const ENTROPY_SERIES: [f64; 8] = [
+    1.0 / 12.0,
+    1.0 / 24.0,
+    19.0 / 360.0,
+    9.0 / 80.0,
+    863.0 / 2520.0,
+    1375.0 / 1008.0,
+    33953.0 / 5040.0,
+    57281.0 / 1440.0,
+];
 
 /// A support-sum term below this fraction of the sum so far ends that direction of the sum.
 const ENTROPY_TERM_FRACTION: f64 = f64::EPSILON / 2.0;
@@ -336,8 +364,9 @@ const ENTROPY_TERM_FRACTION: f64 = f64::EPSILON / 2.0;
 /// exceeds `1 / e`; each term is added before the test, which steps over that one rise.
 fn entropy(rate: f64) -> f64 {
     if rate >= ENTROPY_SERIES_FROM {
-        let inverse = rate.recip();
-        return 0.5 * (LN_2PI_E + rate.ln()) - polynomial(&ENTROPY_SERIES, inverse) * inverse;
+        let inverse_rate = rate.recip();
+        return 0.5 * (LN_2PI_E + rate.ln())
+            - polynomial(&ENTROPY_SERIES, inverse_rate) * inverse_rate;
     }
     let poisson = Poisson::new(rate);
     let term = |k: f64| {
@@ -369,9 +398,9 @@ fn poisson_entropy(inputs: &[Series]) -> PolarsResult<Series> {
     Ok(out.into_series())
 }
 
-/// `rand_distr::Poisson` rather than statrs', whose rejection test forms `k ln(rate) - ln(k!)` and
-/// cancels: from `rate ~ 1e15` it accepts its logistic proposal outright. A draw is a `UInt64` count,
-/// so a `rate` past `MAX_LAMBDA` is refused here, while every other method still answers.
+/// `rand_distr::Poisson` rather than statrs', whose rejection test cancels at a large `rate` (see the
+/// design notes). A draw is a `UInt64` count, so a `rate` past `MAX_LAMBDA` is refused here, while
+/// every other method still answers.
 fn build_sampler(rate: f64) -> PolarsResult<PoissonSampler<f64>> {
     PoissonSampler::new(rate).map_err(|e| {
         polars_err!(

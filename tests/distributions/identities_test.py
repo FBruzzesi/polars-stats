@@ -313,8 +313,8 @@ def test_integer_shape_gamma_log_sf_is_the_poisson_sum(shape: int) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-# Poisson(rate) at `k` is Gamma(k + 1, 1) at `rate`: `P(X <= k)` is the gamma's upper tail there and `P(X > k)` its
-# lower one, the roles flipped, and the mass is the gamma's density.
+# Poisson(rate) at `k` is Gamma(k + 1, 1) at `rate` with the tails swapped: `P(X <= k)` is the gamma's upper tail and
+# `P(X > k)` its lower one. The mass is the gamma's density.
 # --------------------------------------------------------------------------------------------------
 
 _POISSON_RATES = [0.3, 4.5, 150.0]

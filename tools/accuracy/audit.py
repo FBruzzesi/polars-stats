@@ -205,13 +205,13 @@ def solve_monotone(residual: Callable[[mp.mpf], mp.mpf], seed: float) -> mp.mpf:
     return root
 
 
-def smallest_satisfying(n: int, holds: Callable[[int], bool]) -> mp.mpf:
-    """Smallest `k` in `[0, n]` where a monotone `holds` turns true: the discrete [`solve_monotone`].
+def smallest_satisfying(n: int, holds: Callable[[int], bool], *, lo: int = 0) -> mp.mpf:
+    """Smallest `k` in `[lo, n]` where a monotone `holds` turns true: the discrete [`solve_monotone`].
 
     Shared by `ppf` and `isf`, which differ only in the predicate. A discrete inverse is where no
     tolerance absorbs an off-by-one (see [`bernoulli_ppf`]), so the index arithmetic exists once.
     """
-    lo, hi = 0, n
+    hi = n
     while lo < hi:
         mid = lo + (hi - lo) // 2
         if holds(mid):
@@ -219,6 +219,26 @@ def smallest_satisfying(n: int, holds: Callable[[int], bool]) -> mp.mpf:
         else:
             lo = mid + 1
     return mp.mpf(lo)
+
+
+def smallest_from(start: int, holds: Callable[[int], bool]) -> mp.mpf:
+    """[`smallest_satisfying`] over `k >= 0` with no upper bound, bracketed by galloping outward from `start`.
+
+    Seeded from the library's answer, a correct one costs two evaluations, at it and at its predecessor. Python
+    integers keep the search exact at any `k`, where the library's own search runs in `float64`.
+    """
+    step = 1
+    if holds(start):
+        hi = start
+        while hi - step >= 0 and holds(hi - step):
+            hi -= step
+            step *= 2
+        return smallest_satisfying(hi, holds, lo=max(hi - step + 1, 0))
+    lo = start
+    while not holds(lo + step):
+        lo += step
+        step *= 2
+    return smallest_satisfying(lo + step, holds, lo=lo + 1)
 
 
 # Normal and LogNormal oracles.
@@ -1180,33 +1200,6 @@ def poisson_sf(params: Params, x: float) -> mp.mpf:
     return exp_neg(-poisson_log_sf(params, x))
 
 
-def smallest_from(start: int, holds: Callable[[int], bool]) -> mp.mpf:
-    """Smallest `k >= 0` where a monotone `holds` turns true, galloped outward from `start`, then bisected.
-
-    Seeded from the library's answer, a correct one costs two evaluations, at it and at its predecessor. Python
-    integers keep the search exact at any `k`, where the library's own search runs in `float64`.
-    """
-    if holds(start):
-        hi, step = start, 1
-        while hi > 0 and holds(hi - step):
-            hi -= step
-            step *= 2
-        lo = max(hi - step, -1)
-    else:
-        lo, step = start, 1
-        while not holds(lo + step):
-            lo += step
-            step *= 2
-        hi = lo + step
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        if holds(mid):
-            hi = mid
-        else:
-            lo = mid
-    return mp.mpf(hi)
-
-
 def poisson_quantile(params: Params, q: float, seed: float, tail: GammaTail) -> mp.mpf:
     """The smallest `k` with `P(X <= k) >= q` (`tail = "Q"`) or `P(X > k) <= q` (`tail = "P"`), compared in logs.
 
@@ -1274,16 +1267,10 @@ def _poisson_underflow_points(rate: float) -> list[float]:
         def support_point(offset: int, direction: int = direction) -> int:
             return max(0, mode + direction * offset)
 
-        near, far = 0, 1
-        while _poisson_ln_mass(rate, support_point(far)) >= LOG_SMALLEST_SUBNORMAL:
-            near, far = far, 2 * far
-        while far - near > 1:
-            mid = (near + far) // 2
-            if _poisson_ln_mass(rate, support_point(mid)) >= LOG_SMALLEST_SUBNORMAL:
-                near = mid
-            else:
-                far = mid
-        crossing = support_point(far)
+        def underflows(offset: int, support_point: Callable[[int], int] = support_point) -> bool:
+            return _poisson_ln_mass(rate, support_point(offset)) < LOG_SMALLEST_SUBNORMAL
+
+        crossing = support_point(int(smallest_from(1, underflows)))
         points.extend(float(k) for k in (crossing - 1, crossing, crossing + 1) if k >= 0)
     return points
 
@@ -2139,7 +2126,7 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 AuditedMethod("std", sqrt_of(lambda p, _x: mp.mpf(p[0])), CLOSED_FORM_RTOL),
                 AuditedMethod("median", at_median_seeded(poisson_ppf), DISCRETE_PPF_RTOL, seeded_oracle=True),
                 # The sum costs `~20 sqrt(rate)` 50-digit log-gammas, so it stops at `1e5`; the asymptotic series the
-                # library switches to at `1e3` only gains digits as `rate` grows.
+                # library switches to at `100` only gains digits as `rate` grows.
                 AuditedMethod("entropy", poisson_entropy, SPECIAL_RTOL, max_first_param=1e5),
             ),
         ),

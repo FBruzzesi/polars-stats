@@ -1247,7 +1247,8 @@ def test_gamma_log_pdf_holds_on_both_sides_of_its_shape_seams(
 
 
 # --------------------------------------------------------------------------------------------------
-# Poisson: a point past every gamma shape the incomplete gamma is built for, and the entropy's two forms.
+# Poisson: points too far up the support for any gamma shape, the inverses at the largest rate, and the entropy's two
+# forms.
 # --------------------------------------------------------------------------------------------------
 
 _POISSON_RATE = 4.5
@@ -1255,7 +1256,7 @@ _POISSON_LOG_MASS_AT_1E300 = 1e300 * (math.log(_POISSON_RATE) - math.log(1e300) 
 """Stirling's leading terms of `ln(rate ** k e ** -rate / k!)` at `k = 1e300`; the rest is below `1e-297` of it."""
 
 
-class _ValueKeyed(TypedDict):
+class _ValueKeyedResults(TypedDict):
     pmf: float
     log_pmf: float
     cdf: float
@@ -1264,7 +1265,7 @@ class _ValueKeyed(TypedDict):
     log_sf: float
 
 
-_POISSON_FAR_POINTS: dict[str, _ValueKeyed] = {
+_POISSON_FAR_POINTS: dict[str, _ValueKeyedResults] = {
     "1e300": {
         "pmf": 0.0,
         "log_pmf": _POISSON_LOG_MASS_AT_1E300,
@@ -1280,7 +1281,7 @@ _POISSON_FAR_POINTS: dict[str, _ValueKeyed] = {
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 @pytest.mark.parametrize(("point", "expected"), _POISSON_FAR_POINTS.items(), ids=list(_POISSON_FAR_POINTS))
-def test_poisson_far_points_saturate_without_nan(regime: Regime, point: str, expected: _ValueKeyed) -> None:
+def test_poisson_far_points_saturate_without_nan(regime: Regime, point: str, expected: _ValueKeyedResults) -> None:
     """Every value-keyed method answers far up the support.
 
     At `1e300` the log mass and `log_sf` are a finite `-6.9e302`; at `1e308` they are past `f64` and round to `-inf`;
@@ -1299,7 +1300,7 @@ def test_poisson_far_points_saturate_without_nan(regime: Regime, point: str, exp
 
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
-def test_poisson_inverses_at_the_largest_rates_are_the_neighbouring_floats(regime: Regime) -> None:
+def test_poisson_inverses_at_the_largest_rate_are_the_neighbouring_floats(regime: Regime) -> None:
     """Each quantile at `rate = 1e308` is `rate` itself or the float above it.
 
     A standard deviation there is far below one float spacing, so the answer is the first of the two whose tail has
@@ -1320,7 +1321,10 @@ def test_poisson_entropy_is_finite_at_the_largest_rate(regime: Regime) -> None:
 
 
 def test_poisson_entropy_is_continuous_where_the_sum_gives_way_to_the_series() -> None:
-    """One ulp below `rate = 1e3` is the support sum, `1e3` itself the asymptotic series: they meet to `2.3e-14`."""
-    below, at = math.nextafter(1e3, 0.0), 1e3
+    """One ulp below `rate = 100` is the support sum, `100` itself the asymptotic series, truncated `8e-17` there.
+
+    Both sit within `1e-15` of an `mpmath` support sum, so they meet to a few ulps.
+    """
+    below, at = math.nextafter(100.0, 0.0), 100.0
     got = pl.DataFrame({"rate": [below, at]}).select(entropy=Poisson(pl.col("rate")).entropy())["entropy"]
-    assert got[0] == pytest.approx(got[1], rel=5e-14)
+    assert got[0] == pytest.approx(got[1], rel=2e-15)

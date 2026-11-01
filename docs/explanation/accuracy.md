@@ -194,18 +194,16 @@ magnitudes are in the inherited limits below.
 * **`Poisson` reads `Gamma`'s incomplete gamma at `t = rate`.** `cdf` and `sf` are its upper and lower tails at shape
   `floor(k) + 1`, and `pmf` is its prefactor at shape `k`, Stirling's form of `-rate + k ln(rate) - ln(k!)`. Written
   out, that difference cancels: `scipy`'s `logpmf` and `statrs`' `ln_pmf` are `1.1e-12` absolute off at `rate = 1e3`
-  and `2.5e-7` at `rate = 1e8`, so parity against `scipy` is only meaningful below `rate ~ 1e3`. Three limits hold
+  and `2.5e-7` at `rate = 1e8`, so parity against `scipy` is only meaningful below `rate ~ 1e3`. Two limits hold
   inside the audited range:
 
     * `pmf`, `cdf` and `sf` are the exponentials of their logs, as for `Gamma`: `1.5e-13` relative at
       `Poisson(1000).pmf(2247)`, which is `2.7e-251`.
-    * Below `k = 10` the prefactor's `ln Gamma(k + 1)` is `statrs`' `ln_gamma`: `Poisson(4.5).log_pmf(7)` is
-      `1.3e-14` relative off.
-    * `entropy` is the support sum below `rate = 1000` and its asymptotic series in `1 / rate` above, which meet to
-      `2.3e-14` relative at the switch.
+    * Up to `k = 8`, `cdf` and `sf` read `ln Gamma(k + 2)` off `statrs`' `ln_gamma`, as `Gamma` does at those shapes:
+      `4.2e-14` relative at `Poisson(0.01).sf(6)`. `pmf` reads `ln(k!)` from an exact table there instead.
 
-    Past `2 ** 53` an integer `k` no longer has a representable successor, so the shape `k + 1` rounds to `k` and
-    `cdf` / `sf` answer for the neighbouring point, off by about `pmf / cdf ~ 1 / sqrt(2 pi rate)`:
+    Past `2 ** 53` the shape `k + 1` of an integer `k` rounds to a neighbouring float (to `k` itself from `2 ** 54` on),
+    so `cdf` / `sf` answer for a neighbouring point, off by about `pmf / cdf ~ 1 / sqrt(2 pi rate)`:
     `Poisson(1e20).cdf(1e20)` is `1.3e-11` below one half where the exact value is above it. `pmf` reads the shape
     `k` itself and is unaffected; `scipy`'s `poisson.cdf` rounds the same way. The audited range is `rate` in `1e-8`
     to `1e8`.

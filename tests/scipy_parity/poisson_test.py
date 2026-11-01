@@ -150,6 +150,5 @@ def test_inverses_round_trip_every_support_point(rate: float) -> None:
 # * The deep tails: scipy's `logsf` / `logcdf` are `-inf` once `sf` / `cdf` underflow, and its `isf` goes through
 #   `ppf(1 - q)`; this library stays finite and inverts against `q` itself (asserted above against `logsumexp`
 #   of scipy's own masses, since scipy cannot referee there directly).
-# * The mass at a large `rate`: scipy's `logpmf` cancels to `1.1e-12` absolute at `rate = 1e3` and `2.5e-7` at
-#   `1e8`. This library reads it off Stirling's form instead, so parity stops at `rate = 200` and
-#   `tools/accuracy/audit.py` referees beyond it.
+# * The mass at a large `rate`: scipy's `logpmf` cancels (see `_RATES`), where this library reads it off
+#   Stirling's form, so `tools/accuracy/audit.py` referees above `rate = 200`.

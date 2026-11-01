@@ -13,9 +13,9 @@ if TYPE_CHECKING:
 class Poisson(DiscreteDistribution):
     """Poisson distribution: the number of events in a unit interval of a process with rate ``rate``.
 
-    Equivalent to ``scipy.stats.poisson(mu=rate)``. The rate λ is ``rate`` here, as in ``Exponential`` and ``Gamma``,
-    so ``Poisson(rate=r)`` counts what ``Exponential(rate=r)`` spaces out; scipy calls it ``mu`` and ``statrs``
-    ``lambda``. The support is the non-negative integers.
+    Equivalent to ``scipy.stats.poisson(mu=rate)``. The parameter is ``rate``, as in ``Exponential`` and ``Gamma``:
+    ``Poisson(rate=r)`` counts the events whose gaps are ``Exponential(rate=r)``. The support is the non-negative
+    integers.
 
     Arguments:
         rate: Rate parameter λ, the mean number of events, with ``rate > 0``. Either a Python ``float`` or an
@@ -25,7 +25,7 @@ class Poisson(DiscreteDistribution):
     ``InvalidOperation`` (a ``ComputeError``) when any method is evaluated. Unlike scipy, ``rate = 0`` is invalid.
     Below the support ``pmf`` and ``cdf`` are ``0`` and ``sf`` is ``1``; ``pmf`` is ``0`` at a non-integral point.
     A null ``rate`` nulls every method, on the support and off it. Samples are ``UInt64`` counts, so ``sample`` and
-    ``samples`` also refuse a ``rate`` above ``1.844e19``, where a draw no longer fits one.
+    ``samples`` also refuse a ``rate`` above ``1.844e19``.
     """
 
     _rate: pl.Expr
@@ -54,7 +54,6 @@ class Poisson(DiscreteDistribution):
     def entropy(self) -> pl.Expr:
         """Shannon entropy in nats, the support sum ``-sum_k pmf(k) log pmf(k)``.
 
-        It has no closed form, so ``poisson_entropy`` sums it in Rust below ``rate = 1000`` and takes its asymptotic
-        series in ``1 / rate`` above.
+        There is no closed form, so ``poisson_entropy`` evaluates it in Rust.
         """
         return self._param_plugin("entropy")

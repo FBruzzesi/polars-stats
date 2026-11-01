@@ -260,13 +260,12 @@ def test_a_geometric_draw_saturates_where_the_trial_count_outgrows_uint64() -> N
 
 
 @pytest.mark.parametrize("rate", [4.5, 1e6, 1e12, 1e16], ids=lambda rate: f"rate={rate:g}")
-def test_a_poisson_draw_tracks_the_rate_into_the_large_rate_regime(rate: float) -> None:
-    """The draw keeps a Poisson's mean, variance and shape where a rejection test on `k ln(rate) - ln(k!)` cancels.
+def test_a_poisson_draw_keeps_its_shape_at_a_large_rate(rate: float) -> None:
+    """The draw keeps a Poisson's mean, variance and excess kurtosis `1 / rate` up to `rate = 1e16`.
 
-    statrs' rejection sampler does, and from `rate ~ 1e15` the cancellation makes it accept its logistic proposal
-    outright. That proposal has the Poisson's mean and variance, so only the shape shows it: an excess kurtosis of
-    `1.0` at `rate = 1e16` where a Poisson's is `1 / rate`. The fourth moment is standardised by the known `rate`, so
-    its allowance is the normal-theory standard error of `mean(z ** 4)` with known moments, `sqrt(96 / n)`.
+    A rejection test on `k ln(rate) - ln(k!)` cancels at a large `rate` and accepts a logistic proposal with the same
+    mean and variance, so only the fourth moment tells them apart. It is standardised by the known `rate`, so its
+    allowance is the normal-theory standard error of `mean(z ** 4)`, `sqrt(96 / n)`.
     """
     drawn = _frame(_CLT_ROWS).select(z=Poisson(rate).sample(seed=_SEED))["z"].cast(pl.Float64)
     mean, variance = drawn.mean(), drawn.var()
@@ -283,8 +282,8 @@ def test_a_poisson_draw_tracks_the_rate_into_the_large_rate_regime(rate: float) 
 def test_a_poisson_sample_refuses_a_rate_past_the_uint64_count(regime: Regime) -> None:
     """Past `rate = 1.844e19` a draw no longer fits a `UInt64`, so both samplers refuse it and nothing else does.
 
-    `cdf` at the mean is only pinned near `1/2`: past `2 ** 53` the shape `k + 1` rounds to `k`, so it answers for the
-    neighbouring point, `1.3e-11` away here.
+    `cdf` at the mean is only pinned near `1/2`: at `1e20` the shape `k + 1` rounds to `k`, so it answers for the point
+    below, `1.3e-11` away.
     """
     dist = SPECS_BY_NAME["poisson"].build(regime, params=(1e20,))
     frame = _frame(4)
