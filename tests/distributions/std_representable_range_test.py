@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Exponential, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
+from polars_stats import Exponential, Gamma, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -53,6 +53,13 @@ def test_pareto_std_is_the_spread_times_the_root_shape_ratio(spread: float) -> N
     """`Pareto(scale, 3).std()` is `scale / 2 * sqrt(3)`, finite wherever `scale / (shape - 1)` is."""
     got = pl.DataFrame({"z": [0.0]}).select(r=Pareto(scale=2.0 * spread, shape=3.0).std())["r"].item()
     assert got == pytest.approx(spread * math.sqrt(3.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("rate", _EXTREME_SCALES, ids=lambda r: f"rate={r:.0e}")
+def test_gamma_std_is_the_root_shape_over_the_rate(rate: float) -> None:
+    """`Gamma(4, rate).std()` is `2 / rate`, finite wherever `1 / rate` is; `variance` is its square."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Gamma(shape=4.0, rate=rate).std())["r"].item()
+    assert got == pytest.approx(2.0 / rate, rel=1e-15, abs=0.0)
 
 
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)

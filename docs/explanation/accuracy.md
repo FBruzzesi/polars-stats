@@ -33,10 +33,10 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 ## Use the log methods in the tails, where they are log methods
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
-limit and not something an algorithm can fix. For `Normal`, `LogNormal` and the closed-form
+limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `Poisson` and the closed-form
 distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
 `DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the right methods for tail
-scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those ten: forming the complement quantises the tail mass to
+scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those twelve: forming the complement quantises the tail mass to
 `1.1e-16` absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
@@ -52,8 +52,11 @@ magnitudes are in the inherited limits below.
 
 * **Discrete `ppf` / `isf` at a step boundary.** `Binomial.ppf` is a binary search resolved to the
   cdf's own precision, so a quantile within `1e-12` *relative* of a cdf step may return the
-  neighbouring support point. `Geometric.ppf` / `isf` decide the same tie in the log domain, testing
-  `k * log1p(-p)` against `log1p(-q)` rather than re-deriving `cdf(k)`. That is deliberate: across
+  neighbouring support point. `Poisson.ppf` / `isf` search the same way, comparing whichever tail is
+  smaller at the quantile in log space, so the `1e-12` is relative in both tails and `ppf(cdf(k))` is
+  `k` wherever `1 - q` still resolves the tail it is compared against. `Geometric.ppf` / `isf` decide
+  the same tie in the log domain, testing `k * log1p(-p)` against `log1p(-q)` rather than re-deriving
+  `cdf(k)`. That is deliberate: across
   1997 probes sitting on and either side of exact step boundaries it disagrees with exact rational
   arithmetic 357 times, against 490 for the alternative. The price is
   that `ppf` and `cdf` are not exact mutual inverses there, and the miss goes both ways, by at most
@@ -166,11 +169,52 @@ magnitudes are in the inherited limits below.
     reaches the hundreds (`shape = 0.01`) rather than saturating there. The audited range is `shape`
     in `1e-8` to `1e8` and `scale` in `1e-8` to `1e8`; past `shape ~ 6.7e153` the series argument
     `1 / shape ** 2` underflows and `variance` and `std` collapse to `0`, as they do in `scipy`.
+* **`Gamma` evaluates its own regularized incomplete gamma.** Every value-keyed method is `P(shape, rate x)`, its
+  complement or an inverse, computed in log space: the power series below the mean, Legendre's continued fraction
+  above it, DLMF 8.7.3 where the point and the shape are both small, and from `shape = 100` Temme's uniform
+  expansion (DLMF 8.12) within `0.3 shape` of the mean, where the series would need about `9 sqrt(shape)` terms.
+  The expansion's `erfc` is a scaled `erfcx` of its own, a Taylor polynomial below `2` and Laplace's continued
+  fraction above, not `statrs`' `erfc`. Four smaller limits hold inside the audited range:
+
+    * `pdf`, `cdf` and `sf` are the exponentials of their logs, so their relative error is the log's absolute
+      error: `1.3e-13` at `sf = e ** -705`. Where `rate x` is not exact, its rounding is magnified by the slope of
+      the log tail, about `37 sqrt(shape)` at the edge of `float64` range: `1.4e-11` relative at `Gamma(1e8, 3)`.
+    * Below `shape = 10` the prefactor's `ln Gamma(shape + 1)` is `statrs`' `ln_gamma`, whose `~1e-14` absolute
+      error the logs carry: `log_cdf` at the mean of `Gamma(9.999999999999998, 1)` is `2.4e-14` relative off,
+      against `1.6e-15` at `shape = 10`.
+    * `log_pdf` holds `~1e-15` absolute rather than relative where it crosses `0` because `ln rate` cancels
+      `(shape - 1) ln(rate x)`: `Gamma(2, 1e8).log_pdf(1e-16)` is `-1.0000004e-8` against a true
+      `-1.0000000021e-8`.
+    * `entropy` is `statrs`' closed form below `shape = 30`, which holds `1e-13` there, and its own asymptotic
+      series above, where the closed form cancels to `2.3e-8` relative at `shape = 1e8`.
+
+    `scipy`'s `gammainc` stops its power series at 2000 terms, so 5 standard deviations below the mean it returns
+    the lower tail `4.3e-6` relative off at `shape = 1e6` and `35%` off at `1e8`; parity against `scipy` is only
+    meaningful below `shape ~ 1e4`. The audited range is `shape` in `1e-8` to `1e8` and `rate` in `1e-8` to `1e8`.
+* **`Poisson` reads `Gamma`'s incomplete gamma at `t = rate`.** `cdf` and `sf` are its upper and lower tails at shape
+  `floor(k) + 1`, and `pmf` is its prefactor at shape `k`, Stirling's form of `-rate + k ln(rate) - ln(k!)`. Written
+  out, that difference cancels: `scipy`'s `logpmf` and `statrs`' `ln_pmf` are `1.1e-12` absolute off at `rate = 1e3`
+  and `2.5e-7` at `rate = 1e8`, so parity against `scipy` is only meaningful below `rate ~ 1e3`. Two limits hold
+  inside the audited range:
+
+    * `pmf`, `cdf` and `sf` are the exponentials of their logs, as for `Gamma`: `1.5e-13` relative at
+      `Poisson(1000).pmf(2247)`, which is `2.7e-251`.
+    * Up to `k = 8`, `cdf` and `sf` read `ln Gamma(k + 2)` off `statrs`' `ln_gamma`, as `Gamma` does at those shapes:
+      `4.2e-14` relative at `Poisson(0.01).sf(6)`. `pmf` reads `ln(k!)` from an exact table there instead.
+
+    Past `2 ** 53` the shape `k + 1` of an integer `k` rounds to a neighbouring float (to `k` itself from `2 ** 54` on),
+    so `cdf` / `sf` answer for a neighbouring point, off by about `pmf / cdf ~ 1 / sqrt(2 pi rate)`:
+    `Poisson(1e20).cdf(1e20)` is `1.3e-11` below one half where the exact value is above it. `pmf` reads the shape
+    `k` itself and is unaffected; `scipy`'s `poisson.cdf` rounds the same way. The audited range is `rate` in `1e-8`
+    to `1e8`.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%
-  at `1e-20`. `mean()` and the other moments are `Float64` and stay exact far past that. No other
-  sampler has a reachable limit: `Bernoulli` is `Boolean` and `Binomial`'s count is bounded by `n`.
+  at `1e-20`. `mean()` and the other moments are `Float64` and stay exact far past that.
+  `Poisson.sample` / `samples` raise `ComputeError` for a `rate` above `1.844e19` instead: a draw averages
+  `rate`, so past it nearly every draw would saturate to the same count, while the value-keyed methods
+  still answer there. No other sampler has a reachable limit: `Bernoulli` is `Boolean` and
+  `Binomial`'s count is bounded by `n`.
 
 ### Inherited from `statrs` 0.19, tracked upstream
 

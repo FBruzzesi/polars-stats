@@ -35,6 +35,7 @@ Some of these translations are not identities, so check this table rather than g
 | `norm(loc=mu, scale=sigma)` | `Normal(mu=mu, sigma=sigma)` | same meaning |
 | `lognorm(s=sigma, scale=exp(mu))` | `LogNormal(mu=mu, sigma=sigma)` | `scale` is `exp(mu)`, not `mu` |
 | `expon(scale=1 / rate)` | `Exponential(rate=rate)` | **inverted**: `scale` is `1 / rate` |
+| `gamma(a=shape, scale=1 / rate)` | `Gamma(shape=shape, rate=rate)` | **`a` is the shape** and `scale` is `1 / rate`, as for `expon` |
 | `uniform(loc=min, scale=max - min)` | `Uniform(min=min, max=max)` | **`scale` is the width**, not the upper bound |
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |
@@ -43,6 +44,7 @@ Some of these translations are not identities, so check this table rather than g
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
 | `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |
+| `poisson(mu)` | `Poisson(rate=mu)` | **`mu` is the `rate`** λ, named as in `Exponential` and `Gamma`; `mu = 0` raises here, `scipy` allows it |
 | `randint(low=min, high=max + 1)` | `DiscreteUniform(min=min, max=max)` | **`high` is exclusive, `max` is inclusive**: pass `max = high - 1` |
 
 Two further differences apply everywhere:

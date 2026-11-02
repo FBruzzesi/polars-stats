@@ -17,6 +17,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Beta(a, b)` | continuous | `a > 0`, `b > 0` | `beta(a, b)` |
 | `Cauchy(loc, scale)` | continuous | `scale > 0` | `cauchy(loc=loc, scale=scale)`; its undefined moments are `null` here, `nan` there |
 | `Exponential(rate)` | continuous | `rate > 0` | `expon(scale=1 / rate)` |
+| `Gamma(shape, rate)` | continuous | `shape > 0`, `rate > 0` | `gamma(a=shape, scale=1 / rate)` |
 | `LogNormal(mu, sigma)` | continuous | `sigma > 0` | `lognorm(s=sigma, scale=exp(mu))` |
 | `Normal(mu, sigma)` | continuous | `sigma > 0` | `norm(loc=mu, scale=sigma)` |
 | `Pareto(scale, shape)` | continuous | `scale > 0`, `shape > 0` | `pareto(b=shape, scale=scale)`; the divergent moments are `+inf` in both |
@@ -26,6 +27,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Binomial(n, p)` | discrete | `n >= 0`, `0 <= p <= 1` | `binom(n, p)` |
 | `DiscreteUniform(min, max)` | discrete | `min <= max`, both inclusive | `randint(low=min, high=max + 1)`; **`max` is inclusive** |
 | `Geometric(p)` | discrete | `0 < p <= 1` | `geom(p)` |
+| `Poisson(rate)` | discrete | `rate > 0` | `poisson(mu=rate)`; `mu = 0` is a point mass there and raises here |
 
 Each class names its parameters after the distribution's conventional parameters. `Normal` and `LogNormal` default to
 `mu=0.0, sigma=1.0`; the others have no defaults. Parameter values are validated at evaluation, not at construction.

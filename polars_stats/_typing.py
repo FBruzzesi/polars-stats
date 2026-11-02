@@ -18,10 +18,12 @@ if TYPE_CHECKING:
         "cauchy",
         "discreteuniform",
         "exponential",
+        "gamma",
         "geometric",
         "lognormal",
         "normal",
         "pareto",
+        "poisson",
         "uniform",
         "weibull",
     ]

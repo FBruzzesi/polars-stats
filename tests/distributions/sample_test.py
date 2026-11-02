@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
-from polars_stats import Bernoulli, DiscreteUniform, Geometric, Uniform
+from polars_stats import Bernoulli, DiscreteUniform, Geometric, Poisson, Uniform
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
@@ -257,6 +257,42 @@ def test_a_geometric_draw_saturates_where_the_trial_count_outgrows_uint64() -> N
 
     _low, high = min_max(_frame(4_000).select(z=Geometric(p=1e-3).sample(seed=_SEED))["z"])
     assert high < float(2**64 - 1)
+
+
+@pytest.mark.parametrize("rate", [4.5, 1e6, 1e12, 1e16], ids=lambda rate: f"rate={rate:g}")
+def test_a_poisson_draw_keeps_its_shape_at_a_large_rate(rate: float) -> None:
+    """The draw keeps a Poisson's mean, variance and excess kurtosis `1 / rate` up to `rate = 1e16`.
+
+    A rejection test on `k ln(rate) - ln(k!)` cancels at a large `rate` and accepts a logistic proposal with the same
+    mean and variance, so only the fourth moment tells them apart. It is standardised by the known `rate`, so its
+    allowance is the normal-theory standard error of `mean(z ** 4)`, `sqrt(96 / n)`.
+    """
+    drawn = _frame(_CLT_ROWS).select(z=Poisson(rate).sample(seed=_SEED))["z"].cast(pl.Float64)
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - rate) <= _CLT_SIGMAS * math.sqrt(rate / _CLT_ROWS)
+    assert variance == pytest.approx(rate, rel=_CLT_SIGMAS * math.sqrt(2.0 / _CLT_ROWS))
+    fourth_moment = (((drawn - rate) / math.sqrt(rate)) ** 4).mean()
+    assert isinstance(fourth_moment, float)
+    assert abs(fourth_moment - 3.0 - 1.0 / rate) <= _CLT_SIGMAS * math.sqrt(96.0 / _CLT_ROWS)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_poisson_sample_refuses_a_rate_past_the_uint64_count(regime: Regime) -> None:
+    """Past `rate = 1.844e19` a draw no longer fits a `UInt64`, so both samplers refuse it and nothing else does.
+
+    `cdf` at the mean is only pinned near `1/2`: at `1e20` the shape `k + 1` rounds to `k`, so it answers for the point
+    below, `1.3e-11` away.
+    """
+    dist = SPECS_BY_NAME["poisson"].build(regime, params=(1e20,))
+    frame = _frame(4)
+    with pytest.raises(pl.exceptions.ComputeError, match=r"rate must be at most 1\.844e19"):
+        frame.select(dist.sample(seed=_SEED))
+    with pytest.raises(pl.exceptions.ComputeError, match=r"rate must be at most 1\.844e19"):
+        frame.select(dist.samples(size=2, seed=_SEED))
+    cdf = frame.select(cdf=dist.cdf(1e20))["cdf"][0]
+    assert cdf == pytest.approx(0.5, abs=1e-9)
 
 
 def test_a_bernoulli_draw_at_an_extreme_p_is_deterministic() -> None:

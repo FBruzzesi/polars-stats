@@ -223,27 +223,27 @@ start-indented = false
 [tool.ryl.files]
 yaml = ["*.yaml", "*.yml"]
 
-[tool.ryl.rules.line-length]
+[tool.ryl.lint.rules.line-length]
 max = 120
 allow-non-breakable-words = true
 allow-non-breakable-inline-mappings = true
 
-[tool.ryl.rules.indentation]
+[tool.ryl.lint.rules.indentation]
 spaces = 2
 indent-sequences = true
 check-multi-line-strings = false
 
-[tool.ryl.rules.document-start]
+[tool.ryl.lint.rules.document-start]
 present = true
 
-[tool.ryl.rules.truthy]
+[tool.ryl.lint.rules.truthy]
 allowed-values = ["true", "false"]
 check-keys = false
 
-[tool.ryl.rules.comments]
+[tool.ryl.lint.rules.comments]
 min-spaces-from-content = 1
 
-[tool.ryl.rules.braces]
+[tool.ryl.lint.rules.braces]
 max-spaces-inside = 1
 
 [tool.typos.default.extend-words]

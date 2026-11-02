@@ -29,10 +29,12 @@ from scipy.stats import (
     binom,
     cauchy,
     expon,
+    gamma,
     geom,
     lognorm,
     norm,
     pareto,
+    poisson,
     randint,
     uniform,
     weibull_min,
@@ -45,10 +47,12 @@ from polars_stats import (
     Cauchy,
     DiscreteUniform,
     Exponential,
+    Gamma,
     Geometric,
     LogNormal,
     Normal,
     Pareto,
+    Poisson,
     Uniform,
     Weibull,
 )
@@ -115,6 +119,12 @@ def _exponential(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Exponential(rate=params.plugin("rate")), expon(scale=1.0 / params.scipy("rate"))
 
 
+def _gamma(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Gamma(shape=params.plugin("shape"), rate=params.plugin("rate")), gamma(
+        a=params.scipy("shape"), scale=1.0 / params.scipy("rate")
+    )
+
+
 def _beta(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Beta(a=params.plugin("a"), b=params.plugin("b")), beta(a=params.scipy("a"), b=params.scipy("b"))
 
@@ -137,6 +147,10 @@ def _discrete_uniform(params: Params) -> tuple[Distribution, ScipyFrozen]:
 
 def _geometric(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Geometric(p=params.plugin("p")), geom(params.scipy("p"))
+
+
+def _poisson(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Poisson(rate=params.plugin("rate")), poisson(params.scipy("rate"))
 
 
 # Ordered domains (`min` below `max`) are kept non-overlapping so every draw is a valid
@@ -178,6 +192,11 @@ REGISTRY: dict[str, Comparison] = {
         ),
         Comparison(name="exponential", params={"rate": ParamSpec(1.0, 0.5, 2.0)}, build=_exponential),
         Comparison(
+            name="gamma",
+            params={"shape": ParamSpec(2.0, 0.5, 5.0), "rate": ParamSpec(1.5, 0.5, 2.0)},
+            build=_gamma,
+        ),
+        Comparison(
             name="beta",
             params={"a": ParamSpec(2.0, 1.0, 4.0), "b": ParamSpec(3.0, 1.0, 4.0)},
             build=_beta,
@@ -194,6 +213,7 @@ REGISTRY: dict[str, Comparison] = {
             build=_discrete_uniform,
         ),
         Comparison(name="geometric", params={"p": ParamSpec(0.3, 0.1, 0.9)}, build=_geometric),
+        Comparison(name="poisson", params={"rate": ParamSpec(4.5, 0.5, 20.0)}, build=_poisson),
     )
 }
 
