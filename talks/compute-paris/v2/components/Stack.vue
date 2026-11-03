@@ -1,7 +1,12 @@
 <script setup lang="ts">
 const CONTRACTS = ['reproducibility', 'broadcast', 'parameter validation', 'accuracy']
 
-withDefaults(defineProps<{ pins?: number, mini?: boolean }>(), { pins: 0, mini: false })
+// `summary` shows every filled pin alike, with none marked as the latest.
+withDefaults(defineProps<{ pins?: number, mini?: boolean, summary?: boolean }>(), {
+  pins: 0,
+  mini: false,
+  summary: false,
+})
 </script>
 
 <template>
@@ -11,7 +16,7 @@ withDefaults(defineProps<{ pins?: number, mini?: boolean }>(), { pins: 0, mini: 
       <div class="strip">
         <b>polars-stats</b>
         <div class="pins">
-          <span v-for="(c, i) in CONTRACTS" :key="c" class="pin" :class="{ on: i < pins, latest: i === pins - 1 }">
+          <span v-for="(c, i) in CONTRACTS" :key="c" class="pin" :class="{ on: i < pins, latest: !summary && i === pins - 1 }">
             {{ i < pins ? c : '?' }}
           </span>
         </div>

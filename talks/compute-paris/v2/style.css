@@ -130,6 +130,15 @@
   background: var(--tint);
 }
 
+.slidev-layout h1 code {
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
 .slidev-layout a {
   color: inherit;
   text-underline-offset: 5px;
@@ -181,21 +190,26 @@
 
 .slidev-layout.cover {
   justify-content: center;
-  padding-right: 520px;
 }
 
 .slidev-layout.cover h1 {
   font-size: 56px;
   font-weight: 600;
-  line-height: 1.08;
+  line-height: 1.12;
   letter-spacing: -0.035em;
   border: none;
   padding: 0;
 }
 
 .slidev-layout.cover .byline {
+  margin-top: 16px;
   font-size: 28px;
   font-weight: 600;
+}
+
+.slidev-layout.cover .byline,
+.slidev-layout.cover .tagline {
+  max-width: 560px;
 }
 
 .slidev-layout.cover .tagline {
@@ -205,9 +219,9 @@
 
 .slidev-layout.cover .cover-bell {
   position: absolute;
-  right: 40px;
-  bottom: 110px;
-  width: 520px;
+  right: 60px;
+  bottom: 56px;
+  width: 460px;
 }
 
 .slidev-layout.cover .deck-footer,
@@ -251,6 +265,10 @@
   line-height: 1.12;
   letter-spacing: -0.035em;
   border: none;
+}
+
+.slidev-layout.statement h1.lines span {
+  display: block;
 }
 
 /* Code windows: a dark panel with a file name and a language label, as in the template. */
@@ -442,8 +460,10 @@
 
 /* The running sensor frame. */
 
+/* Separate borders belong to their cells, so a ghost column hides its own rules too. */
 table.frame {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-variant-numeric: tabular-nums;
   font-size: 19px;
 }
@@ -481,6 +501,15 @@ table.frame td.fresh {
 table.frame td.flag {
   background: var(--oxygen);
   font-weight: 700;
+}
+
+table.frame th,
+table.frame td {
+  transition: opacity 0.4s, background 0.4s;
+}
+
+table.frame .ghost {
+  opacity: 0;
 }
 
 /* Small tables: scipy's vocabulary, the null contract, the dice, the benchmark conditions. */
@@ -672,14 +701,27 @@ table.dice tr.cut td {
 
 .formula {
   align-self: flex-start;
-  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 6px 24px;
   border-radius: var(--radius);
   background: var(--tint);
-  font-size: 28px;
+}
+
+.formula .katex-display {
+  margin: 0;
+}
+
+.formula .katex {
+  font-size: 1.25em;
+}
+
+.formula p {
+  margin: 0;
 }
 
 .formula .pill {
-  margin-left: 16px;
   padding: 4px 12px;
   border-radius: 999px;
   background: var(--negative-light);
@@ -715,8 +757,11 @@ table.dice tr.cut td {
   background: var(--tint);
 }
 
+/* The restart badges stay hidden until the answer, so the picture does not give it away. */
 .pieces .lane:not(.whole) .piece::before {
   content: "↺ 42";
+  opacity: 0;
+  transition: opacity 0.4s;
   position: absolute;
   left: 6px;
   top: 50%;
@@ -729,8 +774,43 @@ table.dice tr.cut td {
   font-weight: 600;
 }
 
+.pieces.restart .lane:not(.whole) .piece::before {
+  opacity: 1;
+}
+
 .pieces .whole .piece {
   background: var(--interstellar-light);
+}
+
+/* The is_elementwise flag above the plan: Oxygen while the promise holds, red when it is withdrawn. */
+.plan-col {
+  display: grid;
+  gap: 12px;
+}
+
+.slidev-layout .promise {
+  justify-self: start;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 20px;
+  font-weight: 600;
+  transition: background 0.3s, color 0.3s;
+}
+
+.slidev-layout .promise code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.slidev-layout .promise.on {
+  background: var(--oxygen);
+  color: var(--interstellar);
+}
+
+.slidev-layout .promise.off {
+  background: var(--negative);
+  color: var(--milky-way);
 }
 
 .rulers {
@@ -838,6 +918,26 @@ table.dice tr.cut td {
   inset: 0;
 }
 
+/* A rubber stamp laid across the disclaimer slide. */
+.stamp {
+  position: absolute;
+  top: 300px;
+  left: 50%;
+  z-index: 10;
+  transform: translate(-50%, -50%) rotate(-16deg);
+  padding: 10px 44px;
+  border: 8px double var(--negative);
+  border-radius: 14px;
+  color: var(--negative);
+  font-size: 96px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.82;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
 .conditions {
   display: grid;
   grid-template-columns: 170px 1fr;
@@ -868,10 +968,40 @@ table.dice tr.cut td {
   line-height: 1.35;
 }
 
+.links {
+  display: grid;
+  grid-template-columns: 1fr 250px 250px;
+  gap: 40px;
+  align-items: center;
+  margin-top: 40px;
+}
+
 .links p {
   font-size: 22px;
 }
 
+.links p + p {
+  margin-top: 12px;
+}
+
 .links .install {
+  margin-bottom: 20px;
   font-size: 30px;
+}
+
+.qr {
+  margin: 0;
+  text-align: center;
+}
+
+.qr img {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+}
+
+.qr figcaption {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 15px;
 }
