@@ -1201,19 +1201,19 @@ eyebrow: 07 · Cost
 
 <dl class="conditions">
 <dt>Machine</dt><dd>Apple M5, 10 cores (4 performance, 6 efficiency), 24 GB, macOS 26.7.1, on AC power, other apps closed</dd>
-<dt>Software</dt><dd>Python 3.12.13 · Polars 1.44.2 · scipy 1.18.1 · NumPy 2.5.3 · polars-stats 0.1.0, release build</dd>
+<dt>Software</dt><dd>Python 3.14.10 · Polars 2.1.0 · scipy 1.18.1 · NumPy 2.5.4 · polars-stats 0.1.0, release build</dd>
 <dt>polars-stats</dt><dd>streaming engine, default thread pool (10 threads); the timed call includes building and dispatching the query</dd>
 <dt>scipy</dt><dd>the classic frozen API, <code>norm(loc=…, scale=…)</code> then the method; samplers get a PCG64 <code>Generator</code>; one thread</dd>
-<dt>Regimes</dt><dd>plain numbers, one value per row, one-value expressions: three code paths on both sides, never compared across</dd>
-<dt>Not measured</dt><dd>scipy's newer API (1.3 to 1.9× faster than the frozen one on the Normal, column parameters); peak memory</dd>
+<dt>Regime</dt><dd>one parameter value per row, at 10k, 1M and 10M rows; plain numbers and one-value expressions are other code paths on both sides, not measured here</dd>
+<dt>Not measured</dt><dd>scipy's newer API (measured earlier on the Normal, column parameters: 1.3 to 1.9× faster than the frozen one); peak memory</dd>
 <dt>samples</dt><dd>in the column regime scipy draws <code>(draws, rows)</code> and transposes a view: optimistic for scipy by about one pass over the output</dd>
 <dt>Timing</dt><dd>median of up to 50 iterations within 10 s per cell (at least 3), after one warmup · ratio = scipy / polars-stats, above 1 means polars-stats is faster</dd>
 </dl>
 
-<p class="footnote">run on 3 October 2026</p>
+<p class="footnote">run on 3 November 2026</p>
 
 <!--
-One machine, my laptop: an M5 with ten cores, plugged in, other apps closed, but still a laptop. Release builds, medians of repeated timings. polars-stats on the streaming engine with ten threads, scipy on one thread. On the scipy side, the classic API most code out there uses; the newer one is 1.3 to 1.9 times faster. polars-stats pays for planning the query on every call. And three ways of passing parameters are three code paths, so I never compare across them.
+One machine, my laptop: an M5 with ten cores, plugged in, other apps closed, but still a laptop. Release builds, medians of repeated timings. polars-stats on the streaming engine with ten threads, scipy on one thread. On the scipy side, the classic API most code out there uses; the newer one is 1.3 to 1.9 times faster. polars-stats pays for planning the query on every call. And I measured one way of passing parameters, one value per row, the case polars-stats exists for; plain numbers and one-value expressions are different code paths on both sides.
 -->
 
 ---
@@ -1227,14 +1227,14 @@ eyebrow: 07 · Cost
 <img v-click="1" src="/bench-column-10k.svg" alt="Overlay: the 10k-row cells where scipy is ahead">
 </div>
 
-<p v-click="1" class="caption center">10k rows: scipy ahead on <code>sample</code>, up to 6.3×; polars-stats pays about 0.3 ms per call, whatever the distribution</p>
+<p v-click="1" class="caption center">10k rows: scipy ahead on <code>sample</code> for all but DiscreteUniform, up to 6.8×; polars-stats pays 0.3 to 0.45 ms a call</p>
 
 <p class="footnote">column regime only · DiscreteUniform: scipy's <code>randint</code> with per-row bounds runs <code>np.vectorize</code> · Bernoulli: NumPy <code>binomial(1, p)</code></p>
 
 <!--
-The per-row case, the reason polars-stats exists. Each dot is a distribution, on a log scale; right of the line, polars-stats is faster. At a million rows: one draw per row is 1.2 to 7.6 times faster than classic scipy, ten draws per row 4 to 19 times, scoring with sf 2.3 to 7.4 times. The two dots far to the right, discrete uniform and Bernoulli, go through slow paths in scipy. Don't quote those.
+The per-row case, the reason polars-stats exists. Each dot is a distribution, on a log scale; right of the line, polars-stats is faster. At a million rows: one draw per row is 1.6 to 8 times faster than classic scipy, ten draws per row 4.7 to 18 times, scoring with sf 2.3 to 8 times. The two dots far to the right, discrete uniform and Bernoulli, go through slow paths in scipy. Don't quote those.
 
-[click] At ten thousand rows scipy wins almost every sampling cell, by up to six times: polars-stats spends about a third of a millisecond planning and dispatching the query, whatever the distribution. Large frames amortise that; small frames pay it. And this is polars-stats plus Polars' thread pool, against classic scipy, on this laptop: what you get when you use it.
+[click] At ten thousand rows scipy wins every one-draw-per-row cell but one, by up to nearly seven times: polars-stats spends a third to almost half a millisecond planning and dispatching the query, whatever the distribution. Large frames amortise that; small frames pay it. And this is polars-stats plus Polars' thread pool, against classic scipy, on this laptop: what you get when you use it.
 -->
 
 ---
