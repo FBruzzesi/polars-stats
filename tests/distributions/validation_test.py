@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Binomial, DiscreteUniform
+from polars_stats import Binomial, DiscreteUniform, Uniform
 from tests._polars_compat import ENGINE_SELECTABLE, assert_series_equal
 from tests._registry import (
     ALL_SPECS,
@@ -169,6 +169,47 @@ def test_an_invalid_parameter_beside_a_null_sibling_still_raises(
     overrides[sibling] = None
     unreported = _unreported(spec, overrides, case)
     assert not unreported, f"{spec.name} did not report `{case.match}` beside a null `{sibling}`: {unreported}"
+
+
+_WITH_NULL_IN_ANOTHER_CHUNK = [
+    pytest.param(spec, case, bad.column, id=f"{spec.name}.{case.label}")
+    for spec, case in invalid_cases(ALL_SPECS)
+    if (bad := spec.blamed(case)) is not None
+]
+
+
+@pytest.mark.parametrize(("spec", "case", "slot"), _WITH_NULL_IN_ANOTHER_CHUNK)
+def test_an_invalid_parameter_in_a_later_chunk_raises_the_same_refusal(
+    spec: DistSpec, case: InvalidCase, slot: str
+) -> None:
+    """The column pass reads every chunk and names the invalid value, never a null slot's backing value.
+
+    The first chunk nulls the blamed parameter, whose backing `0.0` is out of every positive rule's domain; the
+    second holds the invalid row. Rechunked, one chunk with a validity bitmap carries both.
+    """
+    overrides: _Overrides = {p.column: bad for p, bad in zip(spec.parameters, case.params, strict=True)}
+    point = spec.on_support_point
+    invalid = _frame(spec, overrides, point)
+    chunked = pl.concat([_frame(spec, {slot: None}, point), invalid], rechunk=False)
+    assert chunked.n_chunks() > 1
+
+    for label, expr in _every_call(spec.build("name")):
+        expected = _Probe(label, invalid, expr).refusal()
+        got = [_Probe(label, frame, expr).refusal() for frame in (chunked, chunked.rechunk())]
+        assert expected is not None, f"{spec.name}.{label} computed on {case.label}"
+        assert got == [expected, expected], f"{spec.name}.{label}: {got} != {expected}"
+
+
+def test_a_pair_rule_reads_every_chunk_beside_a_broadcast_bound() -> None:
+    """A broadcast `min` arrives as one chunk; `max` here is two, with the inverted pair in the second.
+
+    `Uniform` only: `DiscreteUniform` re-checks its bounds per row, which hides a column pass that skips a chunk.
+    """
+    chunked = pl.concat([pl.DataFrame({"x": [0.5, 0.5], "hi": hi}) for hi in ([1.0, 2.0], [3.0, -1.0])], rechunk=False)
+    assert chunked.n_chunks() > 1
+
+    with pytest.raises(pl.exceptions.ComputeError, match=r"max must be .*, got min=0, max=-1"):
+        chunked.select(Uniform(min=pl.lit(0.0), max="hi").cdf(pl.col("x")))
 
 
 _SLOTS = [

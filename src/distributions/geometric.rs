@@ -4,7 +4,7 @@ use rand::distr::Distribution as RandDistribution;
 
 use crate::distributions::{
     expm1, ln_abs_expm1, on_unit_interval, validated_param, value_keyed_derived_binary,
-    value_keyed_scalar, ParamDomain, Sides,
+    value_keyed_scalar, ParamDomain, Rule, Sides,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row_binary,
@@ -14,8 +14,7 @@ use crate::rng::{
 /// Unlike `Bernoulli`, the degenerate `p = 0` point mass is not representable.
 const P: ParamDomain = ParamDomain {
     name: "p",
-    rule: "in (0, 1]",
-    accepts: |p| p.is_finite() && p > 0.0 && p <= 1.0,
+    rule: Rule::PositiveProbability,
 };
 
 /// `ln(1 - p)` as `ln_1p(-p)`: the literal `ln(1.0 - p)` inherits the rounding of `1 - p` and

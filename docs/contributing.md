@@ -193,12 +193,12 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           method that checks the constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the
           driver's constant branch makes.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
-      `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
-      constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its
-      parameter columns before its row loop, and every `<Name>Params::build` runs `check` once, so an invalid
-      parameter raises the same `ComputeError` in both regimes whatever else its row holds. Keep a
-      `build_dist(...) -> PolarsResult<Dist>` around the `statrs` constructor for the row loops; behind the pass it
-      cannot fail.
+      `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`; for any other rule, add a `Rule` variant)
+      and a joint constraint as a unit struct implementing `PairDomain` (`uniform.rs`'s `Bounds`). Every
+      column-parameter plugin runs `check_column` / `check_columns` over its parameter columns before its row loop,
+      and every `<Name>Params::build` runs `check` once, so an invalid parameter raises the same `ComputeError` in
+      both regimes whatever else its row holds. Keep a `build_dist(...) -> PolarsResult<Dist>` around the `statrs`
+      constructor for the row loops; behind the pass it cannot fail.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
    `DiscreteDistribution`. In `__init__`, coerce each parameter with `coerce_param` / `coerce_n` (types only, **never
    validate values** at construction, let invalid values raise in Rust) and store the fast-path bundle

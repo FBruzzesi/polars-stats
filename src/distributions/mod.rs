@@ -36,6 +36,8 @@ use std::borrow::Cow;
 
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
 use polars::prelude::*;
+use polars_arrow::array::Array as _;
+use polars_core::utils::align_chunks_binary;
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
@@ -103,48 +105,85 @@ pub(crate) fn coerce_f64(input: &Series) -> PolarsResult<Float64Chunked> {
 
 /// What one float parameter must satisfy on its own. Every rule spells finiteness because the
 /// `statrs` constructors do not (`Normal::new(0.0, f64::INFINITY)` is `Ok`).
+#[derive(Clone, Copy)]
+pub(crate) enum Rule {
+    Finite,
+    Positive,
+    Probability,
+    PositiveProbability,
+}
+
+impl Rule {
+    #[inline(always)]
+    fn accepts(self, x: f64) -> bool {
+        match self {
+            Self::Finite => x.is_finite(),
+            Self::Positive => x.is_finite() && x > 0.0,
+            Self::Probability => x.is_finite() && (0.0..=1.0).contains(&x),
+            Self::PositiveProbability => x.is_finite() && x > 0.0 && x <= 1.0,
+        }
+    }
+
+    /// Read as "`name` must be {describe}".
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Finite => "finite",
+            Self::Positive => "finite and strictly positive",
+            Self::Probability => "in [0, 1]",
+            Self::PositiveProbability => "in (0, 1]",
+        }
+    }
+}
+
 pub(crate) struct ParamDomain {
     pub(crate) name: &'static str,
-    /// Read as "`name` must be {rule}".
-    pub(crate) rule: &'static str,
-    pub(crate) accepts: fn(f64) -> bool,
+    pub(crate) rule: Rule,
 }
 
 impl ParamDomain {
     pub(crate) const fn finite(name: &'static str) -> Self {
         Self {
             name,
-            rule: "finite",
-            accepts: f64::is_finite,
+            rule: Rule::Finite,
         }
     }
 
     pub(crate) const fn positive(name: &'static str) -> Self {
         Self {
             name,
-            rule: "finite and strictly positive",
-            accepts: |x| x.is_finite() && x > 0.0,
+            rule: Rule::Positive,
         }
     }
 
     pub(crate) const fn probability(name: &'static str) -> Self {
         Self {
             name,
-            rule: "in [0, 1]",
-            accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
+            rule: Rule::Probability,
         }
     }
 
     pub(crate) fn check(&self, value: f64) -> PolarsResult<()> {
         polars_ensure!(
-            (self.accepts)(value),
-            ComputeError: "{} must be {}, got {}", self.name, self.rule, value
+            self.rule.accepts(value),
+            ComputeError: "{} must be {}, got {}", self.name, self.rule.describe(), value
         );
         Ok(())
     }
 
     /// Nulls are skipped: a missing parameter is a missing answer, not an invalid one.
     pub(crate) fn check_column(&self, column: &Float64Chunked) -> PolarsResult<()> {
+        // A constant rule per arm, so each fold gets its own inlined `accepts`.
+        let all_valid = match self.rule {
+            Rule::Finite => all_present_accepted(column, |x| Rule::Finite.accepts(x)),
+            Rule::Positive => all_present_accepted(column, |x| Rule::Positive.accepts(x)),
+            Rule::Probability => all_present_accepted(column, |x| Rule::Probability.accepts(x)),
+            Rule::PositiveProbability => {
+                all_present_accepted(column, |x| Rule::PositiveProbability.accepts(x))
+            },
+        };
+        if all_valid {
+            return Ok(());
+        }
         column
             .iter()
             .flatten()
@@ -152,34 +191,65 @@ impl ParamDomain {
     }
 }
 
-/// What two parameters must satisfy together, checked only where both are present.
-pub(crate) struct PairDomain<N> {
-    pub(crate) names: (&'static str, &'static str),
-    /// Read as "`names.1` must be {rule}".
-    pub(crate) rule: &'static str,
-    pub(crate) accepts: fn(N, N) -> bool,
+/// Whether every non-null value of `column` passes. A null slot's backing value is unspecified (in
+/// practice `0.0`), so the validity bitmap masks it out.
+fn all_present_accepted(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
+    // `fold` with `&`, not `all`: without an early exit the loop vectorises.
+    column.downcast_iter().all(|chunk| {
+        let values = chunk.values().iter();
+        match chunk.validity() {
+            Some(validity) if validity.unset_bits() > 0 => values
+                .zip(validity)
+                .fold(true, |ok, (&v, present)| ok & (!present | accepts(v))),
+            _ => values.fold(true, |ok, &v| ok & accepts(v)),
+        }
+    })
 }
 
-impl<N: Copy + std::fmt::Display> PairDomain<N> {
-    pub(crate) fn check(&self, a: N, b: N) -> PolarsResult<()> {
-        let (a_name, b_name) = self.names;
+/// What two parameters must satisfy together, checked only where both are present. Implemented by
+/// one unit struct per joint rule, so the column pass is monomorphised over `accepts`.
+pub(crate) trait PairDomain {
+    type Native: NumericNative;
+    const NAMES: (&'static str, &'static str);
+    /// Read as "`NAMES.1` must be {DESCRIPTION}".
+    const DESCRIPTION: &'static str;
+
+    fn accepts(a: Self::Native, b: Self::Native) -> bool;
+
+    fn check(a: Self::Native, b: Self::Native) -> PolarsResult<()> {
+        let (a_name, b_name) = Self::NAMES;
         polars_ensure!(
-            (self.accepts)(a, b),
-            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, self.rule, a_name, a, b_name, b
+            Self::accepts(a, b),
+            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, Self::DESCRIPTION, a_name, a, b_name, b
         );
         Ok(())
     }
 
-    pub(crate) fn check_columns<T>(
-        &self,
-        a: &ChunkedArray<T>,
-        b: &ChunkedArray<T>,
-    ) -> PolarsResult<()>
+    /// `a` and `b` must have one length; their chunk layouts may differ.
+    fn check_columns<T>(a: &ChunkedArray<T>, b: &ChunkedArray<T>) -> PolarsResult<()>
     where
-        T: PolarsNumericType<Native = N>,
+        T: PolarsNumericType<Native = Self::Native>,
     {
+        let (a_aligned, b_aligned) = align_chunks_binary(a, b);
+        let all_valid = a_aligned
+            .downcast_iter()
+            .zip(b_aligned.downcast_iter())
+            .all(|(a_chunk, b_chunk)| {
+                if a_chunk.null_count() == 0 && b_chunk.null_count() == 0 {
+                    let pairs = a_chunk.values().iter().zip(b_chunk.values().iter());
+                    pairs.fold(true, |ok, (&a, &b)| ok & Self::accepts(a, b))
+                } else {
+                    a_chunk.iter().zip(b_chunk.iter()).all(|pair| match pair {
+                        (Some(&a), Some(&b)) => Self::accepts(a, b),
+                        _ => true,
+                    })
+                }
+            });
+        if all_valid {
+            return Ok(());
+        }
         a.iter().zip(b.iter()).try_for_each(|pair| match pair {
-            (Some(a), Some(b)) => self.check(a, b),
+            (Some(a), Some(b)) => Self::check(a, b),
             _ => Ok(()),
         })
     }
