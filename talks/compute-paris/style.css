@@ -1,596 +1,752 @@
-:root {
-  --interstellar: #211c4f;
-  --oxygen: #9df249;
-  --slidev-theme-primary: #211c4f;
+/* Visual language: Milky Way paper, Interstellar ink, Galaxy accent,
+   Oxygen for what just changed, dark code windows, an eyebrow over every title. 1280 × 720 canvas. */
+
+@font-face {
+  font-family: Inter;
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
 }
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+
+:root {
+  --oxygen: #9df249;
+  --galaxy: #4651cc;
+  --interstellar: #201a38;
+  --milky-way: #f8f8ff;
+  --oxygen-light: #d1faa8;
+  --galaxy-light: #789aff;
+  --interstellar-light: #ccccff;
+  --grey: #51677a;
+  --negative: #c8102e;
+  --negative-light: #fccfd6;
+  --font-body: Inter, "Helvetica Neue", Arial, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --radius: 12px;
+}
+
+/* Slide tokens: the light default, then the dark section and cover, then the Oxygen statement. */
 
 .slidev-layout {
-  background: #ffffff;
-  color: var(--interstellar);
-}
+  --paper: var(--milky-way);
+  --ink: var(--interstellar);
+  --accent: var(--galaxy);
+  --muted: var(--grey);
+  --rule: var(--interstellar-light);
+  --tint: color-mix(in srgb, var(--interstellar-light) 34%, var(--milky-way));
 
-.slidev-layout h1 {
-  color: var(--interstellar);
-}
-
-.slidev-layout.cover,
-.slidev-layout.section,
-.slidev-layout.statement,
-.slidev-layout.fact,
-.slidev-layout.end {
-  background: var(--interstellar);
-  color: #ffffff;
-}
-
-.slidev-layout.cover h1,
-.slidev-layout.section h1,
-.slidev-layout.statement h1,
-.slidev-layout.fact h1,
-.slidev-layout.end h1 {
-  color: var(--oxygen);
-}
-
-.slidev-layout.cover p,
-.slidev-layout.section p,
-.slidev-layout.statement p {
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.slidev-layout a {
-  color: var(--interstellar);
-  border-bottom: 2px solid var(--oxygen);
-  text-decoration: none;
-}
-
-.slidev-layout.end a,
-.slidev-layout.statement a {
-  color: #ffffff;
-}
-
-.ox {
-  color: var(--interstellar);
-  background: var(--oxygen);
-  padding: 0 0.25em;
-  border-radius: 0.15em;
-  font-weight: 600;
-}
-
-.slidev-layout.statement .ox,
-.slidev-layout.section .ox {
-  color: var(--interstellar);
-}
-
-.big {
-  font-size: 3.5rem;
-  font-weight: 700;
-  line-height: 1.1;
-  color: var(--oxygen);
-}
-
-.muted {
-  opacity: 0.6;
-}
-
-.slidev-layout table {
-  font-size: 0.85em;
-}
-
-.slidev-layout th {
-  color: var(--interstellar);
-  border-bottom: 2px solid var(--oxygen);
-}
-
-.slidev-layout td,
-.slidev-layout th {
-  padding: 0.25em 0.8em;
-}
-
-.disclaimer {
-  border-left: 6px solid var(--oxygen);
-  padding: 0.4em 0.9em;
-  font-size: 0.85em;
-  background: rgba(33, 28, 79, 0.05);
-}
-
-.slidev-layout .slidev-code {
-  font-size: 14px;
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 52px 80px 96px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 24px;
   line-height: 1.45;
 }
 
-.slidev-layout.cover .slidev-code,
-.slidev-layout.section .slidev-code {
-  background: rgba(255, 255, 255, 0.08);
+.slidev-layout.section,
+.slidev-layout.cover {
+  --paper: var(--interstellar);
+  --ink: var(--milky-way);
+  --accent: var(--oxygen);
+  --muted: var(--interstellar-light);
+  --rule: var(--galaxy);
+  --tint: color-mix(in srgb, var(--galaxy) 30%, var(--interstellar));
 }
 
-.slidev-layout.cover code,
-.slidev-layout.section code,
-.slidev-layout.statement code {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--oxygen);
+.slidev-layout.statement {
+  --paper: var(--oxygen);
+  --ink: var(--interstellar);
+  --accent: var(--interstellar);
+  --muted: var(--interstellar);
+  --rule: var(--interstellar);
 }
 
-.slidev-layout.section a {
-  color: #ffffff;
-}
-
-.slidev-layout.statement h1 {
-  line-height: 1.2;
-}
-
-.slidev-layout.statement h1 .ox {
-  background: none;
-  color: #ffffff;
-  padding: 0;
-}
-
-.slidev-layout.statement h1 + p,
-.slidev-layout.section h1 + p {
-  opacity: 1;
-}
-
-.slidev-layout.two-cols-header h3 {
-  color: var(--interstellar);
-  margin-bottom: 0.3em;
-}
-
-.footnote {
-  margin-top: 0.8rem;
-  font-size: 0.7rem;
-  opacity: 0.6;
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.8rem;
-  text-align: left;
-}
-
-.stack .giant {
-  background: var(--interstellar);
-  color: #ffffff;
-  border-radius: 0.4rem;
-  padding: 0.45rem 1.1rem;
-  font-size: 0.9rem;
-}
-
-.stack .giant b {
-  color: var(--oxygen);
-  font-size: 1.15rem;
-  margin-right: 0.6rem;
-}
-
-.stack .mine {
-  border: 3px solid var(--oxygen);
-  border-radius: 0.4rem;
-  padding: 0.35rem 1.1rem;
-  font-size: 0.9rem;
-}
-
-.stack .mine b {
-  display: block;
-}
-
-.stack .mine div {
-  margin: 0.1rem 0;
-}
-
-.stack .grown {
-  border: 3px dashed var(--oxygen);
-  border-radius: 0.3rem;
-  padding: 0.1rem 0.5rem;
-  margin-left: 0.6rem;
-}
-
-.slidev-layout.section .stack .giant {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.slidev-layout.section .stack .mine {
-  color: #ffffff;
-}
-
-.slidev-layout.section.divider h1 {
-  font-size: 2rem;
-  line-height: 1.2;
-}
-
-.slidev-layout td.flag {
-  background: var(--oxygen);
-  font-weight: 600;
-}
-
-.slidev-layout table.dense {
-  font-size: 0.7rem;
-}
-
-.slidev-layout table.dense td,
-.slidev-layout table.dense th {
-  padding: 0.05em 0.6em;
-}
-
-.stack .giant code {
-  background: rgba(255, 255, 255, 0.15);
-  color: #ffffff;
-}
-
-.slidev-layout.dense h1 {
-  font-size: 1.8rem;
-  line-height: 1.2;
-  margin-bottom: 0.5rem;
-}
-
-.slidev-layout.dense .disclaimer {
-  line-height: 1.4;
-  padding: 0.3em 0.8em;
-}
-
-/* Deck base: theme "none" ships no layout styles, so padding, headings and tables start here. */
-
-:root {
-  --alarm: #c8102e;
-  --fs-lead: 1.3rem;
-  --fs-small: 0.9rem;
-  --fs-table: 0.85rem;
-  --fs-reveal: 3rem;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-
-.slidev-layout {
-  height: 100%;
-  padding: 2.5rem 3.5rem;
-  font-size: 1.1rem;
-  font-family: system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+.slidev-layout > * {
+  flex: none;
+  margin: 0;
 }
 
 .slidev-layout h1 {
-  font-size: 2.25rem;
-  line-height: 1.15;
-  margin: 0 0 1rem -0.05em;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.slidev-layout .eyebrow {
+  margin-bottom: -10px;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .slidev-layout h3 {
-  font-size: var(--fs-small);
-  font-weight: 700;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.slidev-layout p,
+.slidev-layout ul {
+  margin: 0;
 }
 
 .slidev-layout b,
 .slidev-layout strong {
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .slidev-layout code {
-  font-family: var(--mono);
+  font-family: var(--font-code);
+  font-size: 0.86em;
 }
 
-.slidev-layout p {
-  margin: 0.5rem 0;
+.slidev-layout :not(pre) > code {
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+  background: var(--tint);
 }
 
-.slidev-layout ul {
-  list-style: square;
-}
-
-.slidev-layout li {
-  line-height: 1.8em;
-  margin-left: 1.1em;
-  padding-left: 0.2em;
-}
-
-.slidev-layout table {
-  width: 100%;
-  font-size: var(--fs-table);
-}
-
-.slidev-layout tr {
-  border-bottom: 1px solid rgba(33, 28, 79, 0.15);
-}
-
-.slidev-layout th {
-  text-align: left;
+.slidev-layout h1 code {
+  padding: 0;
+  background: none;
+  color: var(--accent);
   font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
-/* Page layouts: covers and dividers centred vertically, content slides centred under a fixed title. */
+.slidev-layout a {
+  color: inherit;
+  text-underline-offset: 5px;
+  text-decoration-thickness: 1px;
+}
 
-.slidev-layout.cover,
-.slidev-layout.section,
-.slidev-layout.statement {
-  display: grid;
-  align-content: center;
+/* Footer, page number and progress bar, from the layout. */
+
+.deck-footer {
+  position: absolute;
+  left: 80px;
+  right: 80px;
+  bottom: 22px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.deck-footer .page {
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  background: var(--rule);
+}
+
+.deck-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.slidev-layout .footnote {
+  position: absolute;
+  left: 80px;
+  right: 80px;
+  bottom: 56px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+/* Cover, section divider and statement. */
+
+.slidev-layout.cover {
+  justify-content: center;
 }
 
 .slidev-layout.cover h1 {
-  font-size: 2.8rem;
+  font-size: 56px;
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  border: none;
+  padding: 0;
+}
+
+.slidev-layout.cover .byline {
+  margin-top: 16px;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.slidev-layout.cover .byline,
+.slidev-layout.cover .tagline {
+  max-width: 560px;
+}
+
+.slidev-layout.cover .tagline {
+  color: var(--muted);
+  font-size: 22px;
+}
+
+.slidev-layout.cover .cover-bell {
+  position: absolute;
+  right: 60px;
+  bottom: 56px;
+  width: 460px;
+}
+
+.slidev-layout.cover .deck-footer,
+.slidev-layout.cover .deck-progress {
+  display: none;
+}
+
+.slidev-layout.section {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.slidev-layout.section .eyebrow {
+  margin-bottom: 4px;
+}
+
+.slidev-layout.section h1 {
+  max-width: 1040px;
+  font-size: 64px;
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  border: none;
+  padding: 0;
+}
+
+.slidev-layout.section .subtitle {
+  max-width: 900px;
+  color: var(--muted);
+  font-size: 28px;
 }
 
 .slidev-layout.statement {
-  text-align: center;
+  justify-content: center;
 }
 
 .slidev-layout.statement h1 {
-  font-size: 2.1rem;
+  font-size: 56px;
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  border: none;
 }
 
-.slidev-layout.default {
-  display: flex;
-  flex-direction: column;
+.slidev-layout.statement h1.lines span {
+  display: block;
 }
 
-.slidev-layout.default > * {
-  flex: none;
+/* Code windows: a dark panel with a file name and a language label, as in the template. */
+
+.window {
+  position: relative;
+  min-width: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--interstellar);
 }
 
-.slidev-layout.default h1 {
-  font-size: 1.75rem;
-  line-height: 1.2;
-  margin-bottom: 0.7rem;
+.window::before {
+  content: attr(data-file);
+  display: block;
+  height: 38px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--galaxy);
+  color: var(--interstellar-light);
+  font-size: 15px;
+  line-height: 38px;
 }
 
-/* Text sizes: body 1.1rem, lead, small, table, footnote. */
-
-.lead,
-.slidev-layout .predict,
-.slidev-layout .answer {
-  font-size: var(--fs-lead);
-  text-align: center;
+.window::after {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0;
+  right: 24px;
+  color: var(--oxygen);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 38px;
 }
 
-.slidev-layout .predict {
+.slidev-layout .slidev-code-wrapper {
+  margin: 0 !important;
+}
+
+.slidev-layout .slidev-code,
+.slidev-layout pre.shiki {
+  margin: 0 !important;
+  padding: 18px 24px !important;
+  border-radius: 0 !important;
+  background: var(--interstellar) !important;
+  font-family: var(--font-code);
+  font-size: 18px !important;
+  line-height: 1.55 !important;
+}
+
+.slidev-layout .slidev-code code,
+.slidev-layout pre.shiki code {
+  font-size: inherit;
+}
+
+.small-code .slidev-code,
+.small-code pre.shiki {
+  font-size: 16px !important;
+}
+
+.slidev-layout .slidev-code .highlighted,
+.slidev-layout .slidev-code .line {
+  transition: opacity 0.3s;
+}
+
+/* Grids. */
+
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  align-items: start;
+}
+
+.cols.wide-left {
+  grid-template-columns: 1.55fr 1fr;
+}
+
+.cols.wide-right {
+  grid-template-columns: 1fr 1.3fr;
+}
+
+.cols.anatomy {
+  grid-template-columns: 0.75fr 1.25fr;
+}
+
+.cols.plan {
+  grid-template-columns: 1.15fr 0.85fr;
+}
+
+.cols.frame-left {
+  grid-template-columns: auto 1fr;
+}
+
+.cols.middle {
+  align-items: center;
+}
+
+.trio {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+}
+
+/* Text blocks. */
+
+.points {
+  display: grid;
+  gap: 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.points li {
+  padding-left: 18px;
+  border-left: 4px solid var(--rule);
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.points li b {
+  display: block;
+}
+
+.slidev-layout .callout {
+  align-self: flex-start;
+  padding: 10px 20px;
+  border-radius: 8px;
+  background: var(--oxygen);
+  color: var(--interstellar);
+  font-size: 22px;
   font-weight: 600;
 }
 
 .slidev-layout .caption {
-  font-size: var(--fs-small);
-  text-align: center;
+  color: var(--muted);
+  font-size: 20px;
 }
 
-.slidev-layout .center {
-  text-align: center;
-}
-
-.alarm,
-.slidev-layout code.alarm {
-  color: var(--alarm);
-  font-weight: 700;
-}
-
-.callout {
-  background: var(--oxygen);
-  color: var(--interstellar);
+.slidev-layout .predict {
+  font-size: 28px;
   font-weight: 600;
-  padding: 0.2rem 0.8rem;
-  border-radius: 0.3rem;
 }
 
-.pair {
+.slidev-layout .answer {
+  font-size: 28px;
+}
+
+.alarm {
+  color: var(--negative);
+}
+
+.center {
+  align-self: center;
+  text-align: center;
+}
+
+.cards {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 1.5rem;
-  align-items: center;
+  gap: 16px;
 }
 
-.pair.even {
-  grid-template-columns: 1fr 1fr;
-  align-items: start;
+.card {
+  padding: 14px 20px;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 20px;
+  line-height: 1.35;
 }
 
-.pair.wide-left {
-  grid-template-columns: 1fr auto;
+.card b {
+  display: block;
+  font-size: 22px;
 }
 
-.slidev-layout .quote {
-  border-left: 4px solid var(--interstellar);
-  background: rgba(33, 28, 79, 0.05);
-  padding: 0.5rem 0.9rem;
-  line-height: 1.5;
+.card.move {
+  border-left-color: var(--oxygen);
+  background: color-mix(in srgb, var(--oxygen-light) 45%, #fff);
+}
+
+.card.bad {
+  border-left-color: var(--negative);
+}
+
+.card.ok {
+  border-left-color: var(--oxygen);
 }
 
 /* The running sensor frame. */
 
-.slidev-layout table.frame {
-  width: auto;
+/* Separate borders belong to their cells, so a ghost column hides its own rules too. */
+table.frame {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 19px;
 }
 
-.slidev-layout table.frame td,
-.slidev-layout table.frame th {
-  white-space: nowrap;
-  padding: 0.15em 0.7em;
-}
-
-.slidev-layout table.frame td + td,
-.slidev-layout table.frame th + th {
+table.frame th {
+  padding: 6px 16px;
+  background: var(--galaxy);
+  color: var(--milky-way);
+  font-family: var(--font-code);
+  font-size: 16px;
+  font-weight: 600;
   text-align: right;
+}
+
+table.frame td {
+  padding: 5px 16px;
+  border-bottom: 1px solid var(--rule);
+  text-align: right;
+}
+
+table.frame th:first-child,
+table.frame td:first-child {
+  text-align: left;
+}
+
+table.frame th.fresh {
+  background: var(--oxygen);
+  color: var(--interstellar);
+}
+
+table.frame td.fresh {
+  background: color-mix(in srgb, var(--oxygen-light) 55%, transparent);
+}
+
+table.frame td.flag {
+  background: var(--oxygen);
+  font-weight: 700;
+}
+
+table.frame th,
+table.frame td {
+  transition: opacity 0.4s, background 0.4s;
+}
+
+table.frame .ghost {
+  opacity: 0;
+}
+
+/* Small tables: scipy's vocabulary, the null contract, the dice, the benchmark conditions. */
+
+table.plain {
+  border-collapse: collapse;
+  font-size: 19px;
+}
+
+table.plain th {
+  padding: 6px 14px;
+  border-bottom: 3px solid var(--accent);
+  font-family: var(--font-code);
+  font-size: 17px;
+  text-align: left;
+}
+
+table.plain td {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+table.dice tr.cut td {
+  border-top: 3px dashed var(--galaxy);
+}
+
+/* Big numbers. */
+
+.stat {
+  color: var(--accent);
+  font-size: 104px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
 }
 
-.slidev-layout table.frame th {
-  font-family: var(--mono);
+.stat.alarm {
+  color: var(--negative);
 }
 
-.slidev-layout table.frame th.new {
-  background: var(--oxygen);
+.stat.mid {
+  font-size: 80px;
+  line-height: 104px;
 }
 
-.slidev-layout table.frame td.todo {
-  font-style: italic;
-  opacity: 0.6;
+.stat.word {
+  font-family: var(--font-code);
+  font-size: 44px;
+  letter-spacing: -0.02em;
+  line-height: 104px;
 }
 
-.slidev-layout table.dice tr.cut td {
-  border-top: 2px dashed var(--interstellar);
+.stat-label {
+  margin-top: 12px !important;
+  font-weight: 600;
 }
 
-.bells {
-  width: 100%;
+.stat-detail {
+  margin-top: 6px !important;
+  color: var(--muted);
+  font-size: 19px;
+}
+
+.reveal {
+  align-self: center;
+  font-family: var(--font-code);
+  font-size: 150px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 /* The stack: Polars on top, the polars-stats strip, statrs underneath, scipy beside. */
 
-.spine {
+.stack {
   display: grid;
-  grid-template-columns: 1fr 13rem;
-  gap: 1rem;
+  grid-template-columns: 1fr 240px;
+  gap: 20px;
   align-items: center;
 }
 
-.spine .stack {
-  margin-top: 0;
-}
-
-.slot {
-  border: 2px dashed rgba(33, 28, 79, 0.35);
-  border-radius: 0.5rem;
-  padding: 0.6rem 1rem 0.8rem;
-}
-
-.slot .slot-label {
-  font-size: var(--fs-small);
-  font-style: italic;
-  opacity: 0.7;
-  margin: 0 0 0.4rem;
-}
-
-.slot table.frame {
-  margin: 0 auto;
+.stack-main {
+  display: grid;
+  gap: 12px;
 }
 
 .stack .giant,
-.stack .mine {
-  position: relative;
+.stack .side {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 18px 26px;
+  border-radius: var(--radius);
+  background: var(--interstellar);
+  color: var(--milky-way);
+  font-size: 20px;
 }
 
-.stack.side .giant {
-  background: #ffffff;
+.stack .giant b,
+.stack .side b {
+  color: var(--oxygen);
+  font-size: 28px;
+}
+
+.stack .side {
+  flex-direction: column;
+  gap: 4px;
+  background: transparent;
   color: var(--interstellar);
   border: 3px solid var(--interstellar);
 }
 
-.stack.side .giant b {
-  display: block;
-  color: var(--interstellar);
+.stack .side b {
+  color: var(--galaxy);
 }
 
-.stack .detail {
-  display: block;
-  font-size: 0.8rem;
-  margin-top: 0.2rem;
+.stack .strip {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 14px 26px;
+  border: 3px solid var(--oxygen);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.stack .strip b {
+  font-size: 24px;
 }
 
 .stack .pins {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.25rem;
+  gap: 10px;
 }
 
-.stack .pins .grown {
-  margin-left: 0;
+.stack .pin {
+  min-width: 52px;
+  padding: 4px 14px;
+  border: 2px dashed var(--grey);
+  border-radius: 999px;
+  color: var(--grey);
+  font-size: 18px;
   font-weight: 600;
-}
-
-.stack.mini {
-  width: 24rem;
-}
-
-.stack .belief {
-  position: absolute;
-  right: 0.8rem;
-  top: 50%;
-  transform: translateY(-50%);
-  border: 2px dashed currentColor;
-  border-radius: 1rem;
-  padding: 0.05rem 0.7rem;
-  font-size: 0.8rem;
-  font-style: italic;
-}
-
-/* Beat-specific pictures. */
-
-.slidev-layout table.vocab td,
-.slidev-layout table.vocab th {
-  padding: 0.25em 0.6em;
-}
-
-.tags {
-  display: flex;
-  justify-content: center;
-  gap: 0.6rem;
-}
-
-.tag {
-  border: 2px solid var(--interstellar);
-  border-radius: 1rem;
-  padding: 0.05rem 0.8rem;
-  font-size: var(--fs-small);
-  font-weight: 600;
-}
-
-.reveal {
-  font-size: 6rem;
-  font-weight: 700;
-  line-height: 1.1;
   text-align: center;
-  font-family: var(--mono);
 }
+
+.stack .pin.on {
+  border: 2px solid var(--galaxy);
+  color: var(--galaxy);
+}
+
+.stack .pin.latest {
+  border-color: var(--interstellar);
+  background: var(--oxygen);
+  color: var(--interstellar);
+}
+
+/* The mini stack sits beside the eyebrow, as the template's framework tracker does. */
+.stack.mini {
+  display: block;
+  position: absolute;
+  top: 40px;
+  right: 80px;
+}
+
+.stack.mini .strip {
+  padding: 4px 6px 4px 14px;
+  gap: 12px;
+  border-width: 2px;
+}
+
+.stack.mini .strip b {
+  font-size: 15px;
+}
+
+.stack.mini .pins {
+  gap: 6px;
+}
+
+.stack.mini .pin {
+  min-width: 30px;
+  padding: 1px 10px;
+  font-size: 14px;
+}
+
+/* Beat pictures. */
 
 .formula {
-  padding: 0.5rem 0.8rem;
-  margin: 0.5rem 0;
-  background: rgba(33, 28, 79, 0.05);
-  border-radius: 0.4rem;
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 6px 24px;
+  border-radius: var(--radius);
+  background: var(--tint);
 }
 
-.formula .note {
-  display: block;
-  font-size: var(--fs-small);
+.formula .katex-display {
+  margin: 0;
 }
 
-.attempt {
-  border-left: 4px solid rgba(33, 28, 79, 0.25);
-  padding: 0.2rem 0.7rem;
-  margin: 0.5rem 0;
-  font-size: var(--fs-small);
+.formula .katex {
+  font-size: 1.25em;
 }
 
-.attempt.move {
-  border-left-color: var(--oxygen);
-  background: rgba(157, 242, 73, 0.15);
+.formula p {
+  margin: 0;
 }
 
-.layer-label {
-  font-size: var(--fs-small);
-  font-weight: 700;
-  opacity: 0.75;
+.formula .pill {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--negative-light);
+  color: var(--negative);
+  font-size: 18px;
+  font-weight: 600;
+  vertical-align: middle;
 }
 
-.slidev-layout .promise {
-  border-left: 4px solid var(--oxygen);
-  padding-left: 0.6rem;
-}
-
-.plan {
-  position: relative;
-}
-
-.plan .callout {
-  position: absolute;
-  right: 0.8rem;
-  bottom: 0.6rem;
+.formula .pill.ok {
+  background: var(--oxygen-light);
+  color: var(--interstellar);
 }
 
 .pieces {
   display: grid;
-  gap: 0.6rem;
+  gap: 14px;
 }
 
 .pieces .lane {
   display: grid;
-  grid-template-columns: 10rem 1fr;
+  grid-template-columns: 150px 1fr;
   align-items: center;
-  gap: 0.8rem;
-  font-size: var(--fs-small);
+  gap: 14px;
+  font-size: 18px;
 }
 
 .pieces .bar {
@@ -601,149 +757,94 @@
 .pieces .piece {
   position: relative;
   flex: 1;
-  height: 2.2rem;
-  background: rgba(33, 28, 79, 0.1);
-  border-radius: 0.3rem;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--tint);
 }
 
+/* The restart badges stay hidden until the answer, so the picture does not give it away. */
 .pieces .lane:not(.whole) .piece::before {
   content: "↺ 42";
+  opacity: 0;
+  transition: opacity 0.4s;
   position: absolute;
-  left: 0.3rem;
+  left: 6px;
   top: 50%;
   transform: translateY(-50%);
+  padding: 1px 8px;
+  border-radius: 999px;
   background: var(--interstellar);
-  color: #ffffff;
-  font-size: 0.75rem;
+  color: var(--milky-way);
+  font-size: 13px;
   font-weight: 600;
-  padding: 0.05rem 0.45rem;
-  border-radius: 1rem;
+}
+
+.pieces.restart .lane:not(.whole) .piece::before {
+  opacity: 1;
 }
 
 .pieces .whole .piece {
-  background: rgba(33, 28, 79, 0.25);
+  background: var(--interstellar-light);
 }
 
-.bill p {
-  margin: 0.3rem 0;
-}
-
-.aside {
-  display: flex;
-  gap: 1rem;
-  font-size: var(--fs-small);
-}
-
-.aside div {
-  border-left: 4px solid rgba(33, 28, 79, 0.25);
-  padding: 0.2rem 0.7rem;
-}
-
-.slidev-layout .today {
-  border-left: 4px solid var(--oxygen);
-  padding-left: 0.7rem;
-}
-
-.ways {
+/* The is_elementwise flag above the plan: Oxygen while the promise holds, red when it is withdrawn. */
+.plan-col {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.8rem;
+  gap: 12px;
 }
 
-.way {
-  border: 2px solid;
-  border-radius: 0.5rem;
-  padding: 0.5rem 0.8rem;
+.slidev-layout .promise {
+  justify-self: start;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 20px;
+  font-weight: 600;
+  transition: background 0.3s, color 0.3s;
 }
 
-.way.ok {
-  border-color: var(--oxygen);
-  background: rgba(157, 242, 73, 0.15);
+.slidev-layout .promise code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
 }
 
-.way.bad {
-  border-color: var(--alarm);
+.slidev-layout .promise.on {
+  background: var(--oxygen);
+  color: var(--interstellar);
 }
 
-.way span {
-  display: block;
-  font-size: var(--fs-small);
-  margin-top: 0.2rem;
-}
-
-.tiles {
-  display: flex;
-  justify-content: center;
-  gap: 1.5rem;
-  margin: 0.8rem 0;
-}
-
-.tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 9rem;
-  padding: 0.6rem 1.6rem;
-  border: 2px solid rgba(33, 28, 79, 0.15);
-  border-radius: 0.6rem;
-}
-
-.tile .label {
-  font-size: var(--fs-small);
-  opacity: 0.7;
-}
-
-.tile .num {
-  font-size: var(--fs-reveal);
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.tile .num.word {
-  font-family: var(--mono);
-  font-size: 1.6rem;
-  line-height: 2.2;
-}
-
-.steps {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.8rem;
-}
-
-.steps div {
-  border-top: 4px solid var(--oxygen);
-  padding-top: 0.4rem;
-  font-size: var(--fs-small);
+.slidev-layout .promise.off {
+  background: var(--negative);
+  color: var(--milky-way);
 }
 
 .rulers {
   display: grid;
-  gap: 0.4rem;
+  gap: 14px;
 }
 
 .ruler {
   display: grid;
-  grid-template-columns: 11rem 1fr;
+  grid-template-columns: 280px 1fr;
   align-items: center;
-  gap: 0.6rem;
-  font-size: var(--fs-small);
+  gap: 16px;
+  font-size: 20px;
 }
 
 .ruler .track {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 12px;
 }
 
 .ruler .bar {
-  height: 0.6rem;
-  border-radius: 0.3rem;
+  height: 14px;
+  border-radius: 7px;
   background: var(--interstellar);
 }
 
 .ruler .bar.short {
-  width: 40%;
+  width: 38%;
 }
 
 .ruler .bar.long {
@@ -753,58 +854,63 @@
 
 .derive {
   display: grid;
-  gap: 0.35rem;
+  gap: 10px;
+  font-size: 26px;
 }
 
 .derive div {
   display: grid;
-  grid-template-columns: 9rem 1fr;
+  grid-template-columns: 220px 1fr;
   align-items: baseline;
 }
 
 .derive span {
-  font-size: var(--fs-small);
-  opacity: 0.7;
+  color: var(--muted);
+  font-size: 20px;
 }
 
-.cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
+/* The report, then the fix beside it and a step lower. */
+.shots {
+  position: relative;
+  height: 476px;
 }
 
-.cards h3 {
-  border-bottom: 3px solid var(--oxygen);
-  margin-bottom: 0.4rem;
+.shots figure {
+  position: absolute;
+  top: 0;
+  margin: 0;
 }
 
-.card {
-  border: 1px solid rgba(33, 28, 79, 0.2);
-  border-radius: 0.4rem;
-  padding: 0.3rem 0.6rem;
-  margin: 0.35rem 0;
-  font-size: var(--fs-small);
+.shots .shot-issue {
+  left: 0;
+  width: 520px;
 }
 
-.cards .note {
-  font-size: 0.8rem;
-  opacity: 0.7;
+.shots .shot-pr {
+  top: 40px;
+  right: 0;
+  width: 600px;
 }
 
-.cards.giants {
-  margin-bottom: 1.2rem;
+.shots img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(32, 26, 56, 0.22);
 }
 
-.conditions p {
-  margin: 0.25rem 0;
-}
-
-.conditions b {
-  margin-right: 0.4rem;
+.shots figcaption {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 17px;
 }
 
 .chart {
   position: relative;
+  align-self: center;
+  width: 900px;
 }
 
 .chart img {
@@ -817,71 +923,90 @@
   inset: 0;
 }
 
-.annot {
-  font-size: 0.8rem;
-  line-height: 1.4;
+/* A rubber stamp laid across the disclaimer slide. */
+.stamp {
+  position: absolute;
+  top: 300px;
+  left: 50%;
+  z-index: 10;
+  transform: translate(-50%, -50%) rotate(-16deg);
+  padding: 10px 44px;
+  border: 8px double var(--negative);
+  border-radius: 14px;
+  color: var(--negative);
+  font-size: 96px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.82;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.conditions {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 8px 24px;
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.conditions dt {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+
+.conditions dd {
+  margin: 0;
+}
+
+.quote {
+  padding: 24px 32px;
+  border-left: 6px solid var(--oxygen);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--tint);
+  font-size: 30px;
+  line-height: 1.35;
+}
+
+.links {
+  display: grid;
+  grid-template-columns: 1fr 250px 250px;
+  gap: 40px;
+  align-items: center;
+  margin-top: 40px;
+}
+
+.links p {
+  font-size: 22px;
+}
+
+.links p + p {
+  margin-top: 12px;
+}
+
+.links .install {
+  margin-bottom: 20px;
+  font-size: 30px;
+}
+
+.qr {
+  margin: 0;
   text-align: center;
 }
 
-.annot p {
-  margin: 0.15rem 0;
+.qr img {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
 }
 
-.slidev-layout.default > * {
-  margin-top: 0;
-  margin-bottom: 0;
-}
-
-.slidev-layout.default > * + * {
-  margin-top: 0.9rem;
-}
-
-/* Centring inside content slides: the body sits in the middle of the space under the title, a last
-   footnote pins to the bottom, and figures centre horizontally while prose and code keep full width. */
-
-.slidev-layout.default > h1 + * {
-  margin-top: auto;
-}
-
-.slidev-layout.default > :last-child,
-.slidev-layout.default > :has(+ .footnote:last-child) {
-  margin-bottom: auto;
-}
-
-.slidev-layout.default > .footnote:last-child {
-  margin-bottom: 0;
-}
-
-.slidev-layout.default > table.frame,
-.slidev-layout.default > table.compare,
-.slidev-layout.default > .callout,
-.slidev-layout.default > .stack.mini {
-  align-self: center;
-}
-
-/* Slidev pins code-block margins with !important; match it so code follows the same rhythm and centring. */
-
-.slidev-layout.default > .slidev-code-wrapper {
-  margin: 0 !important;
-}
-
-.slidev-layout.default > * + .slidev-code-wrapper {
-  margin-top: 0.9rem !important;
-}
-
-.slidev-layout.default > h1 + .slidev-code-wrapper {
-  margin-top: auto !important;
-}
-
-.slidev-layout.default > .slidev-code-wrapper:last-child,
-.slidev-layout.default > .slidev-code-wrapper:has(+ .footnote:last-child) {
-  margin-bottom: auto !important;
-}
-
-.pair table.frame {
-  margin: 0 auto;
-}
-
-.credits .install {
-  font-size: var(--fs-lead);
+.qr figcaption {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 15px;
 }

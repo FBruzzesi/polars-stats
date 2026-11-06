@@ -1,85 +1,73 @@
-# compute! Paris 2026 deck
+# compute! Paris 2026: Vectorized statistical distributions, built on the Polars engine
 
-Slides for "Vectorized statistical distributions, built on the Polars engine" (25 minutes plus 5 of Q&A), built with
-[Slidev](https://sli.dev): a tool that turns one Markdown file into a slide deck that runs in the browser.
+The slides for a 25-minute talk (plus 5 of Q&A) about `polars-stats`: how it puts `scipy.stats`-style distributions
+inside Polars expressions, and the four contracts the plugin has to enforce because neither Polars nor statrs promises
+them: reproducibility, broadcast, parameter validation and accuracy.
+
+The deck is built with [Slidev](https://sli.dev), which turns one Markdown file into a slide deck that runs in the
+browser.
 
 | File | What it is |
 |---|---|
-| `slides.md` | The deck. Slides are separated by `---`; each slide's presenter notes sit in the `<!-- ... -->` block at its end |
-| `style.css` | The whole theme. The deck uses `theme: none`, so every style, including layout padding, lives here |
-| `public/` | The static SVGs (bell curves, benchmark dot plot and its 10k-row overlay), served from `/` |
-| `talk-script.md` | The canonical script. The notes are its Say text, verbatim |
-
-## Prerequisites
-
-* **Node.js 22.12 or newer** (Slidev 53 requires it). Check with `node --version`. npm comes with Node.
-* Nothing to install in this folder. Every command below runs Slidev through `npx`, which downloads it into npm's
-  cache on first use (that first run takes a minute and needs a network connection).
-* There is deliberately no `package.json`: a global gitignore pattern for `**/*.json` would silently drop it from git. If
-  you ever add one, track it with `git add -f package.json`.
-
-Tested with Node 26.10.0, npm 11.19.1 and Slidev 53.0.0.
+| `slides.md` | The deck. Slides are separated by `---`; each slide's presenter notes, the spoken script, sit in its `<!-- ... -->` block |
+| `talk-script.md` | The talk's outline: the question chain, the takeaways, the cut list and a source for every number on a slide |
+| `style.css` | The whole theme. The deck uses `theme: none`, so every style lives here |
+| `layouts/default.vue` | The one layout: eyebrow over the title, footer, page number and progress bar |
+| `components/` | `Frame` (the running sensor table) and `Stack` (Polars, polars-stats, statrs and the four contracts) |
+| `setup/shiki.ts` | Keeps code windows dark on every slide |
+| `vite.config.mjs` | Lets Slidev's dev server serve KaTeX's fonts when Slidev runs through `npx` |
+| `public/` | Images, QR codes, the benchmark charts and the bundled Inter and JetBrains Mono fonts (SIL OFL), served from `/` |
+| `bench_chart.py` | Draws the benchmark charts from the benchmark harness's JSON output (see below) |
 
 ## Run the deck
 
-From this folder:
+You need Node.js 22.12 or newer (`node --version`). Nothing is installed in this folder: `npx` fetches Slidev on first
+use, which takes a minute and a network connection. From this folder:
 
 ```bash
 npx @slidev/cli@latest slides.md
 ```
 
-Open <http://localhost:3030>. Keys:
+Open <http://localhost:3030>. Space or the right arrow advances one click, the left arrow goes back, the down and up
+arrows skip whole slides, `o` shows every slide and `g` jumps to a slide by number. Saving `slides.md` or `style.css`
+reloads the browser.
 
-| Key | Action |
-|---|---|
-| Space or right arrow | next click (or next slide when the slide has no clicks left) |
-| Left arrow | previous click |
-| Down / up arrow | next / previous slide, skipping clicks |
-| `o` | overview of every slide |
-| `g` | go to a slide by number |
+For presenting, open <http://localhost:3030/presenter> on the laptop and <http://localhost:3030> on the projector. The
+presenter view shows the current and next slide, a timer and the notes. In the notes, `[click]` marks where to press the
+next key and `[pause]` means stop and let the room think. The cover's notes carry the timing marks and the cut list.
 
-The server reloads the browser whenever `slides.md` or `style.css` is saved.
+Tested with Node 26.10.0, npm 11.19.1 and Slidev 53.0.0.
 
-## Presenter mode
-
-Open <http://localhost:3030/presenter> on the laptop and <http://localhost:3030> on the projector (drag that window to
-the second screen and make it full screen). The two stay in sync: presenter mode shows the current slide, the next one,
-a timer and the notes.
-
-The notes are the script's Say text, split so each slide carries what is said while it is on screen. Inside a slide,
-`[click]` marks where to press the next key, and presenter mode highlights the part of the notes for the current click.
-`[pause]` means stop talking and let the room think. The cover and the first section slide have a short
-"(Not spoken ...)" line instead, because nothing is said over them.
-
-## Build a static copy
+## Build or export
 
 ```bash
-npx @slidev/cli@latest build slides.md
+npx @slidev/cli@latest build slides.md  # a static site in dist/, keeps every click and transition
+npx -p @slidev/cli@latest -p playwright-chromium slidev export slides.md  # slides-export.pdf
 ```
 
-This writes a self-contained single-page site to `dist/` (gitignored). Host it anywhere that serves static files.
+The static site can be hosted anywhere that serves files; add `--base /some/path/` when it lives under a sub-path. The
+PDF has one page per slide with every click revealed; add `--with-clicks` for one page per click. If the export reports
+a missing browser, run `npx playwright install chromium` once. `dist/` and PDFs are gitignored.
 
-## Export a PDF (the backup for the venue)
+## Regenerate the benchmark charts
 
-Export drives a headless Chromium, so it needs `playwright-chromium` next to Slidev:
+The benchmark slides come from the repository's own harness. On a quiet machine, from the repository root:
 
 ```bash
-npx -p @slidev/cli@latest -p playwright-chromium slidev export slides.md
+uv run --no-sync python -m tools.benchmarks.run --methods sample samples sf --regimes column \
+  --rows 10_000 1_000_000 10_000_000 --max-seconds 10 --format json \
+  --output-dir talks/compute-paris/bench-results
+uv run --no-project python talks/compute-paris/bench_chart.py talks/compute-paris/bench-results
 ```
 
-This writes `slides-export.pdf` (gitignored), one page per slide with every click revealed. Add `--with-clicks` for
-one page per click step instead. If the command reports a missing browser, run `npx playwright install chromium` once.
-
-Export a fresh PDF before travelling and keep it on a USB stick: it is what you present from if the laptop, the adapter
-or the browser lets you down.
+The second command rewrites `public/bench-column.svg` and its 10k-row overlay, and prints the ranges the benchmark
+slide quotes. Update the disclaimer slide's versions and date to match, then restart the dev server: Vite inlines small
+images and keeps serving the old copy otherwise.
 
 ## Editing notes
 
-* Library names are plain text (Polars, statrs, scipy, polars-stats); code is in backticks; sources and dates use the
-  `footnote` class.
-* Every number on a slide comes from `talk-script.md`. The simulated column of the sensor frame is still a
-  `<TODO>` until a recorded run fills it in.
-* The SVGs in `public/` are static: to change a benchmark number, edit the SVG. Then restart the dev server, because
-  Vite inlines small images into the compiled slide and keeps serving the old copy.
-* Layout lives in `style.css`: content slides keep the title at the top, centre the body in the space below it, and pin
-  a final `footnote` to the bottom. Text sizes come from the `--fs-*` variables at the top of the deck section.
+* Library names are plain text (Polars, statrs, scipy, polars-stats); code is in backticks, also in titles.
+* Every output on a slide was re-run against the library; `talk-script.md` lists where each number comes from. The
+  sensor table's values live in `components/Frame.vue`.
+* Layout lives in `style.css`: the title sits under its eyebrow, a final `footnote` pins to the bottom, and colours come
+  from the `:root` tokens.
