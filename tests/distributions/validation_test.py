@@ -184,7 +184,7 @@ def test_an_invalid_parameter_in_a_later_chunk_raises_the_same_refusal(
 ) -> None:
     """The column pass reads every chunk and names the invalid value, never a null slot's backing value.
 
-    The first chunk nulls the blamed parameter, whose backing value is out of domain for most rules; the
+    The first chunk nulls the blamed parameter, whose backing `0.0` is out of every positive rule's domain; the
     second holds the invalid row. Rechunked, one chunk with a validity bitmap carries both.
     """
     overrides: _Overrides = {p.column: bad for p, bad in zip(spec.parameters, case.params, strict=True)}
