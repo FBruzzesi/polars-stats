@@ -16,20 +16,27 @@ use crate::rng::{
 /// `min == max` is the legitimate one-point mass. Every closed form divides by the count
 /// `max - min + 1`, so it must fit `i64`; the width is computed in `i128` so the check cannot wrap.
 /// The bounds have no rule of their own: an integer column is one by dtype, through [`coerce_bound`].
-const BOUNDS: PairDomain<i64> = PairDomain {
-    names: ("min", "max"),
-    rule: "greater than or equal to min, with a support width max - min + 1 that fits in i64",
-    accepts: |min, max| min <= max && i64::try_from(i128::from(max) - i128::from(min) + 1).is_ok(),
-};
+struct Bounds;
 
-/// `statrs` itself only rejects `max < min`, so behind [`BOUNDS`] its error is unreachable.
+impl PairDomain for Bounds {
+    type N = i64;
+    const NAMES: (&'static str, &'static str) = ("min", "max");
+    const RULE: &'static str =
+        "greater than or equal to min, with a support width max - min + 1 that fits in i64";
+
+    fn accepts(min: i64, max: i64) -> bool {
+        min <= max && i64::try_from(i128::from(max) - i128::from(min) + 1).is_ok()
+    }
+}
+
+/// `statrs` itself only rejects `max < min`, so behind [`Bounds`] its error is unreachable.
 fn build_dist(min: i64, max: i64) -> PolarsResult<DiscreteUniform> {
-    BOUNDS.check(min, max)?;
+    Bounds::check(min, max)?;
     DiscreteUniform::new(min, max).map_err(|e| polars_err!(ComputeError: "{e}"))
 }
 
 fn check_params(min: &Int64Chunked, max: &Int64Chunked) -> PolarsResult<()> {
-    BOUNDS.check_columns(min, max)
+    Bounds::check_columns(min, max)
 }
 
 /// A bound column as `Int64`: the signed counterpart of binomial's `coerce_n`. A float dtype is

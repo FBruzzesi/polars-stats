@@ -37,6 +37,7 @@ use std::borrow::Cow;
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
 use polars::prelude::*;
 use polars_arrow::array::Array as _;
+use polars_core::utils::align_chunks_binary;
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
@@ -203,34 +204,50 @@ fn all_accept(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
     })
 }
 
-/// What two parameters must satisfy together, checked only where both are present.
-pub(crate) struct PairDomain<N> {
-    pub(crate) names: (&'static str, &'static str),
-    /// Read as "`names.1` must be {rule}".
-    pub(crate) rule: &'static str,
-    pub(crate) accepts: fn(N, N) -> bool,
-}
+/// What two parameters must satisfy together, checked only where both are present. Implemented by
+/// one unit struct per joint rule, so the column pass is monomorphised over `accepts`.
+pub(crate) trait PairDomain {
+    type N: NumericNative;
+    const NAMES: (&'static str, &'static str);
+    /// Read as "`NAMES.1` must be {RULE}".
+    const RULE: &'static str;
 
-impl<N: Copy + std::fmt::Display> PairDomain<N> {
-    pub(crate) fn check(&self, a: N, b: N) -> PolarsResult<()> {
-        let (a_name, b_name) = self.names;
+    fn accepts(a: Self::N, b: Self::N) -> bool;
+
+    fn check(a: Self::N, b: Self::N) -> PolarsResult<()> {
+        let (a_name, b_name) = Self::NAMES;
         polars_ensure!(
-            (self.accepts)(a, b),
-            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, self.rule, a_name, a, b_name, b
+            Self::accepts(a, b),
+            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, Self::RULE, a_name, a, b_name, b
         );
         Ok(())
     }
 
-    pub(crate) fn check_columns<T>(
-        &self,
-        a: &ChunkedArray<T>,
-        b: &ChunkedArray<T>,
-    ) -> PolarsResult<()>
+    /// `a` and `b` must have one length; their chunk layouts may differ.
+    fn check_columns<T>(a: &ChunkedArray<T>, b: &ChunkedArray<T>) -> PolarsResult<()>
     where
-        T: PolarsNumericType<Native = N>,
+        T: PolarsNumericType<Native = Self::N>,
     {
+        let (a_aligned, b_aligned) = align_chunks_binary(a, b);
+        let passes = a_aligned
+            .downcast_iter()
+            .zip(b_aligned.downcast_iter())
+            .all(|(a, b)| {
+                if a.null_count() == 0 && b.null_count() == 0 {
+                    let pairs = a.values().iter().zip(b.values().iter());
+                    pairs.fold(true, |ok, (&a, &b)| ok & Self::accepts(a, b))
+                } else {
+                    a.iter().zip(b.iter()).all(|pair| match pair {
+                        (Some(&a), Some(&b)) => Self::accepts(a, b),
+                        _ => true,
+                    })
+                }
+            });
+        if passes {
+            return Ok(());
+        }
         a.iter().zip(b.iter()).try_for_each(|pair| match pair {
-            (Some(a), Some(b)) => self.check(a, b),
+            (Some(a), Some(b)) => Self::check(a, b),
             _ => Ok(()),
         })
     }
