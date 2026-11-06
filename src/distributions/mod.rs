@@ -192,14 +192,16 @@ impl ParamDomain {
 }
 
 /// Whether every non-null value of `column` passes. A null slot's backing value is unspecified (in
-/// practice `0.0`), so only a chunk without nulls reads its raw values.
+/// practice `0.0`), so the validity bitmap masks it out.
 fn all_present_accepted(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
+    // `fold` with `&`, not `all`: without an early exit the loop vectorises.
     column.downcast_iter().all(|chunk| {
-        if chunk.null_count() == 0 {
-            // `&` rather than `all`: without an early exit the loop vectorises.
-            chunk.values().iter().fold(true, |ok, &v| ok & accepts(v))
-        } else {
-            chunk.iter().flatten().all(|&v| accepts(v))
+        let values = chunk.values().iter();
+        match chunk.validity() {
+            Some(validity) if validity.unset_bits() > 0 => values
+                .zip(validity)
+                .fold(true, |ok, (&v, present)| ok & (!present | accepts(v))),
+            _ => values.fold(true, |ok, &v| ok & accepts(v)),
         }
     })
 }
