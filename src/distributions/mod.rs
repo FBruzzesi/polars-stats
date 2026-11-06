@@ -36,6 +36,7 @@ use std::borrow::Cow;
 
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
 use polars::prelude::*;
+use polars_arrow::array::Array as _;
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
@@ -103,53 +104,103 @@ pub(crate) fn coerce_f64(input: &Series) -> PolarsResult<Float64Chunked> {
 
 /// What one float parameter must satisfy on its own. Every rule spells finiteness because the
 /// `statrs` constructors do not (`Normal::new(0.0, f64::INFINITY)` is `Ok`).
+#[derive(Clone, Copy)]
+pub(crate) enum Rule {
+    Finite,
+    Positive,
+    Probability,
+    PositiveProbability,
+}
+
+impl Rule {
+    #[inline(always)]
+    fn accepts(self, x: f64) -> bool {
+        match self {
+            Self::Finite => x.is_finite(),
+            Self::Positive => x.is_finite() && x > 0.0,
+            Self::Probability => x.is_finite() && (0.0..=1.0).contains(&x),
+            Self::PositiveProbability => x.is_finite() && x > 0.0 && x <= 1.0,
+        }
+    }
+
+    /// Read as "`name` must be {describe}".
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Finite => "finite",
+            Self::Positive => "finite and strictly positive",
+            Self::Probability => "in [0, 1]",
+            Self::PositiveProbability => "in (0, 1]",
+        }
+    }
+}
+
 pub(crate) struct ParamDomain {
     pub(crate) name: &'static str,
-    /// Read as "`name` must be {rule}".
-    pub(crate) rule: &'static str,
-    pub(crate) accepts: fn(f64) -> bool,
+    pub(crate) rule: Rule,
 }
 
 impl ParamDomain {
     pub(crate) const fn finite(name: &'static str) -> Self {
         Self {
             name,
-            rule: "finite",
-            accepts: f64::is_finite,
+            rule: Rule::Finite,
         }
     }
 
     pub(crate) const fn positive(name: &'static str) -> Self {
         Self {
             name,
-            rule: "finite and strictly positive",
-            accepts: |x| x.is_finite() && x > 0.0,
+            rule: Rule::Positive,
         }
     }
 
     pub(crate) const fn probability(name: &'static str) -> Self {
         Self {
             name,
-            rule: "in [0, 1]",
-            accepts: |p| p.is_finite() && (0.0..=1.0).contains(&p),
+            rule: Rule::Probability,
         }
     }
 
     pub(crate) fn check(&self, value: f64) -> PolarsResult<()> {
         polars_ensure!(
-            (self.accepts)(value),
-            ComputeError: "{} must be {}, got {}", self.name, self.rule, value
+            self.rule.accepts(value),
+            ComputeError: "{} must be {}, got {}", self.name, self.rule.describe(), value
         );
         Ok(())
     }
 
     /// Nulls are skipped: a missing parameter is a missing answer, not an invalid one.
     pub(crate) fn check_column(&self, column: &Float64Chunked) -> PolarsResult<()> {
+        // One instantiation per rule, so `accepts` inlines into the fold.
+        let passes = match self.rule {
+            Rule::Finite => all_accept(column, |x| Rule::Finite.accepts(x)),
+            Rule::Positive => all_accept(column, |x| Rule::Positive.accepts(x)),
+            Rule::Probability => all_accept(column, |x| Rule::Probability.accepts(x)),
+            Rule::PositiveProbability => {
+                all_accept(column, |x| Rule::PositiveProbability.accepts(x))
+            },
+        };
+        if passes {
+            return Ok(());
+        }
         column
             .iter()
             .flatten()
             .try_for_each(|value| self.check(value))
     }
+}
+
+/// Whether every non-null value of `column` passes. A null slot's backing value is unspecified (in
+/// practice `0.0`), so only a chunk without nulls reads its raw values.
+fn all_accept(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
+    column.downcast_iter().all(|chunk| {
+        if chunk.null_count() == 0 {
+            // `&` rather than `all`: without an early exit the loop vectorises.
+            chunk.values().iter().fold(true, |ok, &v| ok & accepts(v))
+        } else {
+            chunk.iter().flatten().all(|&v| accepts(v))
+        }
+    })
 }
 
 /// What two parameters must satisfy together, checked only where both are present.
