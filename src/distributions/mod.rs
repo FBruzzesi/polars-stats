@@ -172,16 +172,16 @@ impl ParamDomain {
 
     /// Nulls are skipped: a missing parameter is a missing answer, not an invalid one.
     pub(crate) fn check_column(&self, column: &Float64Chunked) -> PolarsResult<()> {
-        // One instantiation per rule, so `accepts` inlines into the fold.
-        let passes = match self.rule {
-            Rule::Finite => all_accept(column, |x| Rule::Finite.accepts(x)),
-            Rule::Positive => all_accept(column, |x| Rule::Positive.accepts(x)),
-            Rule::Probability => all_accept(column, |x| Rule::Probability.accepts(x)),
+        // A constant rule per arm, so each fold gets its own inlined `accepts`.
+        let all_valid = match self.rule {
+            Rule::Finite => all_present_accepted(column, |x| Rule::Finite.accepts(x)),
+            Rule::Positive => all_present_accepted(column, |x| Rule::Positive.accepts(x)),
+            Rule::Probability => all_present_accepted(column, |x| Rule::Probability.accepts(x)),
             Rule::PositiveProbability => {
-                all_accept(column, |x| Rule::PositiveProbability.accepts(x))
+                all_present_accepted(column, |x| Rule::PositiveProbability.accepts(x))
             },
         };
-        if passes {
+        if all_valid {
             return Ok(());
         }
         column
@@ -193,7 +193,7 @@ impl ParamDomain {
 
 /// Whether every non-null value of `column` passes. A null slot's backing value is unspecified (in
 /// practice `0.0`), so only a chunk without nulls reads its raw values.
-fn all_accept(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
+fn all_present_accepted(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
     column.downcast_iter().all(|chunk| {
         if chunk.null_count() == 0 {
             // `&` rather than `all`: without an early exit the loop vectorises.
@@ -207,18 +207,18 @@ fn all_accept(column: &Float64Chunked, accepts: impl Fn(f64) -> bool) -> bool {
 /// What two parameters must satisfy together, checked only where both are present. Implemented by
 /// one unit struct per joint rule, so the column pass is monomorphised over `accepts`.
 pub(crate) trait PairDomain {
-    type N: NumericNative;
+    type Native: NumericNative;
     const NAMES: (&'static str, &'static str);
-    /// Read as "`NAMES.1` must be {RULE}".
-    const RULE: &'static str;
+    /// Read as "`NAMES.1` must be {DESCRIPTION}".
+    const DESCRIPTION: &'static str;
 
-    fn accepts(a: Self::N, b: Self::N) -> bool;
+    fn accepts(a: Self::Native, b: Self::Native) -> bool;
 
-    fn check(a: Self::N, b: Self::N) -> PolarsResult<()> {
+    fn check(a: Self::Native, b: Self::Native) -> PolarsResult<()> {
         let (a_name, b_name) = Self::NAMES;
         polars_ensure!(
             Self::accepts(a, b),
-            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, Self::RULE, a_name, a, b_name, b
+            ComputeError: "{} must be {}, got {}={}, {}={}", b_name, Self::DESCRIPTION, a_name, a, b_name, b
         );
         Ok(())
     }
@@ -226,24 +226,24 @@ pub(crate) trait PairDomain {
     /// `a` and `b` must have one length; their chunk layouts may differ.
     fn check_columns<T>(a: &ChunkedArray<T>, b: &ChunkedArray<T>) -> PolarsResult<()>
     where
-        T: PolarsNumericType<Native = Self::N>,
+        T: PolarsNumericType<Native = Self::Native>,
     {
         let (a_aligned, b_aligned) = align_chunks_binary(a, b);
-        let passes = a_aligned
+        let all_valid = a_aligned
             .downcast_iter()
             .zip(b_aligned.downcast_iter())
-            .all(|(a, b)| {
-                if a.null_count() == 0 && b.null_count() == 0 {
-                    let pairs = a.values().iter().zip(b.values().iter());
+            .all(|(a_chunk, b_chunk)| {
+                if a_chunk.null_count() == 0 && b_chunk.null_count() == 0 {
+                    let pairs = a_chunk.values().iter().zip(b_chunk.values().iter());
                     pairs.fold(true, |ok, (&a, &b)| ok & Self::accepts(a, b))
                 } else {
-                    a.iter().zip(b.iter()).all(|pair| match pair {
+                    a_chunk.iter().zip(b_chunk.iter()).all(|pair| match pair {
                         (Some(&a), Some(&b)) => Self::accepts(a, b),
                         _ => true,
                     })
                 }
             });
-        if passes {
+        if all_valid {
             return Ok(());
         }
         a.iter().zip(b.iter()).try_for_each(|pair| match pair {

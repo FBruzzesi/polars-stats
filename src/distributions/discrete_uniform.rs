@@ -19,9 +19,9 @@ use crate::rng::{
 struct Bounds;
 
 impl PairDomain for Bounds {
-    type N = i64;
+    type Native = i64;
     const NAMES: (&'static str, &'static str) = ("min", "max");
-    const RULE: &'static str =
+    const DESCRIPTION: &'static str =
         "greater than or equal to min, with a support width max - min + 1 that fits in i64";
 
     fn accepts(min: i64, max: i64) -> bool {

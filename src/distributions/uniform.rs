@@ -18,9 +18,9 @@ const MAX: ParamDomain = ParamDomain::finite("max");
 struct Bounds;
 
 impl PairDomain for Bounds {
-    type N = f64;
+    type Native = f64;
     const NAMES: (&'static str, &'static str) = ("min", "max");
-    const RULE: &'static str = "strictly greater than min, and max - min must be finite";
+    const DESCRIPTION: &'static str = "strictly greater than min, and max - min must be finite";
 
     fn accepts(min: f64, max: f64) -> bool {
         max > min && (max - min).is_finite()
