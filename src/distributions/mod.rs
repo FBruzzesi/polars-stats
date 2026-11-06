@@ -36,8 +36,8 @@ use std::borrow::Cow;
 
 use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
 use polars::prelude::*;
-use polars_arrow::array::Array as _;
-use polars_core::utils::align_chunks_binary;
+use polars_arrow::array::{Array as _, MutablePrimitiveArray};
+use polars_core::utils::{align_chunks_binary, align_chunks_ternary};
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
@@ -331,11 +331,24 @@ where
     Ok(out.into_series())
 }
 
+/// The column drivers' answers for inputs without a null, as one chunk named `name`. The validity
+/// bitmap is allocated on the first `None` answer, so a call that answers every row never builds one.
+fn collect_dense(
+    name: PlSmallStr,
+    len: usize,
+    mut answers: impl Iterator<Item = PolarsResult<Option<f64>>>,
+) -> PolarsResult<Float64Chunked> {
+    let mut out = MutablePrimitiveArray::<f64>::with_capacity(len);
+    answers.try_for_each(|answer| answer.map(|answer| out.push(answer)))?;
+    Ok(Float64Chunked::with_chunk(name, out.into()))
+}
+
 /// Value-keyed driver over `(value, param)`: `build` turns the parameter into the per-row state
 /// (`statrs` distribution or closed-form branch table) and `body` evaluates it at the point.
 ///
 /// `build` and `body` stay generic `Fn`s so they monomorphise into the row loop; a `&dyn Fn` or a
-/// `fn` pointer would cost an indirect call per row.
+/// `fn` pointer would cost an indirect call per row. Columns without a null skip the validity checks
+/// and answer bit for bit as the general loop would.
 pub(crate) fn value_keyed_binary<State, Build, Body>(
     inputs: &[Series],
     domain: &ParamDomain,
@@ -359,25 +372,33 @@ where
     let param = coerce_f64(&inputs[1])?;
     domain.check_column(&param)?;
 
-    let out: Float64Chunked = try_binary_elementwise(
-        &value,
-        &param,
-        |value, param| -> PolarsResult<Option<f64>> {
-            let (Some(value), Some(param)) = (value, param) else {
-                return Ok(None);
-            };
-            if value.is_nan() {
-                return Ok(Some(f64::NAN));
-            }
-            Ok(body(&build(param)?, value))
-        },
-    )?;
+    let row = |value: f64, param: f64| -> PolarsResult<Option<f64>> {
+        if value.is_nan() {
+            return Ok(Some(f64::NAN));
+        }
+        Ok(body(&build(param)?, value))
+    };
+    let out = if value.null_count() == 0 && param.null_count() == 0 {
+        let (value, param) = align_chunks_binary(&value, &param);
+        let rows = value
+            .downcast_iter()
+            .zip(param.downcast_iter())
+            .flat_map(|(value, param)| value.values().iter().zip(param.values().iter()))
+            .map(|(&value, &param)| row(value, param));
+        collect_dense(value.name().clone(), value.len(), rows)?
+    } else {
+        try_binary_elementwise(&value, &param, |value, param| match (value, param) {
+            (Some(value), Some(param)) => row(value, param),
+            _ => Ok(None),
+        })?
+    };
     Ok(out.into_series())
 }
 
 /// Value-keyed driver over `(value, a, b)`. Each parameter has its own coercer, so a mixed
 /// `(UInt64, Float64)` parameterisation (Binomial's `n` beside its `p`) fits; `check_params` is the
-/// caller's pass over both columns, each alone and the pair together.
+/// caller's pass over both columns, each alone and the pair together. Columns without a null take the
+/// same dense loop as [`value_keyed_binary`].
 pub(crate) fn value_keyed_ternary<A, B, State, CoerceA, CoerceB, Check, Build, Body>(
     inputs: &[Series],
     coerce_a: CoerceA,
@@ -409,16 +430,30 @@ where
     let b = coerce_b(&inputs[2])?;
     check_params(&a, &b)?;
 
-    let out: Float64Chunked =
-        try_ternary_elementwise(&value, &a, &b, |value, a, b| -> PolarsResult<Option<f64>> {
-            let (Some(value), Some(a), Some(b)) = (value, a, b) else {
-                return Ok(None);
-            };
-            if value.is_nan() {
-                return Ok(Some(f64::NAN));
-            }
-            Ok(body(&build(a, b)?, value))
-        })?;
+    let row = |value: f64, a: A::Native, b: B::Native| -> PolarsResult<Option<f64>> {
+        if value.is_nan() {
+            return Ok(Some(f64::NAN));
+        }
+        Ok(body(&build(a, b)?, value))
+    };
+    let out = if value.null_count() == 0 && a.null_count() == 0 && b.null_count() == 0 {
+        let (value, a, b) = align_chunks_ternary(&value, &a, &b);
+        let rows = value
+            .downcast_iter()
+            .zip(a.downcast_iter())
+            .zip(b.downcast_iter())
+            .flat_map(|((value, a), b)| {
+                let pairs = value.values().iter().zip(a.values().iter());
+                pairs.zip(b.values().iter())
+            })
+            .map(|((&value, &a), &b)| row(value, a, b));
+        collect_dense(value.name().clone(), value.len(), rows)?
+    } else {
+        try_ternary_elementwise(&value, &a, &b, |value, a, b| match (value, a, b) {
+            (Some(value), Some(a), Some(b)) => row(value, a, b),
+            _ => Ok(None),
+        })?
+    };
     Ok(out.into_series())
 }
 

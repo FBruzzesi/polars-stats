@@ -8,7 +8,9 @@ every moment through a length-1 validator call, each validating once instead of 
 * both paths refuse the same parameterisations, and accept the same degenerate ones;
 * constants validate up front and columns value by value, so an invalid constant raises on a zero-row
   frame while an invalid empty column returns empty;
-* one constant beside a column still aligns, and a mismatched column is still reported.
+* one constant beside a column still aligns, and a mismatched column is still reported;
+* a column call with no null anywhere takes a dense row loop, which must answer bit for bit like the
+  general one.
 
 A Python `None` parameter and a negative scalar `n` are rejected at construction, so neither has a
 case here. The invalid parameterisations come from `tests/_registry.invalid_cases`, the same list
@@ -17,6 +19,7 @@ case here. The invalid parameterisations come from `tests/_registry.invalid_case
 
 from __future__ import annotations
 
+from math import inf, nan
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -26,17 +29,20 @@ from polars_stats import Binomial, DiscreteUniform, Normal
 from tests._polars_compat import assert_series_equal
 from tests._registry import (
     ALL_SPECS,
+    CONTRACT_FRAME,
     DEGENERATE,
     DRIVER_REGIMES,
     SPECS_BY_NAME,
+    all_value_keyed,
     constant_column,
     density,
     invalid_cases,
+    point_column,
 )
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests._registry import DistSpec, InvalidCase
+    from tests._registry import DistSpec, InvalidCase, Method
 
 INVALID = [pytest.param(spec, case, id=f"{spec.name} {case.label}") for spec, case in invalid_cases(ALL_SPECS)]
 """Every parameterisation both paths must refuse."""
@@ -208,3 +214,45 @@ def test_degenerate_valid_params_entropy_is_zero(spec: DistSpec, params: tuple[f
     both = frame.select(fast=scalar.entropy(), slow=per_row.entropy())
     assert both["slow"].to_list() == [0.0] * frame.height
     assert_series_equal(both["fast"], both["slow"], check_names=False, check_exact=True)
+
+
+_POINTS = pl.DataFrame(
+    {
+        # `q` answers null at the first, a middle and the last row: out of `[0, 1]`.
+        "q": [1.5, 0.1, nan, 0.5, -0.5, 0.9, 0.0, 1.0, inf, 2.0],
+        "x": [0.5, nan, -1.0, 1.5, 3.0, inf, -inf, 0.0, 7.0, 2.0],
+    }
+)
+
+
+def _dense_frame() -> pl.DataFrame:
+    """`CONTRACT_FRAME`'s parameters cycled beside `_POINTS`, each column split into two chunks at its own row.
+
+    The boundaries differ between every column a call reads, so a loop that zips the inputs' chunks
+    without aligning them first drops or misreads rows.
+    """
+    rows = _POINTS.height
+    params = CONTRACT_FRAME.drop(_POINTS.columns)[[i % CONTRACT_FRAME.height for i in range(rows)]]
+    columns = [*params.get_columns(), *_POINTS.get_columns()]
+    return pl.DataFrame(
+        [pl.concat([c[: 1 + i % (rows - 1)], c[1 + i % (rows - 1) :]], rechunk=False) for i, c in enumerate(columns)]
+    )
+
+
+_DENSE_CASES = [
+    pytest.param(spec, method, id=f"{spec.name}.{method}")
+    for spec in ALL_SPECS
+    for method in all_value_keyed(spec.build("scalar"))
+]
+
+
+@pytest.mark.parametrize(("spec", "method"), _DENSE_CASES)
+def test_a_null_free_column_call_matches_the_general_path(spec: DistSpec, method: Method) -> None:
+    """One all-null row appended sends the same rows down the general path; both must agree bit for bit."""
+    frame = _dense_frame()
+    null_row = pl.DataFrame([pl.Series(name, [None], dtype) for name, dtype in frame.schema.items()])
+    expr = getattr(spec.build("name"), method)(pl.col(point_column(method)))
+
+    dense = frame.select(expr).to_series()
+    general = pl.concat([frame, null_row]).select(expr).to_series().head(frame.height)
+    assert_series_equal(dense, general, check_exact=True)
