@@ -58,7 +58,7 @@ match against SciPy cannot see:
 | `moments_test.py` | `std` is the square root of `variance`, the mean is inside the support, the variance is non-negative, or both are null where `UNDEFINED_MOMENTS` records them; a divergent `Pareto` moment is `+inf` on both routings |
 | `construct_test.py` | the constructor refuses a wrong scalar *type* and defers every *value* to evaluation |
 | `naming_test.py` | output names follow polars' first-input rule; a `str` argument means `pl.col(name)` |
-| `fast_path_test.py` | the constant-parameter paths refuse and accept exactly what the per-row paths do |
+| `fast_path_test.py` | the constant-parameter paths refuse and accept exactly what the per-row paths do; a null row, in any input and in any chunk, leaves every other row of the column path unchanged |
 | `sample_test.py`, `samples_test.py` | shape, dtype, per-row independence, support, and a CLT-tolerance mean check |
 | `broadcast_test.py` | length-1 and over-long inputs, in `select` and in partition contexts |
 | `identities_test.py` | algebraic reductions between distributions, and a distribution's own symmetry |

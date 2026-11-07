@@ -9,8 +9,8 @@ every moment through a length-1 validator call, each validating once instead of 
 * constants validate up front and columns value by value, so an invalid constant raises on a zero-row
   frame while an invalid empty column returns empty;
 * one constant beside a column still aligns, and a mismatched column is still reported;
-* a column call with no null anywhere takes a dense row loop, which must answer bit for bit like the
-  general one.
+* a null row, in any input and in any chunk, nulls that row and leaves every other row bit for bit as
+  the null-free call answers it.
 
 A Python `None` parameter and a negative scalar `n` are rejected at construction, so neither has a
 case here. The invalid parameterisations come from `tests/_registry.invalid_cases`, the same list
@@ -20,13 +20,13 @@ case here. The invalid parameterisations come from `tests/_registry.invalid_case
 from __future__ import annotations
 
 from math import inf, nan
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 import pytest
 
 from polars_stats import Binomial, DiscreteUniform, Normal
-from tests._polars_compat import assert_series_equal
+from tests._polars_compat import ENGINE_SELECTABLE, assert_series_equal
 from tests._registry import (
     ALL_SPECS,
     CONTRACT_FRAME,
@@ -123,13 +123,15 @@ def _null_constant(spec: DistSpec) -> _UnivariateDistribution:
 
 
 def test_a_null_constant_parameter_nulls_every_row(spec: DistSpec) -> None:
-    """A null length-1 parameter nulls every row, as a null parameter column does."""
-    frame = pl.DataFrame({"x": [0.5, 1.0, 2.0]})
+    """A null length-1 parameter nulls every row of every value-keyed method, as a null parameter column does."""
+    frame = pl.DataFrame({"x": [0.5, 1.0, 2.0], "q": [0.1, 0.5, 0.9]})
+    dist = _null_constant(spec)
 
-    result = frame.select(r=density(_null_constant(spec), pl.col("x")))["r"]
+    for method in all_value_keyed(dist):
+        result = frame.select(r=getattr(dist, method)(pl.col(point_column(method))))["r"]
 
-    assert result.len() == frame.height
-    assert result.null_count() == frame.height
+        assert result.len() == frame.height, method
+        assert result.null_count() == frame.height, method
 
 
 def test_a_null_constant_parameter_still_gates_the_value_dtype(spec: DistSpec) -> None:
@@ -218,18 +220,33 @@ def test_degenerate_valid_params_entropy_is_zero(spec: DistSpec, params: tuple[f
 
 _POINTS = pl.DataFrame(
     {
-        # `q` answers null at the first, a middle and the last row: out of `[0, 1]`.
+        # Out of `[0, 1]`, so the inverses answer null, at rows 0, 4, 8 and 9.
         "q": [1.5, 0.1, nan, 0.5, -0.5, 0.9, 0.0, 1.0, inf, 2.0],
         "x": [0.5, nan, -1.0, 1.5, 3.0, inf, -inf, 0.0, 7.0, 2.0],
     }
 )
 
+_HALF = _POINTS.height // 2
 
-def _dense_frame() -> pl.DataFrame:
+_LAYOUTS: dict[str, tuple[slice | Literal["point", "param", "all"], ...]] = {
+    # Null rows before, between and after the data: in the point only, in one parameter only, in all.
+    "nulls-around": ("point", slice(None, _HALF), "param", slice(_HALF, None), "all"),
+    # Rows 1 to 3 answer for every method, so the validity bitmap first appears in a later chunk: at
+    # `q = 1.5` for the inverses, at the null parameter for the rest.
+    "null-free-first": (slice(1, 4), slice(None), "param"),
+}
+"""Each layout's pieces in order: a slice of the null-free frame, or a null row named by what it nulls."""
+
+_FILLER = slice(3, 4)
+"""The null-free row a null row copies its other columns from: every method answers there, so the row is null
+only because of what it nulls."""
+
+
+def _null_free_frame() -> pl.DataFrame:
     """`CONTRACT_FRAME`'s parameters cycled beside `_POINTS`, each column split into two chunks at its own row.
 
-    The boundaries differ between every column a call reads, so a loop that zips the inputs' chunks
-    without aligning them first drops or misreads rows.
+    The split row cycles with the column index, so the columns of each call disagree on at least one
+    boundary, and a loop that zips the inputs' chunks without aligning them first drops or misreads rows.
     """
     rows = _POINTS.height
     params = CONTRACT_FRAME.drop(_POINTS.columns)[[i % CONTRACT_FRAME.height for i in range(rows)]]
@@ -239,20 +256,49 @@ def _dense_frame() -> pl.DataFrame:
     )
 
 
-_DENSE_CASES = [
+_VALUE_KEYED_CASES = [
     pytest.param(spec, method, id=f"{spec.name}.{method}")
     for spec in ALL_SPECS
     for method in all_value_keyed(spec.build("scalar"))
 ]
 
 
-@pytest.mark.parametrize(("spec", "method"), _DENSE_CASES)
-def test_a_null_free_column_call_matches_the_general_path(spec: DistSpec, method: Method) -> None:
-    """One all-null row appended sends the same rows down the general path; both must agree bit for bit."""
-    frame = _dense_frame()
-    null_row = pl.DataFrame([pl.Series(name, [None], dtype) for name, dtype in frame.schema.items()])
-    expr = getattr(spec.build("name"), method)(pl.col(point_column(method)))
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+@pytest.mark.parametrize("aligned", [True, False], ids=["aligned-chunks", "staggered-chunks"])
+@pytest.mark.parametrize("layout", _LAYOUTS)
+@pytest.mark.parametrize(("spec", "method"), _VALUE_KEYED_CASES)
+def test_null_rows_leave_other_rows_unchanged(
+    spec: DistSpec, method: Method, layout: str, engine: Literal["in-memory", "streaming"], *, aligned: bool
+) -> None:
+    """Each `_LAYOUTS` row is null in a null-row piece and bit for bit the null-free answer elsewhere.
 
-    dense = frame.select(expr).to_series()
-    general = pl.concat([frame, null_row]).select(expr).to_series().head(frame.height)
-    assert_series_equal(dense, general, check_exact=True)
+    Aligned chunks share their boundaries across inputs; staggered chunks are what the drivers must align
+    before zipping. `pl.len()` beside the call keeps the in-memory engine from splitting the frame into
+    one call per chunk, so a single call reads every chunk in order.
+    """
+    frame = _null_free_frame()
+    point = point_column(method)
+    expr = getattr(spec.build("name"), method)(pl.col(point))
+    nulled_by = {"point": {point}, "param": {spec.parameters[-1].column}, "all": set(frame.columns)}
+
+    def null_row(nulled: set[str]) -> pl.DataFrame:
+        return pl.DataFrame(
+            [pl.Series(n, [None] if n in nulled else frame[n][_FILLER], d) for n, d in frame.schema.items()]
+        )
+
+    def rows(part: slice) -> pl.DataFrame:
+        return frame[part].rechunk() if aligned else frame[part]
+
+    pieces = _LAYOUTS[layout]
+    combined = pl.concat([rows(p) if isinstance(p, slice) else null_row(nulled_by[p]) for p in pieces], rechunk=False)
+    boundaries = {tuple(map(len, combined[c].get_chunks())) for c in [point, *(p.column for p in spec.parameters)]}
+    assert combined[point].n_chunks() >= len(pieces)  # guard against a silent rechunk
+    assert (len(boundaries) == 1) is aligned  # staggered inputs disagree on at least one boundary
+    query = combined.lazy().select(expr, pl.len())
+    with_nulls = (query.collect(engine=engine) if ENGINE_SELECTABLE else query.collect()).to_series()
+
+    null_free = frame.select(expr).to_series()
+    assert null_free[1:4].null_count() == 0  # the "null-free-first" premise
+    gap = pl.Series(null_free.name, [None], null_free.dtype)
+    expected = pl.concat([null_free[p] if isinstance(p, slice) else gap for p in pieces], rechunk=False)
+    assert_series_equal(with_nulls, expected, check_exact=True)
