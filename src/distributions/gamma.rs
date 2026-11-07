@@ -16,7 +16,8 @@ use statrs::function::gamma::{digamma, ln_gamma};
 
 use crate::distributions::{
     coerce_f64, expm1, on_unit_interval, param_keyed, polynomial, validated_pair,
-    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain,
+    value_keyed_derived_ternary, value_keyed_derived_ternary_elementwise, value_keyed_scalar,
+    ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -857,7 +858,7 @@ fn gamma_ln_pdf(inputs: &[Series]) -> PolarsResult<Series> {
 
 #[polars_expr(output_type=Float64)]
 fn gamma_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, ScaledGamma::new, cdf_value)
+    value_keyed_derived_ternary_elementwise(inputs, check_params, ScaledGamma::new, cdf_value)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -867,7 +868,7 @@ fn gamma_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
 
 #[polars_expr(output_type=Float64)]
 fn gamma_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, ScaledGamma::new, sf_value)
+    value_keyed_derived_ternary_elementwise(inputs, check_params, ScaledGamma::new, sf_value)
 }
 
 #[polars_expr(output_type=Float64)]
