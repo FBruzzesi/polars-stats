@@ -188,10 +188,14 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           rows.
         * The per-row shell is one line over `value_keyed_derived_binary(inputs, &DOMAIN, derive, select)` (one
           parameter) or `value_keyed_derived_ternary(inputs, check_params, derive, select)` (two); these wrap
-          `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so there is one row loop
-          per arity in the crate. The `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`, an inherent
-          method that checks the constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the
-          driver's constant branch makes.
+          `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so their column calls
+          run the drivers' one row loop, `LazyNullOutput::write_chunk`. `discrete_uniform.rs`'s six `point_keyed`
+          methods keep polars' loop to hold an integer point in integer arithmetic, and Gamma's `cdf` and `sf` keep it
+          through `value_keyed_derived_ternary_elementwise` because they measure slower in `write_chunk`. The cause
+          is not identified: `ln_cdf` and `ln_sf` call the same out-of-line `IncompleteGamma::tails` in
+          `write_chunk` and are not slower. The `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`,
+          an inherent method that checks the constant and calls `value_keyed_scalar(value, &derive(p), select)`, the
+          same call the driver's constant branch makes.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
       `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`; for any other rule, add a `Rule` variant)
       and a joint constraint as a unit struct implementing `PairDomain` (`uniform.rs`'s `Bounds`). Every
