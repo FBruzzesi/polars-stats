@@ -34,9 +34,12 @@ pub mod weibull;
 
 use std::borrow::Cow;
 
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
+use polars::prelude::arity::{try_binary_elementwise, unary_elementwise};
 use polars::prelude::*;
-use polars_arrow::array::{Array as _, MutablePrimitiveArray};
+use polars_arrow::array::{Array as _, PrimitiveArray};
+use polars_arrow::bitmap::{Bitmap, MutableBitmap};
+use polars_arrow::compute::utils::{combine_validities_and, combine_validities_and3};
+use polars_arrow::datatypes::ArrowDataType;
 use polars_core::utils::{align_chunks_binary, align_chunks_ternary};
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
@@ -331,24 +334,97 @@ where
     Ok(out.into_series())
 }
 
-/// The column drivers' answers for inputs without a null, as one chunk named `name`. The validity
-/// bitmap is allocated on the first `None` answer, so a call that answers every row never builds one.
-fn collect_dense(
-    name: PlSmallStr,
-    len: usize,
-    mut answers: impl Iterator<Item = PolarsResult<Option<f64>>>,
-) -> PolarsResult<Float64Chunked> {
-    let mut out = MutablePrimitiveArray::<f64>::with_capacity(len);
-    answers.try_for_each(|answer| answer.map(|answer| out.push(answer)))?;
-    Ok(Float64Chunked::with_chunk(name, out.into()))
+/// A `Float64` output whose validity bitmap is only allocated once a null is written.
+///
+/// The column drivers write it chunk by chunk into one zeroed buffer. A row with a null input is
+/// null and never reaches `answer`, and a call without a null never builds the bitmap.
+struct LazyNullOutput {
+    values: Vec<f64>,
+    validity: Option<MutableBitmap>,
+    chunk_end: usize,
+}
+
+impl LazyNullOutput {
+    fn new(len: usize) -> Self {
+        Self {
+            values: vec![0.0; len],
+            validity: None,
+            chunk_end: 0,
+        }
+    }
+
+    /// Writes one aligned chunk after the rows already written. `inputs_valid` is the chunk's
+    /// combined input validity; once the validity bitmap exists it covers every row written so far.
+    ///
+    /// One loop serves chunks with and without nulls, so each `answer` body has one call site and
+    /// inlines into it. `#[inline(never)]` keeps the loop out of the plugin entry, where a large
+    /// `answer` body would not inline its own callees.
+    #[inline(never)]
+    fn write_chunk<Row>(
+        &mut self,
+        inputs_valid: Option<Bitmap>,
+        rows: impl ExactSizeIterator<Item = Row>,
+        answer: impl Fn(Row) -> PolarsResult<Option<f64>>,
+    ) -> PolarsResult<()> {
+        let start = self.chunk_end;
+        self.chunk_end += rows.len();
+        let inputs_valid = inputs_valid.filter(|valid| valid.unset_bits() > 0);
+        match (&inputs_valid, &mut self.validity) {
+            (Some(inputs_valid), validity) => validity
+                .get_or_insert_with(|| valid_prefix(self.values.len(), start))
+                .extend_from_bitmap(inputs_valid),
+            (None, Some(validity)) => validity.extend_constant(self.chunk_end - start, true),
+            (None, None) => {},
+        }
+        let (capacity, chunk_end) = (self.values.len(), self.chunk_end);
+        let slots = self.values[start..chunk_end].iter_mut();
+        for (offset, (slot, row)) in slots.zip(rows).enumerate() {
+            if inputs_valid
+                .as_ref()
+                .is_some_and(|valid| !valid.get_bit(offset))
+            {
+                continue;
+            }
+            match answer(row)? {
+                Some(answer) => *slot = answer,
+                None => mark_null(&mut self.validity, capacity, chunk_end, start + offset),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, name: PlSmallStr) -> Float64Chunked {
+        let validity = self.validity.map(Into::into);
+        let array = PrimitiveArray::new(ArrowDataType::Float64, self.values.into(), validity);
+        Float64Chunked::with_chunk(name, array)
+    }
+}
+
+/// A validity bitmap with room for `capacity` rows and its first `len` set.
+fn valid_prefix(capacity: usize, len: usize) -> MutableBitmap {
+    let mut validity = MutableBitmap::with_capacity(capacity);
+    validity.extend_constant(len, true);
+    validity
+}
+
+#[cold]
+#[inline(never)]
+fn mark_null(
+    validity: &mut Option<MutableBitmap>,
+    capacity: usize,
+    chunk_end: usize,
+    index: usize,
+) {
+    validity
+        .get_or_insert_with(|| valid_prefix(capacity, chunk_end))
+        .set(index, false);
 }
 
 /// Value-keyed driver over `(value, param)`: `build` turns the parameter into the per-row state
 /// (`statrs` distribution or closed-form branch table) and `body` evaluates it at the point.
 ///
 /// `build` and `body` stay generic `Fn`s so they monomorphise into the row loop; a `&dyn Fn` or a
-/// `fn` pointer would cost an indirect call per row. Columns without a null skip the validity checks
-/// and answer bit for bit as the general loop would.
+/// `fn` pointer would cost an indirect call per row.
 pub(crate) fn value_keyed_binary<State, Build, Body>(
     inputs: &[Series],
     domain: &ParamDomain,
@@ -372,33 +448,24 @@ where
     let param = coerce_f64(&inputs[1])?;
     domain.check_column(&param)?;
 
-    let row = |value: f64, param: f64| -> PolarsResult<Option<f64>> {
-        if value.is_nan() {
-            return Ok(Some(f64::NAN));
-        }
-        Ok(body(&build(param)?, value))
-    };
-    let out = if value.null_count() == 0 && param.null_count() == 0 {
-        let (value, param) = align_chunks_binary(&value, &param);
-        let rows = value
-            .downcast_iter()
-            .zip(param.downcast_iter())
-            .flat_map(|(value, param)| value.values().iter().zip(param.values().iter()))
-            .map(|(&value, &param)| row(value, param));
-        collect_dense(value.name().clone(), value.len(), rows)?
-    } else {
-        try_binary_elementwise(&value, &param, |value, param| match (value, param) {
-            (Some(value), Some(param)) => row(value, param),
-            _ => Ok(None),
-        })?
-    };
-    Ok(out.into_series())
+    let (value, param) = align_chunks_binary(&value, &param);
+    let mut out = LazyNullOutput::new(value.len());
+    for (values, params) in value.downcast_iter().zip(param.downcast_iter()) {
+        let inputs_valid = combine_validities_and(values.validity(), params.validity());
+        let pairs = values.values().iter().zip(params.values().iter());
+        out.write_chunk(inputs_valid, pairs, |(&value, &param)| {
+            if value.is_nan() {
+                return Ok(Some(f64::NAN));
+            }
+            Ok(body(&build(param)?, value))
+        })?;
+    }
+    Ok(out.finish(value.name().clone()).into_series())
 }
 
 /// Value-keyed driver over `(value, a, b)`. Each parameter has its own coercer, so a mixed
 /// `(UInt64, Float64)` parameterisation (Binomial's `n` beside its `p`) fits; `check_params` is the
-/// caller's pass over both columns, each alone and the pair together. Columns without a null take the
-/// same dense loop as [`value_keyed_binary`].
+/// caller's pass over both columns, each alone and the pair together.
 pub(crate) fn value_keyed_ternary<A, B, State, CoerceA, CoerceB, Check, Build, Body>(
     inputs: &[Series],
     coerce_a: CoerceA,
@@ -430,31 +497,24 @@ where
     let b = coerce_b(&inputs[2])?;
     check_params(&a, &b)?;
 
-    let row = |value: f64, a: A::Native, b: B::Native| -> PolarsResult<Option<f64>> {
-        if value.is_nan() {
-            return Ok(Some(f64::NAN));
-        }
-        Ok(body(&build(a, b)?, value))
-    };
-    let out = if value.null_count() == 0 && a.null_count() == 0 && b.null_count() == 0 {
-        let (value, a, b) = align_chunks_ternary(&value, &a, &b);
-        let rows = value
-            .downcast_iter()
-            .zip(a.downcast_iter())
-            .zip(b.downcast_iter())
-            .flat_map(|((value, a), b)| {
-                let pairs = value.values().iter().zip(a.values().iter());
-                pairs.zip(b.values().iter())
-            })
-            .map(|((&value, &a), &b)| row(value, a, b));
-        collect_dense(value.name().clone(), value.len(), rows)?
-    } else {
-        try_ternary_elementwise(&value, &a, &b, |value, a, b| match (value, a, b) {
-            (Some(value), Some(a), Some(b)) => row(value, a, b),
-            _ => Ok(None),
-        })?
-    };
-    Ok(out.into_series())
+    let (value, a, b) = align_chunks_ternary(&value, &a, &b);
+    let mut out = LazyNullOutput::new(value.len());
+    let chunks = value.downcast_iter().zip(a.downcast_iter());
+    for ((values, a), b) in chunks.zip(b.downcast_iter()) {
+        let inputs_valid = combine_validities_and3(values.validity(), a.validity(), b.validity());
+        let rows = values.values().iter().zip(a.values().iter());
+        out.write_chunk(
+            inputs_valid,
+            rows.zip(b.values().iter()),
+            |((&value, &a), &b)| {
+                if value.is_nan() {
+                    return Ok(Some(f64::NAN));
+                }
+                Ok(body(&build(a, b)?, value))
+            },
+        )?;
+    }
+    Ok(out.finish(value.name().clone()).into_series())
 }
 
 /// [`value_keyed_binary`] for a closed form: `derive` turns the parameter into the method's branch
