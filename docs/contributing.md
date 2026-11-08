@@ -132,8 +132,8 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       through them rather than writing that branch yourself.
     * **`is_elementwise=True`**, which the shared `register_plugin` shim fixes for you. An aggregating plugin would
       break `over` and `group_by`, so it is a guard rather than a default.
-    * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
-      which is the one way to lose the contract while writing ordinary-looking Rust.
+    * **Null in, null out.** The drivers in `mod.rs` and `src/rng.rs` give you that; a raw `.into_iter()` over chunks
+      does not, which is the one way to lose the contract while writing ordinary-looking Rust.
     * Always the samplers. Every one is a one-line shell over a driver in `src/rng.rs`; none resolves a seed, coerces
       an input or writes a row loop itself, which is what keeps seeding, `null` propagation (a `null` in any input
       nulls the row) and the invalid-parameter error contract in one place. The per-row `<name>_sample` /
