@@ -1,0 +1,3 @@
+# Exclude non-shipping code from GitHub's language bar
+tests/** -linguist-detectable
+tools/** -linguist-detectable
