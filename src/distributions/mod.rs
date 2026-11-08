@@ -334,12 +334,11 @@ where
     Ok(out.into_series())
 }
 
-/// A `Float64` output whose validity bitmap is only allocated once a null is written.
-///
-/// The column drivers write it chunk by chunk into one zeroed buffer. A row with a null input is
-/// null and never reaches `answer`, and a call without a null never builds the bitmap.
+/// A `Float64` column written chunk by chunk into one zeroed buffer, whose validity bitmap is
+/// allocated at the first null row: a call without a null never builds one.
 struct LazyNullOutput {
     values: Vec<f64>,
+    /// `None` until a row is null; from then on it covers every row before `chunk_end`.
     validity: Option<MutableBitmap>,
     chunk_end: usize,
 }
@@ -353,12 +352,12 @@ impl LazyNullOutput {
         }
     }
 
-    /// Writes one aligned chunk after the rows already written. `inputs_valid` is the chunk's
-    /// combined input validity; once the validity bitmap exists it covers every row written so far.
+    /// Appends one aligned chunk. A row unset in `inputs_valid`, the chunk's combined input
+    /// validity, is null and never reaches `answer`; a row `answer` maps to `None` is null too.
     ///
-    /// One loop serves chunks with and without nulls, so each `answer` body has one call site and
-    /// inlines into it. `#[inline(never)]` keeps the loop out of the plugin entry, where a large
-    /// `answer` body would not inline its own callees.
+    /// One loop serves chunks with and without nulls so `answer` has one call site to inline into.
+    /// `#[inline(never)]` keeps the loop out of the plugin entry, where a large `answer` would stop
+    /// inlining its own callees.
     #[inline(never)]
     fn write_chunk<Row>(
         &mut self,
@@ -366,18 +365,18 @@ impl LazyNullOutput {
         rows: impl ExactSizeIterator<Item = Row>,
         answer: impl Fn(Row) -> PolarsResult<Option<f64>>,
     ) -> PolarsResult<()> {
-        let start = self.chunk_end;
+        let chunk_start = self.chunk_end;
         self.chunk_end += rows.len();
         let inputs_valid = inputs_valid.filter(|valid| valid.unset_bits() > 0);
         match (&inputs_valid, &mut self.validity) {
             (Some(inputs_valid), validity) => validity
-                .get_or_insert_with(|| valid_prefix(self.values.len(), start))
+                .get_or_insert_with(|| valid_prefix(self.values.len(), chunk_start))
                 .extend_from_bitmap(inputs_valid),
-            (None, Some(validity)) => validity.extend_constant(self.chunk_end - start, true),
+            (None, Some(validity)) => validity.extend_constant(self.chunk_end - chunk_start, true),
             (None, None) => {},
         }
         let (capacity, chunk_end) = (self.values.len(), self.chunk_end);
-        let slots = self.values[start..chunk_end].iter_mut();
+        let slots = self.values[chunk_start..chunk_end].iter_mut();
         for (offset, (slot, row)) in slots.zip(rows).enumerate() {
             if inputs_valid
                 .as_ref()
@@ -386,8 +385,13 @@ impl LazyNullOutput {
                 continue;
             }
             match answer(row)? {
-                Some(answer) => *slot = answer,
-                None => mark_null(&mut self.validity, capacity, chunk_end, start + offset),
+                Some(value) => *slot = value,
+                None => mark_null(
+                    &mut self.validity,
+                    capacity,
+                    chunk_end,
+                    chunk_start + offset,
+                ),
             }
         }
         Ok(())
@@ -409,15 +413,10 @@ fn valid_prefix(capacity: usize, len: usize) -> MutableBitmap {
 
 #[cold]
 #[inline(never)]
-fn mark_null(
-    validity: &mut Option<MutableBitmap>,
-    capacity: usize,
-    chunk_end: usize,
-    index: usize,
-) {
+fn mark_null(validity: &mut Option<MutableBitmap>, capacity: usize, chunk_end: usize, row: usize) {
     validity
         .get_or_insert_with(|| valid_prefix(capacity, chunk_end))
-        .set(index, false);
+        .set(row, false);
 }
 
 /// Value-keyed driver over `(value, param)`: `build` turns the parameter into the per-row state
@@ -450,10 +449,10 @@ where
 
     let (value, param) = align_chunks_binary(&value, &param);
     let mut out = LazyNullOutput::new(value.len());
-    for (values, params) in value.downcast_iter().zip(param.downcast_iter()) {
-        let inputs_valid = combine_validities_and(values.validity(), params.validity());
-        let pairs = values.values().iter().zip(params.values().iter());
-        out.write_chunk(inputs_valid, pairs, |(&value, &param)| {
+    for (value_chunk, param_chunk) in value.downcast_iter().zip(param.downcast_iter()) {
+        let inputs_valid = combine_validities_and(value_chunk.validity(), param_chunk.validity());
+        let rows = value_chunk.values().iter().zip(param_chunk.values().iter());
+        out.write_chunk(inputs_valid, rows, |(&value, &param)| {
             if value.is_nan() {
                 return Ok(Some(f64::NAN));
             }
@@ -500,19 +499,20 @@ where
     let (value, a, b) = align_chunks_ternary(&value, &a, &b);
     let mut out = LazyNullOutput::new(value.len());
     let chunks = value.downcast_iter().zip(a.downcast_iter());
-    for ((values, a), b) in chunks.zip(b.downcast_iter()) {
-        let inputs_valid = combine_validities_and3(values.validity(), a.validity(), b.validity());
-        let rows = values.values().iter().zip(a.values().iter());
-        out.write_chunk(
-            inputs_valid,
-            rows.zip(b.values().iter()),
-            |((&value, &a), &b)| {
-                if value.is_nan() {
-                    return Ok(Some(f64::NAN));
-                }
-                Ok(body(&build(a, b)?, value))
-            },
-        )?;
+    for ((value_chunk, a_chunk), b_chunk) in chunks.zip(b.downcast_iter()) {
+        let inputs_valid = combine_validities_and3(
+            value_chunk.validity(),
+            a_chunk.validity(),
+            b_chunk.validity(),
+        );
+        let pairs = value_chunk.values().iter().zip(a_chunk.values().iter());
+        let rows = pairs.zip(b_chunk.values().iter());
+        out.write_chunk(inputs_valid, rows, |((&value, &a), &b)| {
+            if value.is_nan() {
+                return Ok(Some(f64::NAN));
+            }
+            Ok(body(&build(a, b)?, value))
+        })?;
     }
     Ok(out.finish(value.name().clone()).into_series())
 }
