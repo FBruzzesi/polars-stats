@@ -302,3 +302,45 @@ def test_null_rows_leave_other_rows_unchanged(
     gap = pl.Series(null_free.name, [None], null_free.dtype)
     expected = pl.concat([null_free[p] if isinstance(p, slice) else gap for p in pieces], rechunk=False)
     assert_series_equal(with_nulls, expected, check_exact=True)
+
+
+_OFF_GRID = 3
+"""Rows in the null-free first chunk, so every later chunk's validity lands mid-byte in the output."""
+
+_SCATTERED: tuple[tuple[Literal["point", "param"], tuple[int, ...]], ...] = (("point", (2, 5)), ("param", (5, 7)))
+"""After the first chunk, one chunk per input with that input null at these rows and present elsewhere."""
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+@pytest.mark.parametrize(("spec", "method"), _VALUE_KEYED_CASES)
+def test_scattered_null_inputs_in_later_chunks_leave_other_rows_unchanged(
+    spec: DistSpec, method: Method, engine: Literal["in-memory", "streaming"]
+) -> None:
+    """Chunks mixing null and present rows of one input, after a null-free chunk, null only those rows.
+
+    Each later chunk is a slice one row in, so its validity bitmap starts mid-byte, and only one input
+    carries it, so the driver's combined validity is that bitmap with its offset rather than a fresh one.
+    """
+    frame = _null_free_frame().rechunk()
+    point = point_column(method)
+    column = {"point": point, "param": spec.parameters[-1].column}
+    row = pl.int_range(pl.len())
+
+    def nulled(input_: str, rows: tuple[int, ...]) -> pl.DataFrame:
+        c = column[input_]
+        return frame.with_columns(pl.when(row.is_in(rows)).then(None).otherwise(pl.col(c)).alias(c))[1:]
+
+    pieces = [frame[:_OFF_GRID], *(nulled(input_, rows) for input_, rows in _SCATTERED)]
+    combined = pl.concat(pieces, rechunk=False)
+    assert combined[point].n_chunks() == len(pieces)  # guard against a silent rechunk
+    expr = getattr(spec.build("name"), method)(pl.col(point))
+    query = combined.lazy().select(expr, pl.len())
+    with_nulls = (query.collect(engine=engine) if ENGINE_SELECTABLE else query.collect()).to_series()
+
+    null_free = frame.select(expr)
+    name = null_free.columns[0]
+    masked = (
+        null_free.select(pl.when(row.is_in(rows)).then(None).otherwise(name).alias(name))[1:] for _, rows in _SCATTERED
+    )
+    expected = pl.concat([null_free[:_OFF_GRID], *masked], rechunk=False).to_series()
+    assert_series_equal(with_nulls, expected, check_exact=True)
