@@ -34,7 +34,7 @@ pub mod weibull;
 
 use std::borrow::Cow;
 
-use polars::prelude::arity::{try_binary_elementwise, try_ternary_elementwise, unary_elementwise};
+use polars::prelude::arity::{try_binary_elementwise, unary_elementwise};
 use polars::prelude::*;
 use polars_arrow::array::{Array as _, PrimitiveArray};
 use polars_arrow::bitmap::{Bitmap, MutableBitmap};
@@ -553,46 +553,6 @@ where
         |a, b| Ok(derive(a, b)),
         select,
     )
-}
-
-/// [`value_keyed_derived_ternary`] through polars' `try_ternary_elementwise` row loop instead of
-/// [`LazyNullOutput::write_chunk`]. `docs/contributing.md` says which methods take it and why.
-pub(crate) fn value_keyed_derived_ternary_elementwise<Branches, Check, Derive, Select>(
-    inputs: &[Series],
-    check_params: Check,
-    derive: Derive,
-    select: Select,
-) -> PolarsResult<Series>
-where
-    Check: Fn(&Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
-    Derive: Fn(f64, f64) -> Branches,
-    Select: Fn(&Branches, f64) -> Option<f64>,
-{
-    if params_are_constant(inputs) {
-        let (a, b) = (coerce_f64(&inputs[1])?, coerce_f64(&inputs[2])?);
-        check_params(&a, &b)?;
-        if let Some((a, b)) = a.get(0).zip(b.get(0)) {
-            return value_keyed_scalar(&inputs[0], &derive(a, b), select);
-        }
-    }
-
-    let inputs = align_inputs(inputs)?;
-    let value = coerce_f64(&inputs[0])?;
-    let a = coerce_f64(&inputs[1])?;
-    let b = coerce_f64(&inputs[2])?;
-    check_params(&a, &b)?;
-
-    let out: Float64Chunked =
-        try_ternary_elementwise(&value, &a, &b, |value, a, b| -> PolarsResult<Option<f64>> {
-            let (Some(value), Some(a), Some(b)) = (value, a, b) else {
-                return Ok(None);
-            };
-            if value.is_nan() {
-                return Ok(Some(f64::NAN));
-            }
-            Ok(select(&derive(a, b), value))
-        })?;
-    Ok(out.into_series())
 }
 
 /// `2^-53`, below which `t^2 / 2` is under half an ulp of `t` and `exp(t) - 1` is `t` itself. The
