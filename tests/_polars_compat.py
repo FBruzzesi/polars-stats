@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import polars as pl
 from packaging.version import Version
 from polars.testing import assert_series_equal as _assert_series_equal
 
 if TYPE_CHECKING:
-    from polars import Series
+    from polars import DataFrame, LazyFrame, Series
 
 __all__ = (
     "LITERAL_DISPLAYS_AS_VALUE",
     "PARTITIONED_BROADCAST_AVAILABLE",
+    "Engine",
     "arr_explode",
     "assert_series_equal",
     "available_dtypes",
+    "collect_on",
     "linear_space",
 )
+
+Engine: TypeAlias = Literal["in-memory", "streaming"]
 
 PL_VERSION = Version(pl.__version__)
 _NEEDS_RENAMING = Version("1.32.3") > PL_VERSION
@@ -63,6 +67,11 @@ Both are polars defects, not plugin defects: the same expressions are correct on
 an unchanged plugin. Documented for users in `docs/reference/parameters-and-contracts.md`.
 When the polars floor reaches 1.34 this constant and every gate on it can be deleted.
 """
+
+
+def collect_on(query: LazyFrame, engine: Engine) -> DataFrame:
+    """`query.collect(engine=engine)`, or the ambient engine where `ENGINE_SELECTABLE` is false."""
+    return query.collect(engine=engine) if ENGINE_SELECTABLE else query.collect()
 
 
 def available_dtypes(*names: str) -> tuple[pl.DataType, ...]:
