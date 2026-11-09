@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 368" width="860" height="368">
+<rect width="860" height="368" fill="#f8f8ff"/>
+<line x1="122.0" y1="20" x2="590.6" y2="20" stroke="#201a38"/>
+<text x="356.3" y="14.0" font-size="13" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-weight='700'>simulate</tspan></text>
+<line x1="624.7" y1="20" x2="842.0" y2="20" stroke="#201a38"/>
+<text x="733.4" y="14.0" font-size="13" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-weight='700'>score</tspan></text>
+<text x="230.7" y="36.0" font-size="12" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-family="ui-monospace, Menlo, monospace" font-weight="700">sample</tspan> one draw per row</text>
+<text x="230.7" y="51.0" font-size="11" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1M rows: 1.6x to 8.0x</text>
+<line x1="122.0" y1="66" x2="122.0" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="122.0" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">0.1x</text>
+<line x1="176.3" y1="66" x2="176.3" y2="323.5" stroke="#201a38" stroke-width="1.5"/>
+<text x="176.3" y="336.5" font-size="10" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1x</text>
+<line x1="230.7" y1="66" x2="230.7" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="230.7" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">10x</text>
+<line x1="285.0" y1="66" x2="285.0" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="285.0" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">100x</text>
+<line x1="339.3" y1="66" x2="339.3" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="339.3" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1000x</text>
+<circle cx="133.0" cy="78.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="199.7" cy="78.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="198.7" cy="78.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="142.9" cy="95.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="197.9" cy="95.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="199.9" cy="95.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="153.0" cy="112.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="204.0" cy="112.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="207.9" cy="112.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="143.7" cy="129.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="199.8" cy="129.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="201.9" cy="129.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="153.4" cy="146.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="205.0" cy="146.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="206.3" cy="146.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="131.3" cy="163.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="187.4" cy="163.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="185.0" cy="163.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="131.9" cy="180.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="203.2" cy="180.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="199.0" cy="180.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="151.2" cy="197.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="211.3" cy="197.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="210.0" cy="197.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="161.5" cy="214.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="213.7" cy="214.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="213.3" cy="214.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="172.3" cy="231.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="225.4" cy="231.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="226.0" cy="231.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="143.7" cy="248.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="212.8" cy="248.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="215.6" cy="248.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="166.3" cy="265.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="221.7" cy="265.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="223.8" cy="265.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="161.3" cy="294.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="240.5" cy="294.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="244.2" cy="294.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="238.3" cy="311.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="308.6" cy="311.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="307.1" cy="311.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<text x="482.0" y="36.0" font-size="12" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-family="ui-monospace, Menlo, monospace" font-weight="700">samples</tspan> 10 draws per row</text>
+<text x="482.0" y="51.0" font-size="11" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1M rows: 4.7x to 18x</text>
+<line x1="373.3" y1="66" x2="373.3" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="373.3" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">0.1x</text>
+<line x1="427.6" y1="66" x2="427.6" y2="323.5" stroke="#201a38" stroke-width="1.5"/>
+<text x="427.6" y="336.5" font-size="10" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1x</text>
+<line x1="482.0" y1="66" x2="482.0" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="482.0" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">10x</text>
+<line x1="536.3" y1="66" x2="536.3" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="536.3" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">100x</text>
+<line x1="590.6" y1="66" x2="590.6" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="590.6" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1000x</text>
+<circle cx="418.4" cy="78.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="464.0" cy="78.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="470.7" cy="78.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="429.6" cy="95.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="466.6" cy="95.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="466.7" cy="95.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="438.3" cy="112.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="472.1" cy="112.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="468.9" cy="112.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="434.0" cy="129.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="469.2" cy="129.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="469.4" cy="129.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="441.3" cy="146.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="468.9" cy="146.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="468.5" cy="146.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="415.3" cy="163.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="464.8" cy="163.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="467.3" cy="163.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="418.2" cy="180.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="469.3" cy="180.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="471.2" cy="180.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="441.7" cy="197.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="474.4" cy="197.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="475.2" cy="197.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="444.9" cy="214.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="471.5" cy="214.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="473.5" cy="214.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="472.0" cy="231.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="496.4" cy="231.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="497.0" cy="231.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="445.5" cy="248.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="487.1" cy="248.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="488.6" cy="248.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="460.6" cy="265.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="482.9" cy="265.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="487.3" cy="265.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="461.7" cy="294.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="522.4" cy="294.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="523.9" cy="294.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="532.4" cy="311.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="572.9" cy="311.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="581.4" cy="311.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<text x="733.4" y="36.0" font-size="12" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-family="ui-monospace, Menlo, monospace" font-weight="700">sf</tspan> tail probability</text>
+<text x="733.4" y="51.0" font-size="11" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1M rows: 2.3x to 8.0x</text>
+<line x1="624.7" y1="66" x2="624.7" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="624.7" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">0.1x</text>
+<line x1="679.0" y1="66" x2="679.0" y2="323.5" stroke="#201a38" stroke-width="1.5"/>
+<text x="679.0" y="336.5" font-size="10" text-anchor="middle" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1x</text>
+<line x1="733.4" y1="66" x2="733.4" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="733.4" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">10x</text>
+<line x1="787.7" y1="66" x2="787.7" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="787.7" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">100x</text>
+<line x1="842.0" y1="66" x2="842.0" y2="323.5" stroke="#e4e3ee" stroke-width="1"/>
+<text x="842.0" y="336.5" font-size="10" text-anchor="middle" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1000x</text>
+<circle cx="674.4" cy="78.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="713.5" cy="78.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="717.6" cy="78.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="674.6" cy="95.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="709.8" cy="95.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="712.6" cy="95.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="670.0" cy="112.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="721.1" cy="112.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="723.8" cy="112.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="672.8" cy="129.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="713.3" cy="129.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="716.2" cy="129.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="671.1" cy="146.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="703.2" cy="146.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="706.1" cy="146.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="659.5" cy="163.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="704.2" cy="163.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="705.1" cy="163.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="669.0" cy="180.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="725.1" cy="180.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="729.9" cy="180.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="702.1" cy="197.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="715.2" cy="197.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="718.2" cy="197.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="716.6" cy="214.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="728.2" cy="214.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="731.6" cy="214.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="683.5" cy="231.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="698.2" cy="231.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="701.0" cy="231.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="652.9" cy="248.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="715.7" cy="248.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="724.5" cy="248.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="693.8" cy="265.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="711.8" cy="265.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="714.8" cy="265.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="679.3" cy="294.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="746.2" cy="294.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="748.8" cy="294.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="682.5" cy="311.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<circle cx="724.3" cy="311.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<circle cx="730.6" cy="311.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<text x="112.0" y="82.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Normal</text>
+<text x="112.0" y="99.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">LogNormal</text>
+<text x="112.0" y="116.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Cauchy</text>
+<text x="112.0" y="133.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Pareto</text>
+<text x="112.0" y="150.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Weibull</text>
+<text x="112.0" y="167.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Uniform</text>
+<text x="112.0" y="184.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Exponential</text>
+<text x="112.0" y="201.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Gamma</text>
+<text x="112.0" y="218.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Beta</text>
+<text x="112.0" y="235.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Binomial</text>
+<text x="112.0" y="252.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Geometric</text>
+<text x="112.0" y="269.5" font-size="12" text-anchor="end" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Poisson</text>
+<text x="112.0" y="298.5" font-size="12" text-anchor="end" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">Bernoulli*</text>
+<text x="112.0" y="315.5" font-size="12" text-anchor="end" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">DiscreteUniform*</text>
+<text x="122.0" y="355.5" font-size="11" text-anchor="start" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">ratio = scipy time / polars-stats time, log scale  ·  right of 1x: polars-stats faster</text>
+<text x="642.0" y="355.5" font-size="11" text-anchor="end" fill="#8a87a6" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">rows:</text>
+<circle cx="660" cy="351.5" r="4" fill="#f8f8ff" stroke="#a59fd6" stroke-width="2.5"/>
+<text x="670.0" y="355.5" font-size="11" text-anchor="start" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">10k</text>
+<circle cx="712" cy="351.5" r="4.5" fill="#6f66b8" stroke="#f8f8ff" stroke-width="2"/>
+<text x="722.0" y="355.5" font-size="11" text-anchor="start" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">1M</text>
+<circle cx="764" cy="351.5" r="4.5" fill="#201a38" stroke="#f8f8ff" stroke-width="2"/>
+<text x="774.0" y="355.5" font-size="11" text-anchor="start" fill="#201a38" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif">10M</text>
+</svg>

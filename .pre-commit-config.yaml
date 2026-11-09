@@ -15,6 +15,8 @@ repos:
     rev: v0.3.2
     hooks:
       - id: rumdl
+        # Slidev decks are Markdown plus HTML, Vue components and `---` slide separators, not docs
+        exclude: ^talks/.*/slides\.md$
   - repo: https://github.com/owenlamont/ryl-pre-commit
     rev: v0.26.1
     hooks:
