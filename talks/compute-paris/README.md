@@ -64,6 +64,11 @@ The second command rewrites `public/bench-column.svg` and its 10k-row overlay, a
 slide quotes. Update the disclaimer slide's versions and date to match, then restart the dev server: Vite inlines small
 images and keeps serving the old copy otherwise.
 
+The deck has two charts: the run on the disclaimer slide (`bench-results/`, drawn into `public/`) and the re-run after
+the Nim comparison (`bench-results-after/`, drawn into `public/after/`). For the second, change `--output-dir` to
+`talks/compute-paris/bench-results-after` and pass `talks/compute-paris/bench-results-after talks/compute-paris/public/after`
+to `bench_chart.py`.
+
 ## Editing notes
 
 * Library names are plain text (Polars, statrs, scipy, polars-stats); code is in backticks, also in titles.

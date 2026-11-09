@@ -1243,6 +1243,52 @@ The per-row case, the reason polars-stats exists. Each dot is a distribution, on
 eyebrow: 07 · Cost
 ---
 
+# Two days later, a friend rewrote polars-stats in Nim
+
+<div class="cols wide-left middle">
+<div class="cards">
+<div v-click="1" class="card"><b>"Polars plugins, without the Rust"</b>the same 14 distributions as Nim plugins: about 780 lines, against about 6,300 of Rust. His verdict: "On par, as hoped, and no more than that."</div>
+<div v-click="2" class="card move"><b>So I went back to work</b>checking a parameter column is now a tight loop the compiler can vectorise, and every answer is written in one pass, with a null mask built only when a null shows up</div>
+</div>
+<figure class="qr">
+<img src="/qr-nanuq.svg" alt="QR code for pietroppeter.github.io/nanuq-more">
+<figcaption>pietroppeter.github.io/nanuq-more</figcaption>
+</figure>
+</div>
+
+<p class="footnote">line counts and verdict from the post · both changes ship in polars-stats 0.2.0</p>
+
+<!--
+Two days after that run, my friend Pietro, who loves the Nim programming language, published a post called "Polars plugins, without the Rust". [click] He rebuilt polars-stats in Nim: the same fourteen distributions, in about 780 lines, against about 6,300 of Rust. His verdict: on par, as hoped, and no more than that.
+
+[click] I took it the only reasonable way: as a challenge. Two changes: checking a column of parameters became a tight loop the compiler can vectorise, and every answer is now written in a single pass, with a null mask built only when there's a null to record. Performance is never done, so I ran the same benchmark again.
+-->
+
+---
+eyebrow: 07 · Cost
+---
+
+# polars-stats 0.2.0, same laptop, same benchmark
+
+<div class="chart">
+<img src="/after/bench-column.svg" alt="The same dot plots for polars-stats 0.2.0: scipy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
+<img v-click="1" src="/after/bench-column-10k.svg" alt="Overlay: the 10k-row cells where scipy is ahead">
+</div>
+
+<p class="caption center">1M rows, vs 3 November: <code>sf</code> 1.3× further ahead (Uniform 3× → 12×), sampling 1.1 to 1.2×, Gamma flat</p>
+
+<p class="footnote">run on 9 November 2026 · polars-stats 0.2.0 and macOS 26.7.2, otherwise as on the disclaimer slide</p>
+
+<!--
+Same laptop, same benchmark, polars-stats 0.2.0. At a million rows, scoring with sf moved most: on geometric mean the lead over scipy grew by a third, and the cheapest closed forms moved furthest. Uniform went from three times faster than scipy to twelve, Exponential from seven to eleven, Geometric from five to eight. Sampling moved less, ten to twenty percent, and Gamma didn't move at all.
+
+[click] At ten thousand rows, scipy is still ahead on one draw per row almost everywhere. The fixed cost of planning and dispatching the query is still there, a bit smaller: 0.29 to 0.33 milliseconds a call. On par with Nim? I don't know, I didn't measure that. What I do know is that a friend's blog post made polars-stats faster, and that's the best outcome a benchmark can have.
+-->
+
+---
+eyebrow: 07 · Cost
+---
+
 # What polars-stats costs, and what comes next
 
 <div class="cols">

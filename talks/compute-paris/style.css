@@ -1010,3 +1010,8 @@ table.dice tr.cut td {
   color: var(--muted);
   font-size: 15px;
 }
+
+.cols .qr {
+  justify-self: center;
+  width: 280px;
+}
