@@ -29,9 +29,11 @@ from tests._registry import (
     DEGENERATE,
     DRIVER_REGIMES,
     SPECS_BY_NAME,
+    all_value_keyed,
     constant_column,
     density,
     invalid_cases,
+    point_column,
 )
 
 if TYPE_CHECKING:
@@ -117,13 +119,15 @@ def _null_constant(spec: DistSpec) -> _UnivariateDistribution:
 
 
 def test_a_null_constant_parameter_nulls_every_row(spec: DistSpec) -> None:
-    """A null length-1 parameter nulls every row, as a null parameter column does."""
-    frame = pl.DataFrame({"x": [0.5, 1.0, 2.0]})
+    """A null length-1 parameter nulls every row of every value-keyed method, as a null parameter column does."""
+    frame = pl.DataFrame({"x": [0.5, 1.0, 2.0], "q": [0.1, 0.5, 0.9]})
+    dist = _null_constant(spec)
 
-    result = frame.select(r=density(_null_constant(spec), pl.col("x")))["r"]
+    for method in all_value_keyed(dist):
+        result = frame.select(r=getattr(dist, method)(pl.col(point_column(method))))["r"]
 
-    assert result.len() == frame.height
-    assert result.null_count() == frame.height
+        assert result.len() == frame.height, method
+        assert result.null_count() == frame.height, method
 
 
 def test_a_null_constant_parameter_still_gates_the_value_dtype(spec: DistSpec) -> None:

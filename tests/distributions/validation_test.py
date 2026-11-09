@@ -11,6 +11,8 @@ Four claims, one probe harness, every distribution and every method:
 
 Every probe runs on a **two-row frame whose first row is fully valid**, which is what a one-row
 frame cannot see: a driver answering per *chunk* rather than per row passes a single-row probe.
+Two tests outside the harness carry the null claims across chunks: a null row in any input, in any
+chunk layout, leaves every other row bit for bit as the null-free call answers it.
 
 The parameterisations come from `tests/_registry.invalid_cases`, which is the recorded finite
 out-of-domain table plus the derived non-finite sweep, so the three tables that used to hold this and
@@ -23,15 +25,16 @@ import math
 import operator
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import polars as pl
 import pytest
 
-from polars_stats import Binomial, DiscreteUniform
-from tests._polars_compat import ENGINE_SELECTABLE, assert_series_equal
+from polars_stats import Binomial, DiscreteUniform, Uniform
+from tests._polars_compat import assert_series_equal, collect_on
 from tests._registry import (
     ALL_SPECS,
+    CONTRACT_FRAME,
     DRIVER_REGIMES,
     MOMENTS,
     all_value_keyed,
@@ -44,9 +47,16 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests._registry import DistSpec, InvalidCase, Regime
+    from tests._polars_compat import Engine
+    from tests._registry import DistSpec, InvalidCase, Method, Regime
 
 _Overrides = dict[str, float | None]
+
+_NullInput: TypeAlias = Literal["point", "param"]
+"""The input a null row or a scattered null sits in: the evaluation point, or the last parameter."""
+
+_Piece: TypeAlias = slice | _NullInput | Literal["all"]
+"""One piece of a `_LAYOUTS` frame: a slice of the null-free frame, or a null row named by what it nulls."""
 
 
 @dataclass(frozen=True)
@@ -171,6 +181,47 @@ def test_an_invalid_parameter_beside_a_null_sibling_still_raises(
     assert not unreported, f"{spec.name} did not report `{case.match}` beside a null `{sibling}`: {unreported}"
 
 
+_WITH_NULL_IN_ANOTHER_CHUNK = [
+    pytest.param(spec, case, bad.column, id=f"{spec.name}.{case.label}")
+    for spec, case in invalid_cases(ALL_SPECS)
+    if (bad := spec.blamed(case)) is not None
+]
+
+
+@pytest.mark.parametrize(("spec", "case", "slot"), _WITH_NULL_IN_ANOTHER_CHUNK)
+def test_an_invalid_parameter_in_a_later_chunk_raises_the_same_refusal(
+    spec: DistSpec, case: InvalidCase, slot: str
+) -> None:
+    """The column pass reads every chunk and names the invalid value, never a null slot's backing value.
+
+    The first chunk nulls the blamed parameter, whose backing `0.0` is out of every positive rule's domain; the
+    second holds the invalid row. Rechunked, one chunk with a validity bitmap carries both.
+    """
+    overrides: _Overrides = {p.column: bad for p, bad in zip(spec.parameters, case.params, strict=True)}
+    point = spec.on_support_point
+    invalid = _frame(spec, overrides, point)
+    chunked = pl.concat([_frame(spec, {slot: None}, point), invalid], rechunk=False)
+    assert chunked.n_chunks() > 1
+
+    for label, expr in _every_call(spec.build("name")):
+        expected = _Probe(label, invalid, expr).refusal()
+        got = [_Probe(label, frame, expr).refusal() for frame in (chunked, chunked.rechunk())]
+        assert expected is not None, f"{spec.name}.{label} computed on {case.label}"
+        assert got == [expected, expected], f"{spec.name}.{label}: {got} != {expected}"
+
+
+def test_a_pair_rule_reads_every_chunk_beside_a_broadcast_bound() -> None:
+    """A broadcast `min` arrives as one chunk; `max` here is two, with the inverted pair in the second.
+
+    `Uniform` only: `DiscreteUniform` re-checks its bounds per row, which hides a column pass that skips a chunk.
+    """
+    chunked = pl.concat([pl.DataFrame({"x": [0.5, 0.5], "hi": hi}) for hi in ([1.0, 2.0], [3.0, -1.0])], rechunk=False)
+    assert chunked.n_chunks() > 1
+
+    with pytest.raises(pl.exceptions.ComputeError, match=r"max must be .*, got min=0, max=-1"):
+        chunked.select(Uniform(min=pl.lit(0.0), max="hi").cdf(pl.col("x")))
+
+
 _SLOTS = [
     pytest.param(spec, param.column, id=f"{spec.name}.{param.name}") for spec in ALL_SPECS for param in spec.parameters
 ]
@@ -232,6 +283,144 @@ def test_a_nan_evaluation_point_propagates_as_nan(spec: DistSpec, regime: Regime
         assert out.null_count() == 0, f"{spec.name}-{regime}.{method} nulled a NaN evaluation point"
         assert not math.isnan(out[0]), f"{spec.name}-{regime}.{method} NaN-ed the ordinary row too"
         assert math.isnan(out[1]), f"{spec.name}-{regime}.{method} did not propagate NaN"
+
+
+_POINTS = pl.DataFrame(
+    {
+        # Out of `[0, 1]`, so the inverses answer null, at rows 0, 4, 8 and 9.
+        "q": [1.5, 0.1, math.nan, 0.5, -0.5, 0.9, 0.0, 1.0, math.inf, 2.0],
+        "x": [0.5, math.nan, -1.0, 1.5, 3.0, math.inf, -math.inf, 0.0, 7.0, 2.0],
+    }
+)
+
+_HALF = _POINTS.height // 2
+
+_LAYOUTS: dict[str, tuple[_Piece, ...]] = {
+    # Null rows before, between and after the data: in the point only, in one parameter only, in all.
+    "nulls-around": ("point", slice(None, _HALF), "param", slice(_HALF, None), "all"),
+    # Rows 1 to 3 answer for every method, so the validity bitmap first appears in a later chunk: at
+    # `q = 1.5` for the inverses, at the null parameter for the rest.
+    "null-free-first": (slice(1, 4), slice(None), "param"),
+}
+
+_FILLER_ROW = slice(3, 4)
+"""Where a null row copies its other columns from. Every method answers there, so the row is null only because
+of what it nulls."""
+
+_ENGINES: tuple[Engine, ...] = ("in-memory", "streaming")
+
+
+def _null_free_frame() -> pl.DataFrame:
+    """`CONTRACT_FRAME`'s parameters cycled beside `_POINTS`, each column split into two chunks at its own row.
+
+    The split row cycles with the column index, so the columns of each call disagree on at least one
+    boundary, and a loop that zips the inputs' chunks without aligning them first drops or misreads rows.
+    """
+    rows = _POINTS.height
+    params = CONTRACT_FRAME.drop(_POINTS.columns)[[i % CONTRACT_FRAME.height for i in range(rows)]]
+    columns = [*params.get_columns(), *_POINTS.get_columns()]
+    return pl.DataFrame(
+        [pl.concat([c[: 1 + i % (rows - 1)], c[1 + i % (rows - 1) :]], rechunk=False) for i, c in enumerate(columns)]
+    )
+
+
+_VALUE_KEYED_CASES = [
+    pytest.param(spec, method, id=f"{spec.name}.{method}")
+    for spec in ALL_SPECS
+    for method in all_value_keyed(spec.build("scalar"))
+]
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize("aligned", [True, False], ids=["aligned-chunks", "staggered-chunks"])
+@pytest.mark.parametrize("layout", _LAYOUTS)
+@pytest.mark.parametrize(("spec", "method"), _VALUE_KEYED_CASES)
+def test_null_rows_leave_other_rows_unchanged(
+    spec: DistSpec, method: Method, layout: str, engine: Engine, *, aligned: bool
+) -> None:
+    """A null row answers null, and every other row matches the null-free call bit for bit.
+
+    Aligned chunks share their boundaries across inputs; staggered chunks are what the drivers must align
+    before zipping. `pl.len()` beside the call keeps the in-memory engine from splitting the frame into
+    one call per chunk, so one call reads every chunk in order. The streaming engine still calls the
+    plugin once per morsel, so its arm pins the per-morsel slices rather than the chunk boundaries.
+    """
+    frame = _null_free_frame()
+    point = point_column(method)
+    expr = getattr(spec.build("name"), method)(pl.col(point))
+    nulled_columns: dict[_NullInput | Literal["all"], set[str]] = {
+        "point": {point},
+        "param": {spec.parameters[-1].column},
+        "all": set(frame.columns),
+    }
+
+    def null_row(nulled: set[str]) -> pl.DataFrame:
+        return pl.DataFrame(
+            [
+                pl.Series(name, [None] if name in nulled else frame[name][_FILLER_ROW], dtype)
+                for name, dtype in frame.schema.items()
+            ]
+        )
+
+    def data_rows(part: slice) -> pl.DataFrame:
+        return frame[part].rechunk() if aligned else frame[part]
+
+    pieces = _LAYOUTS[layout]
+    combined = pl.concat(
+        [data_rows(p) if isinstance(p, slice) else null_row(nulled_columns[p]) for p in pieces], rechunk=False
+    )
+    boundaries = {tuple(map(len, combined[c].get_chunks())) for c in [point, *(p.column for p in spec.parameters)]}
+    assert combined[point].n_chunks() >= len(pieces)  # guard against a silent rechunk
+    assert (len(boundaries) == 1) is aligned  # staggered inputs disagree on at least one boundary
+    with_nulls = collect_on(combined.lazy().select(expr, pl.len()), engine).to_series()
+
+    null_free = frame.select(expr).to_series()
+    assert null_free[1:4].null_count() == 0  # the "null-free-first" premise
+    gap = pl.Series(null_free.name, [None], null_free.dtype)
+    expected = pl.concat([null_free[p] if isinstance(p, slice) else gap for p in pieces], rechunk=False)
+    assert_series_equal(with_nulls, expected, check_exact=True)
+
+
+_FIRST_CHUNK_ROWS = 3
+"""Rows in the null-free first chunk, so every later chunk's validity lands mid-byte in the output."""
+
+_SCATTERED_NULLS: tuple[tuple[_NullInput, tuple[int, ...]], ...] = (("point", (2, 5)), ("param", (5, 7)))
+"""After the first chunk, one chunk per input, null at these rows of that input and present elsewhere."""
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize(("spec", "method"), _VALUE_KEYED_CASES)
+def test_scattered_null_inputs_in_later_chunks_leave_other_rows_unchanged(
+    spec: DistSpec, method: Method, engine: Engine
+) -> None:
+    """Chunks mixing null and present rows of one input, after a null-free chunk, null only those rows.
+
+    Each later chunk is a slice one row in, so its validity bitmap starts mid-byte, and only one input
+    carries it, so the driver's combined validity is that bitmap with its offset rather than a fresh one.
+    """
+    frame = _null_free_frame().rechunk()
+    point = point_column(method)
+    input_column: dict[_NullInput, str] = {"point": point, "param": spec.parameters[-1].column}
+    row = pl.int_range(pl.len())
+
+    def nulled_at(target: _NullInput, rows: tuple[int, ...]) -> pl.DataFrame:
+        name = input_column[target]
+        return frame.with_columns(pl.when(row.is_in(rows)).then(None).otherwise(pl.col(name)).alias(name))[1:]
+
+    pieces = [frame[:_FIRST_CHUNK_ROWS], *(nulled_at(target, rows) for target, rows in _SCATTERED_NULLS)]
+    combined = pl.concat(pieces, rechunk=False)
+    assert combined[point].n_chunks() == len(pieces)  # guard against a silent rechunk
+    expr = getattr(spec.build("name"), method)(pl.col(point))
+    with_nulls = collect_on(combined.lazy().select(expr, pl.len()), engine).to_series()
+
+    null_free = frame.select(expr)
+    name = null_free.columns[0]
+    masked = (
+        null_free.select(pl.when(row.is_in(rows)).then(None).otherwise(name).alias(name))[1:]
+        for _, rows in _SCATTERED_NULLS
+    )
+    expected = pl.concat([null_free[:_FIRST_CHUNK_ROWS], *masked], rechunk=False).to_series()
+    assert_series_equal(with_nulls, expected, check_exact=True)
 
 
 _REFUSED_DTYPES = (pl.Boolean(), pl.String(), pl.Date())
@@ -464,7 +653,7 @@ def test_a_null_dtype_trial_count_column_propagates() -> None:
     frame = pl.DataFrame({"n": [None, None], "p": [0.5, 0.5]})  # n dtype: Null
     dist = Binomial(pl.col("n"), pl.col("p"))
     query = frame.lazy().select(mean=dist.mean(), pmf=dist.pmf(1.0), draw=dist.sample(seed=0))
-    got = query.collect(engine="in-memory") if ENGINE_SELECTABLE else query.collect()
+    got = collect_on(query, "in-memory")
     assert got["mean"].to_list() == [None, None]
     assert got["pmf"].to_list() == [None, None]
     assert got["draw"].to_list() == [None, None]

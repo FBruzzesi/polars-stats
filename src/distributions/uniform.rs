@@ -15,24 +15,30 @@ const MIN: ParamDomain = ParamDomain::finite("min");
 const MAX: ParamDomain = ParamDomain::finite("max");
 
 /// `max - min` overflows to `inf` for `min=-1e308, max=1e308`, and every derived quantity with it.
-const BOUNDS: PairDomain<f64> = PairDomain {
-    names: ("min", "max"),
-    rule: "strictly greater than min, and max - min must be finite",
-    accepts: |min, max| max > min && (max - min).is_finite(),
-};
+struct Bounds;
+
+impl PairDomain for Bounds {
+    type Native = f64;
+    const NAMES: (&'static str, &'static str) = ("min", "max");
+    const DESCRIPTION: &'static str = "strictly greater than min, and max - min must be finite";
+
+    fn accepts(min: f64, max: f64) -> bool {
+        max > min && (max - min).is_finite()
+    }
+}
 
 /// The samplers' per-row state: the bounds themselves, checked.
 fn checked_bounds(min: f64, max: f64) -> PolarsResult<(f64, f64)> {
     MIN.check(min)?;
     MAX.check(max)?;
-    BOUNDS.check(min, max)?;
+    Bounds::check(min, max)?;
     Ok((min, max))
 }
 
 fn check_params(min: &Float64Chunked, max: &Float64Chunked) -> PolarsResult<()> {
     MIN.check_column(min)?;
     MAX.check_column(max)?;
-    BOUNDS.check_columns(min, max)
+    Bounds::check_columns(min, max)
 }
 
 /// Constant parameters, deserialised once per call; every `_scalar` twin checks them once here.

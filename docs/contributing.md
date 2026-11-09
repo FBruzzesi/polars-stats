@@ -132,8 +132,8 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       through them rather than writing that branch yourself.
     * **`is_elementwise=True`**, which the shared `register_plugin` shim fixes for you. An aggregating plugin would
       break `over` and `group_by`, so it is a guard rather than a default.
-    * **Null in, null out.** The `try_*_elementwise` drivers give you that; a raw `.into_iter()` over chunks does not,
-      which is the one way to lose the contract while writing ordinary-looking Rust.
+    * **Null in, null out.** The drivers in `mod.rs` and `src/rng.rs` give you that; a raw `.into_iter()` over chunks
+      does not, which is the one way to lose the contract while writing ordinary-looking Rust.
     * Always the samplers. Every one is a one-line shell over a driver in `src/rng.rs`; none resolves a seed, coerces
       an input or writes a row loop itself, which is what keeps seeding, `null` propagation (a `null` in any input
       nulls the row) and the invalid-parameter error contract in one place. The per-row `<name>_sample` /
@@ -188,17 +188,19 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
           rows.
         * The per-row shell is one line over `value_keyed_derived_binary(inputs, &DOMAIN, derive, select)` (one
           parameter) or `value_keyed_derived_ternary(inputs, check_params, derive, select)` (two); these wrap
-          `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so there is one row loop
-          per arity in the crate. The `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`, an inherent
-          method that checks the constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the
-          driver's constant branch makes.
+          `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so every column call
+          runs the drivers' one row loop, `LazyNullOutput::write_chunk`. `discrete_uniform.rs`'s six `point_keyed`
+          methods keep polars' `try_ternary_elementwise` instead, to hold an integer point in integer arithmetic. The
+          `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`, an inherent method that checks the
+          constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the driver's constant
+          branch makes.
     * State each parameter's domain once as a `ParamDomain` constant (`ParamDomain::finite("mu")`,
-      `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`, or a literal for any other rule) and a joint
-      constraint as a `PairDomain`. Every column-parameter plugin runs `check_column` / `check_columns` over its
-      parameter columns before its row loop, and every `<Name>Params::build` runs `check` once, so an invalid
-      parameter raises the same `ComputeError` in both regimes whatever else its row holds. Keep a
-      `build_dist(...) -> PolarsResult<Dist>` around the `statrs` constructor for the row loops; behind the pass it
-      cannot fail.
+      `ParamDomain::positive("sigma")`, `ParamDomain::probability("p")`; for any other rule, add a `Rule` variant)
+      and a joint constraint as a unit struct implementing `PairDomain` (`uniform.rs`'s `Bounds`). Every
+      column-parameter plugin runs `check_column` / `check_columns` over its parameter columns before its row loop,
+      and every `<Name>Params::build` runs `check` once, so an invalid parameter raises the same `ComputeError` in
+      both regimes whatever else its row holds. Keep a `build_dist(...) -> PolarsResult<Dist>` around the `statrs`
+      constructor for the row loops; behind the pass it cannot fail.
 2. **Python.** Add `polars_stats/distributions/_<name>.py`, subclassing `ContinuousDistribution` or
    `DiscreteDistribution`. In `__init__`, coerce each parameter with `coerce_param` / `coerce_n` (types only, **never
    validate values** at construction, let invalid values raise in Rust) and store the fast-path bundle

@@ -52,7 +52,7 @@ match against SciPy cannot see:
 
 | File | Contract |
 | --- | --- |
-| `validation_test.py` | an invalid parameter raises and names its rule; a null one nulls that row only; a null or `NaN` evaluation point; the numeric and integer dtype gates |
+| `validation_test.py` | an invalid parameter raises and names its rule; a null one nulls that row only; a null or `NaN` evaluation point; a null row, in any input and in any chunk, leaves every other row unchanged; the numeric and integer dtype gates |
 | `support_test.py` | outside the support the answers are saturated constants, and a finite endpoint of a continuous support is already saturated |
 | `inverse_test.py` | `ppf(0)` / `ppf(1)` are the support bounds, and a discrete inverse is integer-valued |
 | `moments_test.py` | `std` is the square root of `variance`, the mean is inside the support, the variance is non-negative, or both are null where `UNDEFINED_MOMENTS` records them; a divergent `Pareto` moment is `+inf` on both routings |

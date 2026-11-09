@@ -1,3 +1,5 @@
+use std::hint::select_unpredictable;
+
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::RngExt;
@@ -63,15 +65,11 @@ impl Mass {
         }
     }
 
-    /// Exact `f64` equality, never an integer cast: `pmf(0.5)` is `0.0`, not an error.
+    /// Exact `f64` equality, never an integer cast: `pmf(0.5)` is `0.0`, not an error. Each row's
+    /// point picks its arm, so a branch would mispredict on a column of random 0s and 1s.
     fn at(&self, value: f64) -> Option<f64> {
-        Some(if value == 0.0 {
-            self.at_zero
-        } else if value == 1.0 {
-            self.at_one
-        } else {
-            self.off_support
-        })
+        let off_zero = select_unpredictable(value == 1.0, self.at_one, self.off_support);
+        Some(select_unpredictable(value == 0.0, self.at_zero, off_zero))
     }
 }
 
@@ -117,14 +115,14 @@ impl Steps {
         }
     }
 
+    /// Branch-free for the reason [`Mass::at`] gives.
     fn at(&self, value: f64) -> Option<f64> {
-        Some(if value < 0.0 {
-            self.below_zero
-        } else if value < 1.0 {
-            self.below_one
-        } else {
-            self.at_least_one
-        })
+        let from_zero = select_unpredictable(value < 1.0, self.below_one, self.at_least_one);
+        Some(select_unpredictable(
+            value < 0.0,
+            self.below_zero,
+            from_zero,
+        ))
     }
 }
 
