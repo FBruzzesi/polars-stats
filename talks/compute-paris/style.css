@@ -552,6 +552,11 @@ table.dice tr.cut td {
   color: var(--negative);
 }
 
+/* Wrong but still plausible: a warning, not yet an alarm. */
+.stat.warn {
+  color: #d9730d;
+}
+
 .stat.mid {
   font-size: 80px;
   line-height: 104px;
@@ -816,40 +821,6 @@ table.dice tr.cut td {
 .slidev-layout .promise.off {
   background: var(--negative);
   color: var(--milky-way);
-}
-
-.rulers {
-  display: grid;
-  gap: 14px;
-}
-
-.ruler {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  align-items: center;
-  gap: 16px;
-  font-size: 20px;
-}
-
-.ruler .track {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.ruler .bar {
-  height: 14px;
-  border-radius: 7px;
-  background: var(--interstellar);
-}
-
-.ruler .bar.short {
-  width: 38%;
-}
-
-.ruler .bar.long {
-  width: 100%;
-  background: var(--oxygen);
 }
 
 .derive {

@@ -4,7 +4,7 @@
 Usage: python bench_chart.py RESULTS_DIR [OUT_DIR]
 
 Writes `bench-column.svg` (every cell) and `bench-column-10k.svg` (the overlay ringing the 10k-row cells
-where scipy is ahead) into OUT_DIR, `public/` by default, and prints the ranges the slide's notes quote.
+where SciPy is ahead) into OUT_DIR, `public/` by default, and prints the ranges the slide's notes quote.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ MAIN = [
     ("geometric", "Geometric"),
     ("poisson", "Poisson"),
 ]
-# scipy takes a slow path for these two (np.vectorize, a general binomial), so they sit apart and unquoted.
+# SciPy takes a slow path for these two (np.vectorize, a general binomial), so they sit apart and unquoted.
 STARRED = [("bernoulli", "Bernoulli*"), ("discrete_uniform", "DiscreteUniform*")]
 PANELS = [("sample", "one draw per row"), ("samples", "10 draws per row"), ("sf", "tail probability")]
 ROWS = {10_000: "10k", 1_000_000: "1M", 10_000_000: "10M"}
@@ -78,7 +78,7 @@ def fmt(ratio: float) -> str:
 
 
 def load(results_dir: Path) -> Ratios:
-    """The scipy / polars-stats ratio of every column-regime cell, keyed by distribution, method and rows."""
+    """The SciPy / polars-stats ratio of every column-regime cell, keyed by distribution, method and rows."""
     ratios: Ratios = {}
     for path in results_dir.glob("*.json"):
         report = json.loads(path.read_text())
@@ -142,7 +142,7 @@ def chart(ratios: Ratios) -> str:
         for key, label in MAIN + STARRED
     ]
     footer = bottom + 32
-    note = "ratio = scipy time / polars-stats time, log scale  ·  right of 1x: polars-stats faster"
+    note = "ratio = SciPy time / polars-stats time, log scale  ·  right of 1x: polars-stats faster"
     out += [
         text(PANEL_X[0], footer, note, size=11, anchor="start", fill=MUTED),
         text(642, footer, "rows:", size=11, anchor="end", fill=MUTED),
@@ -156,7 +156,7 @@ def chart(ratios: Ratios) -> str:
 
 
 def overlay(ratios: Ratios) -> str:
-    """The 10k-row reading: polars-stats' side dimmed, and a ring round every 10k cell scipy wins."""
+    """The 10k-row reading: polars-stats' side dimmed, and a ring round every 10k cell SciPy wins."""
     ys = row_y()
     bottom = max(ys.values()) + 12
     height = bottom + 44
@@ -166,7 +166,7 @@ def overlay(ratios: Ratios) -> str:
         dim = f'<rect x="{one + 1:.1f}" y="64" width="{3 * DECADE - 1:.1f}" height="{bottom - 64:.1f}"'
         out += [
             f'{dim} fill="{PAPER}" fill-opacity="0.72"/>',
-            text(one - 6, 62, "<tspan font-weight='700'>scipy ahead</tspan>", size=10, anchor="end"),
+            text(one - 6, 62, "<tspan font-weight='700'>SciPy ahead</tspan>", size=10, anchor="end"),
         ]
         for key, _ in MAIN + STARRED:
             ratio = ratios.get((key, method, 10_000))
@@ -177,7 +177,7 @@ def overlay(ratios: Ratios) -> str:
 
 
 def summary(ratios: Ratios) -> str:
-    """The ranges the notes quote: per method and row count, and every cell scipy wins."""
+    """The ranges the notes quote: per method and row count, and every cell SciPy wins."""
     lines = []
     for method, _ in PANELS:
         for rows, label in ROWS.items():
@@ -190,7 +190,7 @@ def summary(ratios: Ratios) -> str:
                 if (ratio := ratios.get((key, method, rows), 1.0)) < 1
             )
             span = f"{fmt(min(main))} to {fmt(max(main))}"
-            lines.append(f"{method:8} {label:>4}: {span}; scipy ahead: {', '.join(ahead) or 'none'}")
+            lines.append(f"{method:8} {label:>4}: {span}; SciPy ahead: {', '.join(ahead) or 'none'}")
     return "\n".join(lines) + "\n"
 
 

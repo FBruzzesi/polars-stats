@@ -23,6 +23,6 @@ withDefaults(defineProps<{ pins?: number, mini?: boolean, summary?: boolean }>()
       </div>
       <div v-if="!mini" class="giant"><b>statrs</b><span>the maths: one distribution, one value at a time</span></div>
     </div>
-    <div v-if="!mini" class="side"><b>scipy</b><span>the vocabulary, and the ruler</span></div>
+    <div v-if="!mini" class="side"><b>SciPy</b><span>the vocabulary, and the ruler</span></div>
   </div>
 </template>

@@ -71,7 +71,7 @@ to `bench_chart.py`.
 
 ## Editing notes
 
-* Library names are plain text (Polars, statrs, scipy, polars-stats); code is in backticks, also in titles.
+* Library names are plain text (Polars, statrs, SciPy, polars-stats); code is in backticks, also in titles.
 * Every output on a slide was re-run against the library; `talk-script.md` lists where each number comes from. The
   sensor table's values live in `components/Frame.vue`.
 * Layout lives in `style.css`: the title sits under its eyebrow, a final `footnote` pins to the bottom, and colours come
