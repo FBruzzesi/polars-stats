@@ -863,6 +863,21 @@ table.dice tr.cut td {
   width: 600px;
 }
 
+/* Pietro's verdict, a card laid over the benchmark chart, in the post's own background. */
+.chart .shot-quote {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 720px;
+  margin: 0;
+  padding: 20px 24px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #f3f7f9;
+  box-shadow: 0 12px 36px rgba(32, 26, 56, 0.22);
+  transform: translate(-50%, -50%);
+}
+
 .shots img {
   display: block;
   width: 100%;
@@ -872,7 +887,8 @@ table.dice tr.cut td {
   box-shadow: 0 12px 36px rgba(32, 26, 56, 0.22);
 }
 
-.shots figcaption {
+.shots figcaption,
+.chart .shot-quote figcaption {
   margin-top: 8px;
   color: var(--muted);
   font-size: 17px;

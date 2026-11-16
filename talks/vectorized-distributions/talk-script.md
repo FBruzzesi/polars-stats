@@ -77,7 +77,7 @@ prediction, the `1 - (1 - p)` derivation, `-1.147`, and the benchmark disclaimer
 | `stats.norm(loc=0, scale=-1).sf(1.0)` is `nan`, with no warning | Re-run with SciPy 1.18.1, warnings captured: none |
 | Polars has `erf` and `erfc` but no gamma or beta functions, inverse cdfs or distribution sampling | Polars 2.1.0, `dir(pl.Expr)`; `Expr.sample` samples rows, not distributions |
 | statrs `Normal::new(10.0, 0.5).sf(10.4)` is 0.211855… and `Normal::new(0.0, -1.0)` is `Err(StandardDeviationInvalid)` | statrs 0.19.1: the value through polars-stats, which calls `sf` directly; the error from statrs' source |
-| The pushdown plans, with and without `is_elementwise`, and 497 identical rows on both engines | Re-run on Polars 2.1.0, a 1,000,000-row Parquet file of the two sensors; the plugin node is shortened on the slide |
+| The pushdown plans, with and without `is_elementwise` | Re-run on Polars 2.1.0, a 1,000,000-row Parquet file of the two sensors; the plugin node is shortened on the slide |
 | The `simulated` column, `seed=42`: `9.763219`, `10.825292`, `11.172469`, `98.532788`, `100.147242`, `97.717269`, identical on both engines | Re-run on Polars 2.1.0 |
 | The first sampler: one `ChaCha20Rng` walking the rows, documented as not supporting streaming | The first commit, `e0d4a16` |
 | A generator per row: `ChaCha20` 10 to 20 times slower; `Pcg64Mcg` took 1M rows × 100 draws from 5.9 s to 0.29 s | PR #7 |

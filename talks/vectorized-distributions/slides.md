@@ -2,6 +2,7 @@
 theme: none
 title: Vectorized statistical distributions, built on the Polars engine
 info: 25 minutes plus 5 of Q&A
+favicon: /logo.svg
 author: Francesco Bruzzesi
 colorSchema: light
 canvasWidth: 1280
@@ -452,7 +453,6 @@ eyebrow: 02 · The plugin
 <div class="cols plan small-code">
 <div class="window" data-file="pipeline.py" data-lang="Python">
 
-````md magic-move {at:3}
 ```python
 import polars as pl
 import polars_stats as ps
@@ -466,22 +466,6 @@ scored = (
 )
 print(scored.explain())
 ```
-```python
-import polars as pl
-import polars_stats as ps
-
-baseline = ps.Normal(mu="mu", sigma="sigma")
-scored = (
-    pl.scan_parquet("readings.parquet")
-    .with_columns(upper_tail=baseline.sf("reading"))
-    .filter(pl.col("sensor") == "temp-b")
-    .filter(pl.col("upper_tail") < 1e-3)
-)
-a = scored.collect(engine="in-memory")
-b = scored.collect(engine="streaming")
-a.height, b.height, a.equals(b)  # (497, 497, True)
-```
-````
 
 </div>
 <div v-click="1" class="plan-col">
@@ -507,22 +491,11 @@ FROM
     Parquet SCAN [readings.parquet]
     PROJECT */4 COLUMNS
 ```
-```text
-FILTER col("upper_tail") < 0.001
-FROM
-  WITH_COLUMNS:
-  [… normal_sf(…) …]
-    Parquet SCAN [readings.parquet]
-    PROJECT */4 COLUMNS
-    SELECTION: col("sensor") == "temp-b"
-```
 ````
 
 </div>
 </div>
 </div>
-
-<p v-click="3" class="caption">same rows on both engines · <code>over</code> / <code>group_by</code>: per group · Polars' thread pool: every core</p>
 
 <p class="footnote">Polars 2.1.0 · a 1,000,000-row Parquet file of the two sensors · plugin node shortened · read the plan from the bottom up</p>
 
@@ -532,8 +505,6 @@ A pipeline. Scan a Parquet file, a common columnar file format, holding a millio
 [click] Here's the plan Polars builds, read from the bottom up. The filter on sensor B, which I wrote after the scoring, has moved down into the file reader. Half the rows are never decoded, so my function never sees them. That's predicate pushdown, and I wrote none of it.
 
 [click] Is that the promise, or would Polars do it anyway? Same query, is_elementwise=False. [pause] The sensor filter goes back to the top, and every row gets scored. If my function could look at its neighbours, removing rows first might change the answers, so Polars won't risk it. The promise buys the optimisation.
-
-[click] Back to the real flag, and run it: in-memory engine, streaming engine, the same 497 rows, identical. Put it inside an over or a group_by and it works per group. All on Polars' thread pool.
 -->
 
 ---
@@ -1224,6 +1195,10 @@ eyebrow: 07 · Cost
 
 <div class="chart">
 <img src="/after/bench-column.svg" alt="The same dot plots for polars-stats 0.2.0: SciPy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
+<figure v-click="1" class="shot-quote">
+<img src="/nanuq-round-three.png" alt="From the post: Round three goes to Francesco, no contest. Nim's homework is now a precise list: a row loop with no per-row overhead, constant checks hoisted out of the loop, then the gamma quantile and the samplers. The ball is in Nim's court, and it is bouncing rather fast.">
+<figcaption>nanuq-more, round three (updated 9 November)</figcaption>
+</figure>
 </div>
 
 <p class="caption center">1M rows, vs 3 November: <code>sf</code> 1.3× further ahead (Uniform 3× → 12×), sampling 1.1 to 1.2×, Gamma flat</p>
@@ -1231,7 +1206,9 @@ eyebrow: 07 · Cost
 <p class="footnote">run on 9 November 2026 · polars-stats 0.2.0 and macOS 26.7.2, otherwise as on the disclaimer slide</p>
 
 <!--
-Same laptop, same benchmark, a week later. Scoring got a lot faster: Uniform went from three times faster than SciPy to twelve. I didn't measure Nim again, so I can't tell you who's ahead now. I can tell you that a friend's blog post made polars-stats faster.
+Same laptop, same benchmark, a week later. Scoring got a lot faster: Uniform went from three times faster than SciPy to twelve.
+
+[click] And Pietro measured again. In his words: round three goes to Francesco, no contest. That's at a million rows, on the cheapest formulas; at ten million rows it's still split. And the ball is in Nim's court, bouncing rather fast. What I can tell you for sure: a friend's blog post made polars-stats faster.
 -->
 
 ---
@@ -1281,11 +1258,11 @@ class: statement
 <span>Borrow the engine.</span>
 <span v-click="1">Borrow the maths.</span>
 <span v-click="2">Enforce what neither promises you,</span>
-<span v-click="3">inside the plugin, before it becomes a bug.</span>
+<span v-click="2">inside the plugin, before it becomes a bug.</span>
 </h1>
 
 <!--
-So if you take one thing home: borrow the engine. [click] Borrow the maths. [click] And enforce what neither of them promises you, [click] inside your own code, before it becomes a bug. And when the bug is in theirs, send a reproducer upstream.
+So if you take one thing home: borrow the engine. [click] Borrow the maths. [click] And enforce what neither of them promises you, inside your own code, before it becomes a bug. And when the bug is in theirs, send a reproducer upstream.
 -->
 
 ---
