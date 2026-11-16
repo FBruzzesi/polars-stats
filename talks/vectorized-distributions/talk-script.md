@@ -20,7 +20,7 @@ the plugin, before it becomes a bug.
 | SciPy | Python's scientific library; `scipy.stats` has more than a hundred distributions | The vocabulary (method names) and the ruler (every method is tested against it) |
 | statrs | The closest thing Rust has to `scipy.stats`, maintained by volunteers | The maths: densities, cdfs, inverses, sampling, with `erf`, gamma and beta underneath |
 
-**The running example.** Six readings from two temperature sensors, two of them faults. Two jobs: score each reading
+**The running example.** Six readings from two temperature sensors, two of them faults. Two tasks: score each reading
 against its own sensor's distribution (`sf`, then `log_sf`) and simulate readings from it (`sample`). The sensor table
 gains a column as the talk goes, and a stack (Polars on top, statrs below, `polars-stats` in between) gains one
 contract per section.

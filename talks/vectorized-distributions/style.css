@@ -33,6 +33,8 @@
   --grey: #51677a;
   --negative: #c8102e;
   --negative-light: #fccfd6;
+  --warning: #d9730d;
+  --warning-light: #fde3c8;
   --font-body: Inter, "Helvetica Neue", Arial, sans-serif;
   --font-code: "JetBrains Mono", ui-monospace, Menlo, monospace;
   --radius: 12px;
@@ -445,6 +447,11 @@
   font-size: 22px;
 }
 
+.card .next {
+  padding-left: 22px;
+  list-style: disc;
+}
+
 .card.move {
   border-left-color: var(--oxygen);
   background: color-mix(in srgb, var(--oxygen-light) 45%, #fff);
@@ -503,6 +510,12 @@ table.frame td.flag {
   font-weight: 700;
 }
 
+table.frame td.wrong {
+  background: var(--warning-light);
+  color: var(--warning);
+  font-weight: 700;
+}
+
 table.frame th,
 table.frame td {
   transition: opacity 0.4s, background 0.4s;
@@ -554,7 +567,7 @@ table.dice tr.cut td {
 
 /* Wrong but still plausible: a warning, not yet an alarm. */
 .stat.warn {
-  color: #d9730d;
+  color: var(--warning);
 }
 
 .stat.mid {
@@ -908,6 +921,36 @@ table.dice tr.cut td {
 .chart img + img {
   position: absolute;
   inset: 0;
+}
+
+/* Paper veils over the benchmark panels that are not being talked about. Offsets are the panels'
+   x ranges in bench_chart.py's 860 × 368 viewBox, padded for the axis labels. */
+.chart .dim {
+  position: absolute;
+  top: 7%;
+  bottom: 6%;
+  width: 28.1%;
+  background: var(--paper);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+
+.chart .dim.on {
+  opacity: 0.8;
+}
+
+.chart .dim.sample {
+  left: 13.3%;
+  width: 27.6%;
+}
+
+.chart .dim.samples {
+  left: 42%;
+}
+
+.chart .dim.sf {
+  left: 71.2%;
 }
 
 /* A rubber stamp laid across the disclaimer slide. */

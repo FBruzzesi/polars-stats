@@ -11,9 +11,10 @@ const ROWS: Record<string, string>[] = [
 const FAULTS = new Set([2, 5])
 
 // `ghost` columns take their place in the layout but stay invisible, so revealing them never moves the others.
-withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, ghost?: string[] }>(), {
+withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, wrong?: string, ghost?: string[] }>(), {
   fresh: undefined,
   flag: undefined,
+  wrong: undefined,
   ghost: () => [],
 })
 </script>
@@ -25,7 +26,7 @@ withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, ghost?
     </thead>
     <tbody>
       <tr v-for="(row, i) in ROWS" :key="i">
-        <td v-for="c in cols" :key="c" :class="{ flag: c === flag && FAULTS.has(i), fresh: c === fresh, ghost: ghost.includes(c) }">{{ row[c] }}</td>
+        <td v-for="c in cols" :key="c" :class="{ flag: c === flag && FAULTS.has(i), wrong: c === wrong && FAULTS.has(i), fresh: c === fresh, ghost: ghost.includes(c) }">{{ row[c] }}</td>
       </tr>
     </tbody>
   </table>
