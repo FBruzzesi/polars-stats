@@ -1,7 +1,7 @@
 ---
 theme: none
 title: Vectorized statistical distributions, built on the Polars engine
-info: compute! Paris 2026, 25 minutes plus 5 of Q&A
+info: 25 minutes plus 5 of Q&A
 author: Francesco Bruzzesi
 colorSchema: light
 canvasWidth: 1280
@@ -15,7 +15,7 @@ fonts:
   provider: none
 layout: default
 class: cover
-eyebrow: compute! Paris 2026
+event: true
 ---
 
 # Vectorized statistical distributions,<br>built on the Polars engine

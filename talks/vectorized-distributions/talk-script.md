@@ -1,6 +1,6 @@
 # Vectorized statistical distributions, built on the Polars engine
 
-The outline of the compute! Paris 2026 talk: what it argues, how it gets there, and where every number on a slide comes
+The outline of the talk: what it argues, how it gets there, and where every number on a slide comes
 from. The words themselves are the presenter notes in [`slides.md`](slides.md).
 
 ## The argument
