@@ -368,6 +368,16 @@
   align-items: center;
 }
 
+/* The bell plots centre on the table; their caption takes a row of its own below them. */
+.cols.bells {
+  row-gap: 8px;
+}
+
+.cols.bells > .caption {
+  grid-column: 2;
+  margin: 0;
+}
+
 .trio {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

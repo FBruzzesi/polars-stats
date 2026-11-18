@@ -21,9 +21,9 @@ event: true
 
 # Vectorized statistical distributions,<br>built on the Polars engine
 
-<p class="byline">Francesco Bruzzesi</p>
+<p class="tagline"><code>scipy.stats</code>-style distributions as native Polars expressions</p>
 
-<p class="tagline"><code>scipy.stats</code>-style distributions as native Polars expressions, with a different distribution on every row</p>
+<p class="byline">Francesco Bruzzesi</p>
 
 <img class="cover-bell" src="/cover-bell.svg" alt="">
 
@@ -33,12 +33,10 @@ clicks: 1
 
 # Two of these six readings are faults. Which?
 
-<div class="cols wide-left middle">
+<div class="cols wide-left middle bells">
 <Frame :cols="['sensor', 'reading', 'mu', 'sigma', 'z']" :ghost="$clicks >= 1 ? [] : ['z']" :flag="$clicks >= 1 ? 'reading' : undefined" fresh="z" />
-<div v-click="1">
-<img src="/bells.svg" alt="One bell curve per sensor, the upper tail beyond a healthy reading shaded, each fault far off the chart">
-<p class="caption">z: how far · the tail: how surprising</p>
-</div>
+<img v-click="1" src="/bells.svg" alt="One bell curve per sensor, the upper tail beyond a healthy reading shaded, each fault far off the chart">
+<p v-click="1" class="caption">z: how far · the tail: how surprising</p>
 </div>
 
 <div v-click="1" class="caption">
@@ -291,17 +289,17 @@ $$
 </div>
 
 <div class="cards">
-<div v-click="1" class="card bad"><b><code>map_elements</code></b>a Python function, SciPy inside, called once per row: through the interpreter, on one thread</div>
-<div v-click="2" class="card bad"><b>Polars' own <code>erfc</code></b>one tail of one distribution: nothing for Gamma's or Beta's incomplete functions, inverse cdfs, log tails or seeded draws</div>
+<div v-click="1" class="card bad"><b>Polars' own <code>erfc</code></b>one tail of one distribution: nothing for Gamma's or Beta's incomplete functions, inverse cdfs, log tails or seeded draws</div>
+<div v-click="2" class="card bad"><b>Back to Python: <code>map_elements</code></b>Polars' escape hatch runs a Python function, SciPy inside, once per row: through the interpreter, on one thread</div>
 <div v-click="3" class="card move"><b>An expression plugin</b>a compiled Rust function that takes columns and returns a column; Polars calls it as one of its own expressions. The maths is still yours to write</div>
 </div>
 
 <!--
 Polars already has the first half, the z-score. Turning a z-score into a tail probability takes a special function, the error function, and recent Polars ships with it: for the Normal, the tail is one line. But what would you reach for when the distribution isn't Normal? [pause]
 
-[click] map_elements: call a Python function, with SciPy inside, once per row. It works, through the interpreter, on one thread.
-
 [click] Polars' own erfc covers one tail of one distribution. A Gamma or a Beta needs incomplete gamma and beta functions, a quantile needs an inverse, the far tail needs logarithms, and simulation needs seeded draws. Polars has none of those, and it shouldn't: **it's a query engine**.
+
+[click] So you go back to Python. Polars has an escape hatch for that, map_elements: it calls a Python function, with SciPy inside, once per row. It works, through the interpreter, on one thread.
 
 [click] The solution is to use the door the Polars team builds and documents: an expression plugin. You write a Rust function that takes columns and returns a column, and Polars calls it as one of its own expressions. That solves the engine side. The maths is still under our responsibility.
 
@@ -603,6 +601,7 @@ use statrs::distribution::Bernoulli;
 let mut rng = ChaCha20Rng::seed_from_u64(seed);
 for i in 0..n {
     let dist = Bernoulli::new(p[i])?;
+    // every draw moves the one shared stream forward
     values.push(dist.sample(&mut rng));
 }
 ```
@@ -611,6 +610,7 @@ use rand_pcg::Pcg64Mcg;
 use statrs::distribution::Bernoulli;
 
 for i in 0..n {
+    // a fresh generator per row, from (seed, row index)
     let mut rng: Pcg64Mcg = row_rng(seed, index[i]);
     let dist = Bernoulli::new(p[i])?;
     values.push(dist.sample(&mut rng));
@@ -1035,10 +1035,10 @@ log_tail = baseline.log_sf("reading")
 </div>
 </div>
 
-<p class="caption">true tails of the two faults: about 1e-784 and 1e-1224, far below what a float64 can hold</p>
+<p class="caption">true tails: about 1e-784 and 1e-1224, below anything a float64 holds · no algorithm can return them, the log can</p>
 
 <!--
-Back to our sensors. The true tails of the two faults are around ten to the minus 784 and ten to the minus 1224, far below anything a float64 can hold. `sf` says zero for both, so you can't rank them.
+Back to our sensors. The true tails of the two faults are around ten to the minus 784 and ten to the minus 1224, far below anything a float64 can hold. `sf` says zero for both, so you can't rank them. And that zero is not a bug: it's the closest float64 to the truth. No algorithm can do better, so the fix is to ask for a different number.
 
 [click] `log_sf` says minus 1805 and minus 2817, and the worse fault sorts first.
 -->
@@ -1067,7 +1067,7 @@ Beta::new(s, s)?.cdf(0.5) // 0.5 by symmetry
 </div>
 
 <!--
-And some limits really were statrs'. A Beta distribution with two equal shapes is symmetric, so its cdf at one half is exactly one half, for every shape.
+That was a limit of the format. The other kind is a limit of the algorithm, where a float64 could hold the answer and the code loses it. My coin was one; some were statrs'. A Beta distribution with two equal shapes is symmetric, so its cdf at one half is exactly one half, for every shape.
 
 [click] At a million, statrs said 0.49. At ten million, 0.21. At a hundred million, minus 1.147. A probability below zero.
 -->
