@@ -1,3 +1,4 @@
 # Exclude non-shipping code from GitHub's language bar
+docs/talks/** -linguist-detectable
 tests/** -linguist-detectable
 tools/** -linguist-detectable
