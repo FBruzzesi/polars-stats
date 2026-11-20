@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         "beta",
         "binomial",
         "cauchy",
+        "chisquared",
         "discreteuniform",
         "exponential",
         "gamma",
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     SamplerFunction: TypeAlias = Literal["sample", "samples"]
     """Samplers `f(*params, row_index)`, each with a `_scalar` twin over the row index alone."""
 
-    ValidatorFunction: TypeAlias = Literal["p", "params", "proba", "range", "rate", "scale", "shape", "sigma"]
+    ValidatorFunction: TypeAlias = Literal["dof", "p", "params", "proba", "range", "rate", "scale", "shape", "sigma"]
     """Parameter-keyed validators `f(*params)`: raise on an invalid parameterisation, return a reusable quantity."""
 
     MomentFunction: TypeAlias = Literal["entropy", "mean", "std", "variance"]

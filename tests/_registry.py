@@ -22,6 +22,7 @@ from polars_stats import (
     Beta,
     Binomial,
     Cauchy,
+    ChiSquared,
     DiscreteUniform,
     Exponential,
     Gamma,
@@ -632,6 +633,28 @@ _GAMMA = DistSpec(
     integration_bounds=lambda p: (0.0, (p[0] + 7.0 * sqrt(p[0])) / p[1]),
 )
 
+_CHISQUARED = DistSpec(
+    name="chisquared",
+    cls=ChiSquared,
+    continuous=True,
+    parameters=(Param("dof", "dof"),),
+    # `dof >= 4` is `Gamma`'s `shape >= 2`: below it the density's cusp at `0` (`x ** (dof / 2 - 1)`) breaks the
+    # trapezoid mass check, and below `dof = 2` the density diverges there.
+    param_strategy=st.tuples(_finite(4.0, 20.0)),
+    example=(3.0,),
+    # From the zero region below `0` out to five standard deviations above the mean.
+    eval_range=lambda p: (-0.5, p[0] + 5.0 * sqrt(2.0 * p[0])),
+    bounds=(0.0, inf),
+    on_support_point=1.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("dof=0", (0.0,), "dof must be"),
+        InvalidCase("dof=-1", (-1.0,), "dof must be"),
+    ),
+    # Out to seven standard deviations above the mean, where `sf` is below `1e-4` at `dof = 4`.
+    integration_bounds=lambda p: (0.0, p[0] + 7.0 * sqrt(2.0 * p[0])),
+)
+
 _BETA = DistSpec(
     name="beta",
     cls=Beta,
@@ -708,6 +731,7 @@ CONTRACT_FRAME = pl.DataFrame(
         "rate": [1.0, 2.0, 0.5],
         "a": [2.0, 1.0, 3.0],
         "b": [3.0, 1.0, 0.5],
+        "dof": [1.0, 4.0, 7.5],
         "x": [0.5, 1.5, 3.0],  # evaluation points for pdf / pmf / cdf / sf
         "q": [0.1, 0.5, 0.9],  # quantiles in [0, 1] for ppf / isf
     },
@@ -730,6 +754,7 @@ ALL_SPECS = [
     _PARETO,
     _WEIBULL,
     _GAMMA,
+    _CHISQUARED,
     _BETA,
 ]
 SPECS_BY_NAME: dict[DistributionName, DistSpec] = {spec.name: spec for spec in ALL_SPECS}

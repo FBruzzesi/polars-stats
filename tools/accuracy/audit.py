@@ -49,7 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Concatenate, Literal, ParamSpec, TypeVar, cast
 
 import mpmath as mp
 import polars as pl
@@ -63,6 +63,7 @@ from polars_stats import (
     Beta,
     Binomial,
     Cauchy,
+    ChiSquared,
     ContinuousDistribution,
     DiscreteDistribution,
     DiscreteUniform,
@@ -796,6 +797,21 @@ def gamma_entropy(params: Params, _x: float) -> mp.mpf:
     """`shape - ln rate + ln Gamma(shape) + (1 - shape) psi(shape)`, which 50 digits carry through the cancellation."""
     shape, rate = mp.mpf(params[0]), mp.mpf(params[1])
     return shape - mp.log(rate) + mp.loggamma(shape) + (1 - shape) * mp.digamma(shape)
+
+
+# ChiSquared oracles: `ChiSquared(dof)` is `Gamma(dof / 2, 1 / 2)`, so every oracle and probe set is the gamma's there.
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def at_half_dof(function: Callable[Concatenate[Params, _P], _T]) -> Callable[Concatenate[Params, _P], _T]:
+    """`function` of `Gamma(dof / 2, 1 / 2)` for the parameters `(dof,)`."""
+
+    def wrapped(params: Params, /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
+        return function((params[0] / 2, 0.5), *args, **kwargs)
+
+    return wrapped
 
 
 # Bernoulli oracles.
@@ -1897,6 +1913,40 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 AuditedMethod("std", lambda p, _x: mp.sqrt(mp.mpf(p[0])) / mp.mpf(p[1]), CLOSED_FORM_RTOL),
                 AuditedMethod("median", at_median_seeded(gamma_ppf), CLOSED_FORM_RTOL, seeded_oracle=True),
                 AuditedMethod("entropy", gamma_entropy, SPECIAL_RTOL),
+            ),
+        ),
+        DistributionSpec(
+            name="ChiSquared",
+            build=lambda p: ChiSquared(dof=p[0]),
+            param_names=("dof",),
+            # The Gamma sweep's eight decades of shape either side of `1`, at `dof = 2 shape`. `2`, `20`, `60` and
+            # `200` put the shape on the exponential and on the prefactor's, the entropy's and the tails' switches.
+            params=(
+                (2e-8,),
+                (2e-3,),
+                (1.0,),
+                (2.0,),
+                (3.0,),
+                (20.0,),
+                (60.0,),
+                (200.0,),
+                (2e4,),
+                (2e8,),
+            ),
+            methods=(
+                AuditedMethod("pdf", at_half_dof(gamma_pdf), SPECIAL_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("log_pdf", at_half_dof(gamma_log_pdf), LOG_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("cdf", at_half_dof(gamma_cdf), SPECIAL_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("log_cdf", at_half_dof(gamma_log_cdf), LOG_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("sf", at_half_dof(gamma_sf), SPECIAL_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("log_sf", at_half_dof(gamma_log_sf), LOG_RTOL, at_half_dof(gamma_points)),
+                AuditedMethod("ppf", at_half_dof(gamma_ppf), CLOSED_FORM_RTOL, quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", at_half_dof(gamma_isf), CLOSED_FORM_RTOL, survival_points, seeded_oracle=True),
+                AuditedMethod("mean", lambda p, _x: mp.mpf(p[0]), CLOSED_FORM_RTOL),
+                AuditedMethod("variance", lambda p, _x: 2 * mp.mpf(p[0]), CLOSED_FORM_RTOL),
+                AuditedMethod("std", sqrt_of(lambda p, _x: 2 * mp.mpf(p[0])), CLOSED_FORM_RTOL),
+                AuditedMethod("median", at_median_seeded(at_half_dof(gamma_ppf)), CLOSED_FORM_RTOL, seeded_oracle=True),
+                AuditedMethod("entropy", at_half_dof(gamma_entropy), SPECIAL_RTOL),
             ),
         ),
         DistributionSpec(

@@ -22,6 +22,7 @@ from polars_stats import (
     Bernoulli,
     Beta,
     Binomial,
+    ChiSquared,
     Exponential,
     Gamma,
     Geometric,
@@ -32,7 +33,7 @@ from polars_stats import (
     Weibull,
 )
 from tests._polars_compat import assert_series_equal
-from tests._registry import point_column
+from tests._registry import MOMENTS, point_column
 
 if TYPE_CHECKING:
     from tests._registry import Method, Moment
@@ -310,6 +311,75 @@ def test_integer_shape_gamma_log_sf_is_the_poisson_sum(shape: int) -> None:
     expected = [-t + math.log(math.fsum(t**k / math.factorial(k) for k in range(shape))) for t in ts]
     got = pl.DataFrame({"x": [t / 2.0 for t in ts]}).select(r=Gamma(shape=float(shape), rate=2.0).log_sf(pl.col("x")))
     assert_series_equal(got["r"], pl.Series(values=expected), rel_tol=1e-13, abs_tol=0.0, check_names=False)
+
+
+# --------------------------------------------------------------------------------------------------
+# ChiSquared(dof) is Gamma(dof / 2, 1 / 2), and ChiSquared(2)'s survival function is `exp(-x / 2)`.
+# --------------------------------------------------------------------------------------------------
+
+# Across the gamma's Stirling (`dof = 20`) and Temme (`dof = 200`) switches.
+_CHISQUARED_DOFS = [0.3, 1.0, 2.0, 7.0, 20.0, 250.0]
+_CHISQUARED_VALUE_KEYED: list[Method] = ["pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"]
+
+
+@pytest.mark.parametrize("dof", _CHISQUARED_DOFS, ids=lambda dof: f"dof={dof}")
+@pytest.mark.parametrize("method", _CHISQUARED_VALUE_KEYED)
+def test_chisquared_value_keyed_methods_are_the_gamma_at_half_dof_and_rate(dof: float, method: Method) -> None:
+    """Bit for bit, with `dof` both a constant and a column: both run `gamma.rs`'s body at `(dof / 2, 1 / 2)`."""
+    column = point_column(method)
+    quantiles = [0.0, 1e-300, 1e-6, 0.3, 0.5, 0.99, 1.0]
+    points = quantiles if column == "q" else [-1.0, 0.0, 1e-300, 0.1, dof, 5.0 * dof, 1e4]
+    frame = pl.DataFrame({column: points, "dof": [dof] * len(points)})
+    for chisquared, gamma in [
+        (ChiSquared(dof=dof), Gamma(shape=dof / 2.0, rate=0.5)),
+        (ChiSquared(dof="dof"), Gamma(shape=pl.col("dof") / 2.0, rate=0.5)),
+    ]:
+        via_chisquared = frame.select(r=getattr(chisquared, method)(pl.col(column)))["r"]
+        via_gamma = frame.select(r=getattr(gamma, method)(pl.col(column)))["r"]
+        assert_series_equal(via_chisquared, via_gamma, rel_tol=0.0, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("dof", _CHISQUARED_DOFS, ids=lambda dof: f"dof={dof}")
+@pytest.mark.parametrize("method", MOMENTS)
+def test_chisquared_moments_are_the_gamma_at_half_dof_and_rate(dof: float, method: Moment) -> None:
+    """Bit for bit but `variance`, with `dof` a constant and a column; the exact `2 dof` is not `Gamma`'s `std ** 2`."""
+    frame = pl.DataFrame({"dof": [dof]})
+    rel_tol = 1e-15 if method == "variance" else 0.0
+    for chisquared, gamma in [
+        (ChiSquared(dof=dof), Gamma(shape=dof / 2.0, rate=0.5)),
+        (ChiSquared(dof="dof"), Gamma(shape=pl.col("dof") / 2.0, rate=0.5)),
+    ]:
+        via_chisquared = frame.select(r=getattr(chisquared, method)())["r"]
+        via_gamma = frame.select(r=getattr(gamma, method)())["r"]
+        assert_series_equal(via_chisquared, via_gamma, rel_tol=rel_tol, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int8(), pl.Int64()], ids=str)
+def test_chisquared_variance_of_an_integer_dof_column_is_float(dtype: pl.DataType) -> None:
+    """`2 dof` in `Float64`, so a narrow integer `dof` does not wrap."""
+    frame = pl.DataFrame({"dof": pl.Series([3, 100], dtype=dtype)})
+    got = frame.select(r=ChiSquared(dof="dof").variance())["r"]
+    assert_series_equal(got, pl.Series("r", [6.0, 200.0]), rel_tol=0.0, abs_tol=0.0)
+
+
+def test_chisquared_seeded_samples_are_the_gamma_at_half_dof_and_rate() -> None:
+    """statrs' chi-squared draws through its `Gamma(dof / 2, 1 / 2)`, so a seed gives the same draws."""
+    frame = pl.DataFrame({"dof": [0.3, 1.0, 7.0, 250.0] * 25})
+    got = frame.select(
+        chisquared=ChiSquared(dof="dof").sample(seed=7),
+        gamma=Gamma(shape=pl.col("dof") / 2.0, rate=0.5).sample(seed=7),
+        chisquared_scalar=ChiSquared(dof=7.0).samples(3, seed=7),
+        gamma_scalar=Gamma(shape=3.5, rate=0.5).samples(3, seed=7),
+    )
+    assert_series_equal(got["chisquared"], got["gamma"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+    assert_series_equal(got["chisquared_scalar"], got["gamma_scalar"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+def test_two_degree_chisquared_log_sf_is_the_exact_exponential_tail() -> None:
+    """`ChiSquared(2).log_sf(x)` is `-x / 2` exactly, an oracle that holds where scipy's `logsf` has saturated."""
+    xs = [1e-300, 1e-8, 0.5, 3.0, 80.0, 1500.0, 1e5, 1e300]
+    got = pl.DataFrame({"x": xs}).select(r=ChiSquared(dof=2.0).log_sf(pl.col("x")))["r"]
+    assert_series_equal(got, pl.Series("r", [-x / 2.0 for x in xs]), rel_tol=1e-13, abs_tol=0.0)
 
 
 # --------------------------------------------------------------------------------------------------

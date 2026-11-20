@@ -28,6 +28,7 @@ from scipy.stats import (
     beta,
     binom,
     cauchy,
+    chi2,
     expon,
     gamma,
     geom,
@@ -45,6 +46,7 @@ from polars_stats import (
     Beta,
     Binomial,
     Cauchy,
+    ChiSquared,
     DiscreteUniform,
     Exponential,
     Gamma,
@@ -125,6 +127,10 @@ def _gamma(params: Params) -> tuple[Distribution, ScipyFrozen]:
     )
 
 
+def _chisquared(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return ChiSquared(dof=params.plugin("dof")), chi2(params.scipy("dof"))
+
+
 def _beta(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Beta(a=params.plugin("a"), b=params.plugin("b")), beta(a=params.scipy("a"), b=params.scipy("b"))
 
@@ -196,6 +202,7 @@ REGISTRY: dict[str, Comparison] = {
             params={"shape": ParamSpec(2.0, 0.5, 5.0), "rate": ParamSpec(1.5, 0.5, 2.0)},
             build=_gamma,
         ),
+        Comparison(name="chisquared", params={"dof": ParamSpec(3.0, 1.0, 10.0)}, build=_chisquared),
         Comparison(
             name="beta",
             params={"a": ParamSpec(2.0, 1.0, 4.0), "b": ParamSpec(3.0, 1.0, 4.0)},

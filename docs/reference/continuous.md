@@ -20,6 +20,8 @@ The concrete classes follow, alphabetically, and list only what they define or o
 
 ::: polars_stats.Cauchy
 
+::: polars_stats.ChiSquared
+
 ::: polars_stats.Exponential
 
 ::: polars_stats.Gamma

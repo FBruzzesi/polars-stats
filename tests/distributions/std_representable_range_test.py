@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import Exponential, Gamma, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
+from polars_stats import ChiSquared, Exponential, Gamma, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -60,6 +60,13 @@ def test_gamma_std_is_the_root_shape_over_the_rate(rate: float) -> None:
     """`Gamma(4, rate).std()` is `2 / rate`, finite wherever `1 / rate` is; `variance` is its square."""
     got = pl.DataFrame({"z": [0.0]}).select(r=Gamma(shape=4.0, rate=rate).std())["r"].item()
     assert got == pytest.approx(2.0 / rate, rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("dof", [1e-300, 4.0, 1e300, 1.7e308], ids=lambda dof: f"dof={dof:.0e}")
+def test_chisquared_std_is_the_root_of_twice_dof(dof: float) -> None:
+    """`ChiSquared(dof).std()` is `sqrt(2 dof)`, finite up to the largest `dof`; `variance` is `inf` from `9e307`."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=ChiSquared(dof=dof).std())["r"].item()
+    assert got == pytest.approx(math.sqrt(2.0) * math.sqrt(dof), rel=1e-15, abs=0.0)
 
 
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)

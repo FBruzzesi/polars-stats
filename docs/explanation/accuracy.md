@@ -33,10 +33,10 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 ## Use the log methods in the tails, where they are log methods
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
-limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `Poisson` and the closed-form
-distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
+limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `Poisson` and the
+closed-form distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
 `DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the right methods for tail
-scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those twelve: forming the complement quantises the tail mass to
+scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those thirteen: forming the complement quantises the tail mass to
 `1.1e-16` absolute before any inverse runs.
 
 In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
@@ -191,6 +191,8 @@ magnitudes are in the inherited limits below.
     `scipy`'s `gammainc` stops its power series at 2000 terms, so 5 standard deviations below the mean it returns
     the lower tail `4.3e-6` relative off at `shape = 1e6` and `35%` off at `1e8`; parity against `scipy` is only
     meaningful below `shape ~ 1e4`. The audited range is `shape` in `1e-8` to `1e8` and `rate` in `1e-8` to `1e8`.
+* **`ChiSquared(dof)` runs `Gamma(dof / 2, 1 / 2)`'s code**, so every limit above holds at `shape = dof / 2`. The
+  audited range is `dof` in `2e-8` to `2e8`.
 * **`Poisson` reads `Gamma`'s incomplete gamma at `t = rate`.** `cdf` and `sf` are its upper and lower tails at shape
   `floor(k) + 1`, and `pmf` is its prefactor at shape `k`, Stirling's form of `-rate + k ln(rate) - ln(k!)`. Written
   out, that difference cancels: `scipy`'s `logpmf` and `statrs`' `ln_pmf` are `1.1e-12` absolute off at `rate = 1e3`

@@ -21,6 +21,7 @@ pub mod bernoulli;
 pub mod beta;
 pub mod binomial;
 pub mod cauchy;
+pub mod chisquared;
 pub mod discrete_uniform;
 pub mod exponential;
 pub mod gamma;
