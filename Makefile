@@ -33,7 +33,7 @@ talks:
 	for slides in docs/talks/*/slides.md; do \
 		deck=$$(dirname "$$slides"); \
 		(cd "$$deck" && npx -y @slidev/cli@53.0.0 build slides.md \
-			--base "/polars-stats/talks/$$(basename "$$deck")/dist/" --out dist) || exit 1; \
+			--base "/polars-stats/talks/$$(basename "$$deck")/dist/" --out dist --without-notes) || exit 1; \
 	done
 
 docs: talks
