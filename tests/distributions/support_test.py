@@ -123,6 +123,7 @@ _DENSITY_AT_ENDPOINT: dict[str, dict[float, tuple[float, float]]] = {
     "pareto": {1.5: (2.0, math.log(2.0))},
     "weibull": {0.0: (0.0, _NEG_INF)},
     "gamma": {0.0: (0.0, _NEG_INF)},
+    "chisquared": {0.0: (0.0, _NEG_INF)},
     "beta": {0.0: (0.0, _NEG_INF), 1.0: (0.0, _NEG_INF)},
     "bernoulli": {0.0: (0.7, math.log(0.7)), 1.0: (0.3, math.log(0.3))},
     "binomial": {0.0: (0.65**7, 7 * math.log(0.65)), 7.0: (0.35**7, 7 * math.log(0.35))},
