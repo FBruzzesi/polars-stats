@@ -16,7 +16,7 @@ the plugin, before it becomes a bug.
 
 | Library | What it is | What it gives `polars-stats` |
 |---|---|---|
-| Polars | A dataframe query engine written in Rust, driven mostly from Python | Lazy plans, the optimiser, both engines, `over` and `group_by`, the thread pool, and expression plugins |
+| Polars | A dataframe query engine written in Rust | Lazy plans, the optimizer, both engines, `over` and `group_by`, the thread pool, and expression plugins |
 | SciPy | Python's scientific library; `scipy.stats` has more than a hundred distributions | The vocabulary (method names) and the ruler (every method is tested against it) |
 | statrs | The closest thing Rust has to `scipy.stats`, maintained by volunteers | The maths: densities, cdfs, inverses, sampling, with `erf`, gamma and beta underneath |
 
@@ -41,9 +41,10 @@ Each section opens with its question on a divider slide, and each answer forces 
 | 15-18 | 03 · Reproducibility | Same seed, same column? |
 | 19-22 | 04 · Broadcast | Does every input arrive at full length? |
 | 23-25 | 05 · Parameter validation | Does every row reach the parameter check? |
-| 26-32 | 06 · Accuracy | Is the number on each row right? |
-| 33-38 | 07 · Cost | Was it worth it, and what does it cost? |
-| 39-41 | Close | The stack with all four contracts, the lesson, links |
+| 26-30 | 06 · Accuracy | Is the number on each row right? |
+| 31-34 | 07 · Cost | Was it worth it, and what does it cost? |
+| 35-37 | Close | The stack with all four contracts, the lesson, links |
+| 38-39 | Appendix | The Nim rewrite and the 0.2.0 re-run, for the Q&A |
 
 Retelling test, what an attendee says at lunch: "They built a statistics library on Polars and a Rust maths crate,
 with SciPy as the blueprint and the ruler. The engine and the maths came for free; every bug was in the little bit of
@@ -80,7 +81,6 @@ prediction, the `1 - (1 - p)` derivation, `-1.147`, and the benchmark disclaimer
 | The pushdown plans, with and without `is_elementwise` | Re-run on Polars 2.1.0, a 1,000,000-row Parquet file of the two sensors; the plugin node is shortened on the slide |
 | The `simulated` column, `seed=42`: `9.763219`, `10.825292`, `11.172469`, `98.532788`, `100.147242`, `97.717269`, identical on both engines | Re-run on Polars 2.1.0 |
 | The first sampler: one `ChaCha20Rng` walking the rows, documented as not supporting streaming | The first commit, `e0d4a16` |
-| A generator per row: `ChaCha20` 10 to 20 times slower; `Pcg64Mcg` took 1M rows × 100 draws from 5.9 s to 0.29 s | PR #7 |
 | `polars-random` 0.5.0 gives different seeded columns on the two engines and across chunk layouts; `polars_rng` takes no seed | Measured with `polars-random` 0.5.0 on Polars 1.44.2; `polars_rng` from its README |
 | 0.0.1 with `sigma=pl.lit(0.5)` on 1M rows: 1 distinct value in memory, 10 streaming, no error | Re-run from PyPI in a clean environment, Polars 1.43.2 |
 | Alignment by length moved to Rust, a breaking release | PR #58, released as 0.0.2 |
@@ -88,7 +88,7 @@ prediction, the `1 - (1 - p)` derivation, `-1.147`, and the benchmark disclaimer
 | `Bernoulli(p=1e-300).sf(0.5)` returned `0.0` and now returns `1e-300` | Fixed in PR #43, found by the mpmath audit (`make audit`); re-run on `main` |
 | The two faults: `log_sf` `-1805.01` and `-2817.74`, true tails about `1e-784` and `1e-1224` | Docs tutorial, step 5; re-run on `main` |
 | `Beta(s, s).cdf(0.5)` in statrs 0.19.1: `0.4912`, `0.2129` and `-1.147` at `s = 1e6, 1e7, 1e8` | statrs issue #434, fixed by statrs PR #456; also in the accuracy page |
-| The benchmark numbers and their conditions | `tools.benchmarks.run`, column regime, run on 3 November 2026; the command is in the README |
+| The benchmark numbers and their conditions | `tools.benchmarks.run`, column regime, polars-stats 0.2.0, run on 9 November 2026; the command is in the README |
 | SciPy's newer API is 1.3 to 1.9 times faster than the frozen one on the Normal | Measured earlier with the same harness, column parameters |
 
 ## Links

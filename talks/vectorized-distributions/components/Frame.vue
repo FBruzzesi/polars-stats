@@ -9,9 +9,13 @@ const ROWS: Record<string, string>[] = [
   { sensor: 'temp-b', reading: '250.0', mu: '100.0', sigma: '2.0', z: '75.0', upper_tail: '0.0', log_tail: '-2817.736604', simulated: '97.717269' },
 ]
 const FAULTS = new Set([2, 5])
+const SENSOR_ROWS = 3
+// Constant within a sensor: `merged` shows each once, spanning its sensor's rows.
+const PER_SENSOR = new Set(['sensor', 'mu', 'sigma'])
 
 // `ghost` columns take their place in the layout but stay invisible, so revealing them never moves the others.
-withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, wrong?: string, ghost?: string[] }>(), {
+const props = withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, wrong?: string, ghost?: string[], merged?: boolean }>(), {
+  merged: false,
   fresh: undefined,
   flag: undefined,
   wrong: undefined,
@@ -25,8 +29,13 @@ withDefaults(defineProps<{ cols: string[], fresh?: string, flag?: string, wrong?
       <tr><th v-for="c in cols" :key="c" :class="{ fresh: c === fresh, ghost: ghost.includes(c) }">{{ c }}</th></tr>
     </thead>
     <tbody>
-      <tr v-for="(row, i) in ROWS" :key="i">
-        <td v-for="c in cols" :key="c" :class="{ flag: c === flag && FAULTS.has(i), wrong: c === wrong && FAULTS.has(i), fresh: c === fresh, ghost: ghost.includes(c) }">{{ row[c] }}</td>
+      <tr v-for="(row, i) in ROWS" :key="i" :class="{ 'next-sensor': i === SENSOR_ROWS }">
+        <td
+          v-for="c in cols.filter((c) => !(props.merged && PER_SENSOR.has(c) && i % SENSOR_ROWS))"
+          :key="c"
+          :rowspan="props.merged && PER_SENSOR.has(c) ? SENSOR_ROWS : undefined"
+          :class="{ sensor: c === 'sensor', flag: c === flag && FAULTS.has(i), wrong: c === wrong && FAULTS.has(i), fresh: c === fresh, ghost: ghost.includes(c) }"
+        >{{ row[c] }}</td>
       </tr>
     </tbody>
   </table>

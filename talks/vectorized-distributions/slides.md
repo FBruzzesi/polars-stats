@@ -34,7 +34,7 @@ clicks: 1
 # Two of these six readings are faults. Which?
 
 <div class="cols wide-left middle bells">
-<Frame :cols="['sensor', 'reading', 'mu', 'sigma', 'z']" :ghost="$clicks >= 1 ? [] : ['z']" :flag="$clicks >= 1 ? 'reading' : undefined" fresh="z" />
+<Frame merged :cols="['sensor', 'reading', 'mu', 'sigma', 'z']" :ghost="$clicks >= 1 ? [] : ['z']" :flag="$clicks >= 1 ? 'reading' : undefined" fresh="z" />
 <img v-click="1" src="/bells.svg" alt="One bell curve per sensor, the upper tail beyond a healthy reading shaded, each fault far off the chart">
 <p v-click="1" class="caption">z: how far · the tail: how surprising</p>
 </div>
@@ -115,14 +115,14 @@ scored.collect(engine="streaming")  # on either engine
 </div>
 <ul class="points">
 <li v-click="1"><b>Expressions</b>column arithmetic, compiled, on every core</li>
-<li v-click="2"><b>Lazy</b>a plan first; the optimiser rewrites it before a row is read</li>
+<li v-click="2"><b>Lazy</b>a plan first; the optimizer rewrites it before a row is read</li>
 <li v-click="3"><b>Two engines</b><code>"in-memory"</code>, or <code>"streaming"</code> in small batches called morsels</li>
 </ul>
 </div>
 
 <p v-click="4" class="callout">No probability distributions: a query engine, not a statistics package</p>
 
-<p class="footnote">pola.rs · a dataframe engine written in Rust, driven mostly from Python</p>
+<p class="footnote">pola.rs · a dataframe engine written in Rust</p>
 
 <!--
 My data lives in Polars, a dataframe engine written in Rust that most people drive from Python. The word to remember is lazy.
@@ -144,7 +144,7 @@ eyebrow: 01 · SciPy
 
 <table class="plain">
 <thead><tr><th>pdf</th><th>cdf</th><th>sf</th><th>ppf · isf</th><th>logpdf · logsf</th><th>rvs</th></tr></thead>
-<tbody><tr><td>density</td><td>probability below a value</td><td>probability above it</td><td>probability back to a value</td><td>the same, in logs</td><td>draw samples</td></tr></tbody>
+<tbody><tr><td>density</td><td>P(below)</td><td>P(above)</td><td>back to a value</td><td>in logs</td><td>samples</td></tr></tbody>
 </table>
 
 <div class="window small-code" data-file="score.py" data-lang="Python">
@@ -163,7 +163,6 @@ from scipy import stats
 mu = np.array([10.0, 10.0, 100.0])
 sigma = np.array([0.5, 0.5, 2.0])
 x = np.array([9.8, 10.4, 101.2])
-
 stats.norm(loc=mu, scale=sigma).sf(x)
 # array([0.65542174, 0.2118554 , 0.27425312])
 ```
@@ -173,7 +172,6 @@ from scipy import stats
 
 mu = np.array([10.0, 10.0, 100.0])
 x = np.array([9.8, 10.4, 101.2])
-
 stats.norm(loc=mu, scale=0.5).sf(x)  # one scale, stretched to every element
 # array([0.65542174, 0.2118554 , 0.00819754])
 ```
@@ -181,9 +179,9 @@ stats.norm(loc=mu, scale=0.5).sf(x)  # one scale, stretched to every element
 
 </div>
 
-<p v-click="2" class="callout">Broadcasting: arrays line up element by element, and a single value is stretched to their length</p>
+<p v-click="2" class="callout">Broadcasting: a single value stretches to the arrays' length</p>
 
-<p class="footnote">scipy.org · Python's scientific library, since 2001</p>
+<p class="footnote">scipy.org · Python's scientific library</p>
 
 <!--
 Statistics in Python means SciPy, which is around since 2001. Its `stats` module has more than a hundred distributions, and they all speak the vocabulary on the slide. `sf`, the survival function, is the one we want from the first slide: the probability of a reading at least this high.
@@ -200,12 +198,13 @@ Statistics in Python means SciPy, which is around since 2001. Its `stats` module
 <div class="cols wide-left small-code">
 <div class="window" data-file="round_trip.py" data-lang="Python">
 
-```python {all|4|5,8-11|all}{at:1}
+```python {all|4|5-6,9-12|all}{at:1}
 import polars as pl
 from scipy import stats
 
 df = pl.scan_parquet("readings.parquet").collect()
-mu, sigma, x = df.select("mu", "sigma", "reading").to_numpy().T
+cols = df.select("mu", "sigma", "reading")
+mu, sigma, x = cols.to_numpy().T
 baseline = stats.norm(loc=mu, scale=sigma)
 
 df = df.with_columns(
@@ -216,13 +215,12 @@ df = df.with_columns(
 
 </div>
 <div class="cards">
-<div v-click="1" class="card"><b>The query ends</b><code>collect</code> runs everything above it; the optimiser never sees what comes after</div>
-<div v-click="2" class="card"><b>Alignment is yours</b>bare arrays out, bare arrays in, through every later join and filter</div>
-<div v-click="3" class="card bad"><b>NumPy has no null</b>missing data and invalid parameters both come back as <code>NaN</code></div>
+<div v-click="1" class="card"><b>The query ends</b>the optimizer stops at <code>collect</code></div>
+<div v-click="2" class="card"><b>Alignment is yours</b>bare arrays out, bare arrays in</div>
+<div v-click="3" class="card bad"><b>NumPy has no null</b>missing and invalid both become <code>NaN</code></div>
 </div>
 </div>
 
-<p class="footnote">docs › Explanation › Why polars-stats › What SciPy already does well</p>
 
 <!--
 So the first attempt is this one: take the columns out of Polars as NumPy arrays, call SciPy, put the results back. That's a naive approach, but it works. It costs three things:
@@ -289,9 +287,9 @@ $$
 </div>
 
 <div class="cards">
-<div v-click="1" class="card bad"><b>Polars' own <code>erfc</code></b>one tail of one distribution: nothing for Gamma's or Beta's incomplete functions, inverse cdfs, log tails or seeded draws</div>
-<div v-click="2" class="card bad"><b>Back to Python: <code>map_elements</code></b>Polars' escape hatch runs a Python function, SciPy inside, once per row: through the interpreter, on one thread</div>
-<div v-click="3" class="card move"><b>An expression plugin</b>a compiled Rust function that takes columns and returns a column; Polars calls it as one of its own expressions. The maths is still yours to write</div>
+<div v-click="1" class="card bad"><b>Polars' own <code>erfc</code></b>one tail of one distribution</div>
+<div v-click="2" class="card bad"><b>Back to Python: <code>map_elements</code></b>a Python call per row, on one thread</div>
+<div v-click="3" class="card move"><b>An expression plugin</b>compiled Rust, called like a native expression</div>
 </div>
 
 <!--
@@ -336,7 +334,7 @@ fn main() {
 </ul>
 </div>
 
-<p class="footnote">docs.rs/statrs · a Rust crate (Rust's word for a library), maintained by volunteers</p>
+<p class="footnote">docs.rs/statrs · a Rust crate</p>
 
 <!--
 So the maths comes from a second library, on the Rust side: `statrs`. It's a crate, which is Rust's word for a library, it's the closest thing Rust has to scipy.stats, and it's maintained by volunteers.
@@ -394,7 +392,7 @@ eyebrow: 02 · The plugin
 # Python plans, Rust walks the rows, statrs computes
 
 <div class="cols anatomy small-code">
-<div class="window" data-file="polars_stats/distributions/_base.py" data-lang="Python">
+<div class="window" data-file="polars_stats/distributions/_base.py, simplified" data-lang="Python">
 
 ```python {all|3-6|0|0|7}{at:1}
 import polars as pl
@@ -408,7 +406,7 @@ pl.plugins.register_plugin_function(
 ```
 
 </div>
-<div class="window" data-file="src/distributions/normal.rs" data-lang="Rust">
+<div class="window" data-file="src/distributions/normal.rs, simplified" data-lang="Rust">
 
 ```rust {all|0|5-8|11|0}{at:1}
 use polars::prelude::*;
@@ -428,9 +426,8 @@ fn sf_value(dist: &Normal, v: f64) -> Option<f64> {
 </div>
 </div>
 
-<p v-click="4" class="callout"><code>is_elementwise=True</code> is a promise: row i of the output depends only on row i of the inputs</p>
+<p v-click="4" class="callout"><code>is_elementwise=True</code>: output row i depends only on input row i</p>
 
-<p class="footnote">simplified from the source · docs › Explanation › Architecture › Three layers</p>
 
 <!--
 So here's the whole anatomy, in three layers.
@@ -441,14 +438,14 @@ So here's the whole anatomy, in three layers.
 
 [click] And this one line, dist dot sf, is statrs.
 
-[click] One flag in that registration matters more than the rest: `is_elementwise=True`. It's a promise to Polars: "The i-th output row depends only on row i of the inputs". Watch what the optimiser does with it.
+[click] One flag in that registration matters more than the rest: `is_elementwise=True`. It's a promise to Polars: "The i-th output row depends only on row i of the inputs". Watch what the optimizer does with it.
 -->
 
 ---
 eyebrow: 02 · The plugin
 ---
 
-# One flag lets the optimiser move the filter
+# One flag lets the optimizer move the filter
 
 <div class="cols plan small-code">
 <div class="window" data-file="pipeline.py" data-lang="Python">
@@ -496,8 +493,6 @@ FROM
 </div>
 </div>
 </div>
-
-<p class="footnote">Polars 2.1.0 · a 1,000,000-row Parquet file of the two sensors · plugin node shortened · read the plan from the bottom up</p>
 
 <!--
 We have a pipeline that:
@@ -646,7 +641,7 @@ eyebrow: 03 · Reproducibility
 
 # A seeded column repeats across runs and engines
 
-<div class="cols wide-left small-code">
+<div class="cols small-code">
 <div class="window" data-file="simulate.py" data-lang="Python">
 
 ```python
@@ -654,7 +649,8 @@ import polars as pl
 import polars_stats as ps
 
 baseline = ps.Normal(mu="mu", sigma="sigma")
-sim = readings.with_columns(simulated=baseline.sample(seed=42))
+draws = baseline.sample(seed=42)
+sim = readings.with_columns(simulated=draws)
 a = sim.collect(engine="in-memory")
 b = sim.collect(engine="streaming")
 a.equals(b)  # True
@@ -664,18 +660,13 @@ a.equals(b)  # True
 <div v-click="1"><Frame :cols="['sensor', 'mu', 'sigma', 'simulated']" fresh="simulated" /></div>
 </div>
 
-<p v-click="2" class="caption">The bill: a generator per row has to be cheap to build. <s><code>ChaCha20</code></s> per row was 10 to 20× slower; <code>Pcg64Mcg</code> took 1M rows × 100 draws from 5.9 s to 0.29 s</p>
+<Stack v-click="2" mini :pins="1" />
 
-<Stack v-click="3" mini :pins="1" />
-
-<p class="footnote">docs › Explanation › Design notes › Sampling derives a fresh per-row RNG</p>
 
 <!--
 Today: same seed, same column, on both engines, and CI runs every test once per engine.
 
 [click] Here's our frame with its simulated column: one plausible reading per row, from that row's own sensor, the same on every run.
-
-[click] The fix came with a bill. My first generator was a cryptographic one, and building one per row made sampling ten to twenty times slower. A small statistical generator, Pcg64Mcg, costs a handful of integer operations to build: a million rows times a hundred draws went from 5.9 seconds to 0.29.
 
 [click] First pin: **reproducibility**.
 -->
@@ -765,8 +756,6 @@ frame.select(cdf).collect(engine="streaming").n_unique()
 <div v-click="2"><div class="stat word">no error</div><p class="stat-label">1,000,000 rows on both</p></div>
 </div>
 
-<p class="footnote">polars-stats 0.0.1 and Polars 1.43.2, from PyPI in a clean environment · current release: 1,000,000</p>
-
 <!--
 Version 0.0.1, straight from PyPI, Python's package index. A million rows, a Normal with sigma equal to `pl.lit(0.5)`, scored with `cdf`. The right answer has a million distinct values. How many did we get? [pause]
 
@@ -829,8 +818,6 @@ history.with_columns(
 
 <Stack v-click="3" mini :pins="2" />
 
-<p class="footnote">a breaking release, 0.0.2 · docs › Explanation › Architecture › Column-valued parameters</p>
-
 <!--
 The fix: [click] stop judging by the kind of expression, in Python, and judge by length, at run time, in Rust. The first thing every plugin does now is this loop: an input of length one gets stretched to the others' length, and two real lengths that disagree raise a shape error. It changed what some calls return, so it shipped as a breaking release.
 
@@ -884,7 +871,6 @@ pl.select(ps.Normal(mu=0.0, sigma=-1.0).sf(1.0))
 </div>
 
 <table v-click="2" class="plain">
-<thead><tr><th>on a row</th><th>result</th></tr></thead>
 <tbody>
 <tr><td>a null value or a null parameter</td><td><code>null</code></td></tr>
 <tr><td>a <code>NaN</code> value</td><td><code>NaN</code>, as in SciPy</td></tr>
@@ -892,7 +878,7 @@ pl.select(ps.Normal(mu=0.0, sigma=-1.0).sf(1.0))
 </tbody>
 </table>
 
-<p v-click="3" class="callout">A Polars expression cannot raise on a row, so the check is a plugin, and it has to see every row</p>
+<p v-click="3" class="callout">An expression cannot raise per row: the check is a plugin that sees every row</p>
 
 <!--
 Here's SciPy's answer again: nan. [click] The same call in polars-stats: a ComputeError that names the parameter and the bad value.
@@ -915,7 +901,7 @@ fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
     let [x, mu, sigma] = align_inputs(inputs)?;
     check_sigma(&sigma)?;
     let mut out = Vec::new();
-    for i in 0..x.len() {
+    for i in 0..x.len() {  // illustrative, not the source
         out.push(match (x[i], mu[i], sigma[i]) {
             (Some(x), Some(mu), Some(s)) => Some(Normal::new(mu, s)?.sf(x)),
             _ => None,
@@ -928,8 +914,6 @@ fn normal_sf(inputs: &[Series]) -> PolarsResult<Series> {
 </div>
 
 <Stack v-click="4" mini :pins="3" />
-
-<p class="footnote">illustrative, not the source · docs › Explanation › Design notes › Invalid parameters raise, they never silently null</p>
 
 <!--
 So every method that takes a value is a Rust plugin, and inside it the order is fixed. Here's the shape of it for the Normal's sf. [click] First align the inputs: that's broadcast. [click] Then check the whole sigma column, every row, before any distribution is built. [click] Only then the maths, row by row: a null anywhere on the row gives a null, and a NaN reading goes through statrs and comes out NaN.
@@ -957,8 +941,8 @@ eyebrow: 06 · Accuracy
 # In the far tail, agreeing with SciPy proves nothing
 
 <ul class="points">
-<li><b>Parity</b>every method of every distribution, against SciPy, on the same inputs</li>
-<li><b>Property tests</b>Hypothesis invents thousands of inputs and checks what must always hold: a cdf stays in [0, 1] and never goes down</li>
+<li><b>Parity</b>every method, against SciPy, on the same inputs</li>
+<li><b>Property tests</b>a cdf stays in [0, 1] and never goes down</li>
 </ul>
 
 <table v-click="1" class="plain">
@@ -982,38 +966,6 @@ The true tail is about ten to the minus 784.
 -->
 
 ---
-eyebrow: 06 · Accuracy
----
-
-# A coin that comes up 1 with probability `1e-300`
-
-<div class="window" data-file="bernoulli.py" data-lang="Python">
-
-```python
-import polars as pl
-import polars_stats as ps
-
-pl.select(ps.Bernoulli(p=1e-300).sf(0.5))  # P(value > 0.5)
-```
-
-</div>
-
-<div class="derive">
-<div v-click="1"><span>should be</span><code>1e-300</code></div>
-<div v-click="2"><span>returned</span><code class="alarm">0.0</code></div>
-<div v-click="3"><span>computed as</span><code>1 - cdf = 1 - (1 - p)</code></div>
-<div v-click="4"><span>in float64</span><code>1 - 1e-300 == 1.0</code></div>
-</div>
-
-<p v-click="5" class="callout">Catastrophic cancellation: compute the quantity directly, and work in logarithms in the tails</p>
-
-<!--
-Most of the defects the oracle found were not in statrs: they were in closed forms I had written myself, one to three lines each. My favourite is a coin that comes up one with probability ten to the minus three hundred. What's the probability of a value above one half? [click] It's `p`, a perfectly representable number. [click] I returned zero. [click] Because I computed one minus the `cdf`, and the `cdf` is one minus `p`. [click] In 64-bit floats, one minus ten to the minus three hundred is exactly one: `p` was gone before the subtraction even happened.
-
-[click] Subtracting two nearly equal numbers has a name: catastrophic cancellation. The fixes were small: compute what you want directly, not as a difference, and in the tails, work in logarithms.
--->
-
----
 clicks: 1
 eyebrow: 06 · Accuracy
 ---
@@ -1021,7 +973,7 @@ eyebrow: 06 · Accuracy
 # `log_sf` ranks the faults that `sf` rounds to zero
 
 <div class="cols frame-left middle small-code">
-<Frame :cols="['sensor', 'reading', 'z', 'upper_tail', 'log_tail']" :ghost="$clicks >= 1 ? [] : ['log_tail']" wrong="upper_tail" fresh="log_tail" />
+<Frame :cols="['sensor', 'reading', 'upper_tail', 'log_tail']" :ghost="$clicks >= 1 ? [] : ['log_tail']" wrong="upper_tail" fresh="log_tail" />
 <div class="window" data-file="score.py" data-lang="Python">
 
 ```python
@@ -1044,57 +996,58 @@ Back to our sensors. The true tails of the two faults are around ten to the minu
 -->
 
 ---
-clicks: 1
+clicks: 3
 eyebrow: 06 · Accuracy
 ---
 
-# `Beta(s, s).cdf(0.5)` is exactly `0.5`, for every `s`
+# The answer fits in a float64. The algorithm lost it
 
-<div class="window" data-file="src/main.rs, statrs 0.19.1" data-lang="Rust">
+<div class="cols">
+<div>
+<p class="side-label">polars-stats: a coin with <code>p = 1e-300</code></p>
+<div class="window" data-file="bernoulli.py" data-lang="Python">
 
-```rust
-use statrs::distribution::{Beta, ContinuousCDF};
-
-Beta::new(s, s)?.cdf(0.5) // 0.5 by symmetry
+```python
+# P(value > 0.5), should be 1e-300
+ps.Bernoulli(p=1e-300).sf(0.5)
 ```
 
 </div>
+<div v-click="1" class="derive compact">
+<div><span>returned</span><code class="alarm">0.0</code></div>
+<div><span>computed as</span><code>1 - (1 - p)</code></div>
+<div><span>in float64</span><code>1 - 1e-300 == 1.0</code></div>
+</div>
+</div>
+<div>
+<p class="side-label">statrs: <code>0.5</code> by symmetry</p>
+<div class="window" data-file="main.rs, statrs 0.19.1" data-lang="Rust">
 
-<div v-click="1" class="trio">
-<div><div class="stat mid warn">0.4912</div><p class="stat-label">s = 1e6</p></div>
-<div><div class="stat mid warn">0.2129</div><p class="stat-label">s = 1e7</p></div>
-<div><div class="stat mid alarm">−1.147</div><p class="stat-label">s = 1e8: a probability below zero</p></div>
+```rust
+Beta::new(s, s)?.cdf(0.5)
+```
+
+</div>
+<table v-click="2" class="plain">
+<thead><tr><th>s</th><th>statrs</th></tr></thead>
+<tbody>
+<tr><td>1e6</td><td class="warn">0.4912</td></tr>
+<tr><td>1e7</td><td class="warn">0.2129</td></tr>
+<tr><td>1e8</td><td class="alarm">−1.147</td></tr>
+</tbody>
+</table>
+<p v-click="3" class="caption">reported upstream as statrs #434, fixed by another contributor in #456</p>
+</div>
 </div>
 
 <!--
-That was a limit of the format. The other kind is a limit of the algorithm, where a float64 could hold the answer and the code loses it. My coin was one; some were statrs'. A Beta distribution with two equal shapes is symmetric, so its cdf at one half is exactly one half, for every shape.
+That was a limit of the format. The other kind is a limit of the algorithm: the answer fits in a float64, and the code loses it. Most of those the oracle found were mine, in closed forms one to three lines long. My favourite: a coin that comes up one with probability ten to the minus three hundred. The chance of a value above one half is p, a perfectly representable number.
 
-[click] At a million, statrs said 0.49. At ten million, 0.21. At a hundred million, minus 1.147. A probability below zero.
--->
+[click] I returned zero. I computed one minus the cdf, and in float64, one minus ten to the minus three hundred is exactly one. That's catastrophic cancellation: the fix is to compute what you want directly.
 
----
-eyebrow: 06 · Accuracy
----
+[click] Some were statrs'. A Beta with two equal shapes has a cdf of exactly one half at one half. At a million, statrs said 0.49; at a hundred million, minus 1.147. A probability below zero.
 
-# A reproducer upstream fixed it for every statrs user
-
-<div class="shots">
-<figure class="shot-issue">
-<img src="/statrs-issue-434.png" alt="statrs issue 434: Beta::cdf loses accuracy above shapes of 1e4 and returns values outside [0, 1] by 1e8, with a table of statrs results against the exact 0.5">
-<figcaption>statrs #434: the report, with its reproducer</figcaption>
-</figure>
-<figure v-click="1" class="shot-pr">
-<img src="/statrs-pr-456.png" alt="statrs pull request 456, Stabilize large beta CDF, merged by the maintainer">
-<figcaption>statrs #456: the fix, by another contributor</figcaption>
-</figure>
-</div>
-
-<!--
-I could have patched that inside polars-stats and moved on. That fixes it for one project. Instead it went upstream as an issue: the input, what statrs returns, and the exact answer, which here needs no oracle at all.
-
-[click] Two and a half weeks later another contributor, day01, opened the fix, and the maintainer merged it. The root cause: a continued fraction capped at 140 iterations that returned its last value instead of an error. That report cost me an evening, and the fix reaches everyone who uses statrs, not just polars-stats.
-
-It wasn't the only one. I found a few more issues in statrs along the way, and every time the maintainers were welcoming and supportive.
+[click] I could have patched it inside polars-stats. Instead it went upstream with a reproducer, and another contributor fixed it for every statrs user. A report is a contribution.
 -->
 
 ---
@@ -1107,7 +1060,6 @@ eyebrow: 06 · Accuracy
 
 <Stack v-click="1" mini :pins="4" />
 
-<p class="footnote">docs › Explanation › Numerical accuracy</p>
 
 <!--
 The rule in the docs: fix the algorithm, or document the limit, where it starts and how big it is. Every statrs issue still open is documented that way.
@@ -1139,8 +1091,8 @@ eyebrow: 07 · Cost
 <div class="stamp">Disclaimer</div>
 
 <dl class="conditions">
-<dt>Machine</dt><dd>Apple M5, 10 cores (4 performance, 6 efficiency), 24 GB, macOS 26.7.1, on AC power, other apps closed</dd>
-<dt>Software</dt><dd>Python 3.14.10 · Polars 2.1.0 · SciPy 1.18.1 · NumPy 2.5.4 · polars-stats 0.1.0, release build</dd>
+<dt>Machine</dt><dd>Apple M5, 10 cores (4 performance, 6 efficiency), 24 GB, macOS 26.7.2, on AC power, other apps closed</dd>
+<dt>Software</dt><dd>Python 3.14.10 · Polars 2.1.0 · SciPy 1.18.1 · NumPy 2.5.4 · polars-stats 0.2.0, release build</dd>
 <dt>polars-stats</dt><dd>streaming engine, default thread pool (10 threads); the timed call includes building and dispatching the query</dd>
 <dt>SciPy</dt><dd>the classic frozen API, <code>norm(loc=…, scale=…)</code> then the method; samplers get a PCG64 <code>Generator</code>; one thread</dd>
 <dt>Regime</dt><dd>one parameter value per row, at 10k, 1M and 10M rows; plain numbers and one-value expressions are other code paths on both sides, not measured here</dd>
@@ -1148,8 +1100,6 @@ eyebrow: 07 · Cost
 <dt>samples</dt><dd>in the column regime SciPy draws <code>(draws, rows)</code> and transposes a view: optimistic for SciPy by about one pass over the output</dd>
 <dt>Timing</dt><dd>median of up to 50 iterations within 10 s per cell (at least 3), after one warmup · ratio = SciPy / polars-stats, above 1 means polars-stats is faster</dd>
 </dl>
-
-<p class="footnote">run on 3 November 2026</p>
 
 <!--
 This is a local benchmark, on my laptop, so it might be wrong, like every benchmark. Everything you need to reproduce it is on this slide, and the slides are online.
@@ -1163,76 +1113,27 @@ eyebrow: 07 · Cost
 # One value per row: large frames favour polars-stats
 
 <div class="chart">
-<img src="/bench-column.svg" alt="Dot plots of the SciPy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
-<img v-click="4" src="/bench-column-10k.svg" alt="Overlay: the 10k-row cells where SciPy is ahead">
+<img src="/after/bench-column.svg" alt="Dot plots of the SciPy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
+<img v-click="4" src="/after/bench-column-10k.svg" alt="Overlay: the 10k-row cells where SciPy is ahead">
 <span class="dim sample" :class="{ on: $clicks === 2 || $clicks === 3 }"></span>
 <span class="dim samples" :class="{ on: $clicks === 1 || $clicks === 3 }"></span>
 <span class="dim sf" :class="{ on: $clicks === 1 || $clicks === 2 }"></span>
 </div>
 
-<p v-click="4" class="caption center">10k rows: SciPy ahead on <code>sample</code> for all but DiscreteUniform, up to 6.8×; polars-stats pays 0.3 to 0.45 ms a call</p>
+<p v-click="4" class="caption center">10k rows: SciPy ahead on <code>sample</code> for all but DiscreteUniform, up to 6×; polars-stats pays about 0.3 ms a call</p>
 
-<p class="footnote">column regime only · DiscreteUniform: SciPy's <code>randint</code> with per-row bounds runs <code>np.vectorize</code> · Bernoulli: NumPy <code>binomial(1, p)</code></p>
-
-<!--
-The per-row case, the reason polars-stats exists. First, how to read it. Each panel is a method, each line is a distribution. A dot is SciPy's time divided by polars-stats' time: on the dark vertical line they tie, and right of it polars-stats is faster. The axis is logarithmic, so each grid line is ten times more. Three dots per distribution, one per frame size: hollow for ten thousand rows, purple for a million, black for ten million.
-
-[click] Simulation, one draw per row: at a million rows, 1.6 to 8 times faster than classic SciPy.
-
-[click] Ten draws per row: 4.7 to 18 times.
-
-[click] Scoring with sf: 2.3 to 8 times. The two starred lines at the bottom, discrete uniform and Bernoulli, go through slow paths in SciPy. Don't quote those.
-
-[click] Now the hollow dots. At ten thousand rows SciPy wins every one-draw-per-row cell but one, by up to nearly seven times: polars-stats spends a third to almost half a millisecond planning and dispatching the query, whatever the distribution. Large frames amortise that; small frames pay it. And this is polars-stats plus Polars' thread pool, against classic SciPy, on this laptop: what you get when you use it.
--->
-
----
-eyebrow: 07 · Cost
----
-
-# Two days later, a friend rewrote polars-stats in Nim
-
-<div class="cols wide-left middle">
-<div class="cards">
-<div v-click="1" class="card"><b>"Polars plugins, without the Rust"</b>the same 14 distributions as Nim plugins: about 780 lines, against about 6,300 of Rust. His verdict: "On par, as hoped, and no more than that."</div>
-<div v-click="2" class="card move"><b>So I went back to work</b>checking a parameter column is now a tight loop the compiler can vectorise, and every answer is written in one pass, with a null mask built only when a null shows up</div>
-</div>
-<figure class="qr">
-<img src="/qr-nanuq.svg" alt="QR code for pietroppeter.github.io/nanuq-more">
-<figcaption>pietroppeter.github.io/nanuq-more</figcaption>
-</figure>
-</div>
-
-<p class="footnote">line counts and verdict from the post · both changes ship in polars-stats 0.2.0</p>
+<p class="footnote">*SciPy slow paths: <code>randint</code> with per-row bounds runs <code>np.vectorize</code>; Bernoulli is <code>binomial(1, p)</code></p>
 
 <!--
-Two days after that run, my friend Pietro, who loves the Nim programming language, published a post called "Polars plugins, without the Rust". [click] He rebuilt polars-stats in Nim: the same fourteen distributions, in about 780 lines, against about 6,300 of Rust. His verdict: on par, as hoped, and no more than that.
+The per-row case, the reason polars-stats exists. Each panel is a method, each line a distribution. A dot is SciPy's time over polars-stats' time: right of the dark line, polars-stats is faster, on a log scale. Hollow dots are ten thousand rows, purple a million, black ten million.
 
-[click] I took it as a challenge. Two changes: checking a column of parameters became a tight loop the compiler can vectorise, and every answer is now written in a single pass, with a null mask built only when there's a null to record. Performance is never done, so I ran the same benchmark again.
--->
+[click] One draw per row: at a million rows, 2.6 to 7.8 times faster than classic SciPy.
 
----
-eyebrow: 07 · Cost
----
+[click] Ten draws per row: 5.7 to 19 times.
 
-# polars-stats 0.2.0, same laptop, same benchmark
+[click] Scoring with sf: 2.3 to 12 times. The two starred lines go through slow paths in SciPy; don't quote those.
 
-<div class="chart">
-<img src="/after/bench-column.svg" alt="The same dot plots for polars-stats 0.2.0: SciPy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
-<figure v-click="1" class="shot-quote">
-<img src="/nanuq-round-three.png" alt="From the post: Round three goes to Francesco, no contest. Nim's homework is now a precise list: a row loop with no per-row overhead, constant checks hoisted out of the loop, then the gamma quantile and the samplers. The ball is in Nim's court, and it is bouncing rather fast.">
-<figcaption>nanuq-more, round three (updated 9 November)</figcaption>
-</figure>
-</div>
-
-<p class="caption center">1M rows, vs 3 November: <code>sf</code> 1.3× further ahead (Uniform 3× → 12×), sampling 1.1 to 1.2×, Gamma flat</p>
-
-<p class="footnote">run on 9 November 2026 · polars-stats 0.2.0 and macOS 26.7.2, otherwise as on the disclaimer slide</p>
-
-<!--
-Same laptop, same benchmark, a week later. Scoring got a lot faster: Uniform went from three times faster than SciPy to twelve.
-
-[click] And Pietro measured again. In his words: round three goes to Francesco, no contest. That's at a million rows, on the cheapest formulas; at ten million rows it's still split. And the ball is in Nim's court, bouncing rather fast. What I can tell you for sure: a friend's blog post made polars-stats faster.
+[click] Now the hollow dots. At ten thousand rows SciPy wins almost every one-draw cell, by up to six times: polars-stats spends about a third of a millisecond planning and dispatching the query. Large frames amortise that; small frames pay it.
 -->
 
 ---
@@ -1243,13 +1144,13 @@ eyebrow: 07 · Cost
 
 <div class="cols">
 <ul class="points">
-<li v-click="1"><b>A much shorter catalogue</b>than SciPy's hundred-plus; no multivariate distributions, no statistical tests</li>
+<li v-click="1"><b>A much shorter catalogue</b>no multivariate, no statistical tests</li>
 <li v-click="2"><b>No <code>fit</code>, no <code>loc</code> / <code>scale</code> shims</b>write the estimator as a Polars expression</li>
-<li v-click="3"><b>One trip into Rust per method</b>even a closed-form mean, so validation stays uniform</li>
-<li v-click="4"><b>A compiled dependency</b>that follows Polars' plugin interface across releases</li>
+<li v-click="3"><b>One trip into Rust per method</b>even for a closed-form mean</li>
+<li v-click="4"><b>A compiled dependency</b>tracks Polars' plugin interface</li>
 </ul>
 <div class="cards">
-<div v-click="5" class="card"><b>Where you need any of that</b>SciPy is the right tool, and the two live happily in one project</div>
+<div v-click="5" class="card"><b>Where you need any of that</b>SciPy is the right tool</div>
 <div v-click="6" class="card move"><b>Next: big plans</b>
 <ul class="next">
 <li v-click="7">every univariate distribution statrs supports</li>
@@ -1260,7 +1161,6 @@ eyebrow: 07 · Cost
 </div>
 </div>
 
-<p class="footnote">docs › Explanation › Why polars-stats › What it costs</p>
 
 <!--
 What it costs, straight from the docs. [click] A much shorter catalogue than SciPy's hundred-plus: no multivariate distributions, no statistical tests. [click] No fit, and no loc and scale shims. [click] One round trip into Rust per method call, even for a mean, so validation stays uniform. [click] And a compiled dependency that has to follow Polars' plugin interface across releases.
@@ -1308,8 +1208,8 @@ So if you take one thing home: borrow the engine. [click] Borrow the maths. [cli
 <div class="links">
 <div>
 <p class="install"><code>pip install polars-stats</code></p>
-<p>Docs: <a href="https://fbruzzesi.github.io/polars-stats/">fbruzzesi.github.io/polars-stats</a>, start with <b>Explanation</b></p>
-<p>Plugins: <a href="https://docs.pola.rs/user-guide/plugins/">docs.pola.rs/user-guide/plugins</a></p>
+<p>Docs: <a href="https://fbruzzesi.github.io/polars-stats/">fbruzzesi.github.io/polars-stats</a></p>
+<p>Polars plugins: <a href="https://docs.pola.rs/user-guide/plugins/">docs.pola.rs/user-guide/plugins</a></p>
 <p>statrs: <a href="https://docs.rs/statrs">docs.rs/statrs</a></p>
 </div>
 <figure class="qr">
@@ -1326,4 +1226,53 @@ So if you take one thing home: borrow the engine. [click] Borrow the maths. [cli
 Thank you to the three giants: SciPy, Polars for the engine and the door into it, statrs for the maths. Thank you to the statrs contributors who turned my reports into fixes, and to the people who contributed to polars-stats.
 
 If you want the why behind everything I showed, the docs have an **Explanation** section; this talk is its long version. Thank you.
+-->
+
+---
+eyebrow: Appendix · Cost
+---
+
+# Two days later, a friend rewrote polars-stats in Nim
+
+<div class="cols wide-left middle">
+<div class="cards">
+<div v-click="1" class="card"><b>"Polars plugins, without the Rust"</b>14 distributions in about 780 lines of Nim: on par</div>
+<div v-click="2" class="card move"><b>So I went back to work</b>a vectorised parameter check, one pass per answer</div>
+</div>
+<figure class="qr">
+<img src="/qr-nanuq.svg" alt="QR code for pietroppeter.github.io/nanuq-more">
+<figcaption>pietroppeter.github.io/nanuq-more</figcaption>
+</figure>
+</div>
+
+<p class="footnote">line counts and verdict from the post · both changes ship in polars-stats 0.2.0</p>
+
+<!--
+Two days after that run, my friend Pietro, who loves the Nim programming language, published a post called "Polars plugins, without the Rust". [click] He rebuilt polars-stats in Nim: the same fourteen distributions, in about 780 lines, against about 6,300 of Rust. His verdict: on par, as hoped, and no more than that.
+
+[click] I took it as a challenge. Two changes: checking a column of parameters became a tight loop the compiler can vectorise, and every answer is now written in a single pass, with a null mask built only when there's a null to record. Performance is never done, so I ran the same benchmark again.
+-->
+
+---
+eyebrow: Appendix · Cost
+---
+
+# polars-stats 0.2.0, same laptop, same benchmark
+
+<div class="chart">
+<img src="/after/bench-column.svg" alt="The same dot plots for polars-stats 0.2.0: SciPy to polars-stats time ratio per distribution, column regime, at 10k, 1M and 10M rows, for sample, samples and sf">
+<figure v-click="1" class="shot-quote">
+<img src="/nanuq-round-three.png" alt="From the post: Round three goes to Francesco, no contest. Nim's homework is now a precise list: a row loop with no per-row overhead, constant checks hoisted out of the loop, then the gamma quantile and the samplers. The ball is in Nim's court, and it is bouncing rather fast.">
+<figcaption>nanuq-more, round three (updated 9 November)</figcaption>
+</figure>
+</div>
+
+<p class="caption center">1M rows, vs 3 November: <code>sf</code> 1.3× further ahead (Uniform 3× → 12×), sampling 1.1 to 1.2×, Gamma flat</p>
+
+<p class="footnote">the same run as the benchmark slide</p>
+
+<!--
+Same laptop, same benchmark, a week later. Scoring got a lot faster: Uniform went from three times faster than SciPy to twelve.
+
+[click] And Pietro measured again. In his words: round three goes to Francesco, no contest. That's at a million rows, on the cheapest formulas; at ten million rows it's still split. And the ball is in Nim's court, bouncing rather fast. What I can tell you for sure: a friend's blog post made polars-stats faster.
 -->
