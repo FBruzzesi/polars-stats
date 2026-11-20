@@ -70,9 +70,9 @@ The benchmark slides come from the repository's own harness. On a quiet machine,
 ```bash
 uv run --no-sync python -m tools.benchmarks.run --methods sample samples sf --regimes column \
   --rows 10_000 1_000_000 10_000_000 --max-seconds 10 --format json \
-  --output-dir talks/vectorized-distributions/bench-results-after
-uv run --no-project python talks/vectorized-distributions/bench_chart.py \
-  talks/vectorized-distributions/bench-results-after talks/vectorized-distributions/public/after
+  --output-dir docs/talks/vectorized-distributions/bench-results-after
+uv run --no-project python docs/talks/vectorized-distributions/bench_chart.py \
+  docs/talks/vectorized-distributions/bench-results-after docs/talks/vectorized-distributions/public/after
 ```
 
 The second command rewrites `public/after/bench-column.svg` and its 10k-row overlay, and prints the ranges the
