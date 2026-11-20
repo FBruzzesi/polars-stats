@@ -16,6 +16,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 |---|---|---|---|
 | `Beta(a, b)` | continuous | `a > 0`, `b > 0` | `beta(a, b)` |
 | `Cauchy(loc, scale)` | continuous | `scale > 0` | `cauchy(loc=loc, scale=scale)`; its undefined moments are `null` here, `nan` there |
+| `ChiSquared(dof)` | continuous | `dof > 0` | `chi2(df=dof)` |
 | `Exponential(rate)` | continuous | `rate > 0` | `expon(scale=1 / rate)` |
 | `Gamma(shape, rate)` | continuous | `shape > 0`, `rate > 0` | `gamma(a=shape, scale=1 / rate)` |
 | `LogNormal(mu, sigma)` | continuous | `sigma > 0` | `lognorm(s=sigma, scale=exp(mu))` |
