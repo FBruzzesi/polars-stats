@@ -34,8 +34,15 @@ nav = [
     { "Design notes" = "explanation/design.md" },
     { "Numerical accuracy" = "explanation/accuracy.md" },
   ] },
+  { "Talks" = "talks/index.md" },
   { "Contributing" = "contributing.md" },
 ]
+
+# A talk folder holds a Slidev deck's source; only its build, `dist/` (see `make talks`), is published.
+exclude_docs = """
+talks/*/*
+!talks/*/dist/
+"""
 
 #extra_css = ["stylesheets/extra.css"]
 #extra_javascript = ["javascripts/extra.js"]

@@ -63,6 +63,10 @@ The static site can be hosted anywhere that serves files; add `--base /some/path
 PDF has one page per slide with every click revealed; add `--with-clicks` for one page per click. If the export reports
 a missing browser, run `npx playwright install chromium` once. `dist/` and PDFs are gitignored.
 
+The documentation site embeds this deck on its Talks page. From the repository root, `make docs-serve` builds the deck
+with the site's base path and serves the docs locally, and `make docs` runs the strict build. Zensical publishes only
+this folder's `dist/`; `exclude_docs` in `zensical.toml` keeps the source out of the site.
+
 ## Regenerate the benchmark charts
 
 The benchmark slides come from the repository's own harness. On a quiet machine, from the repository root:
