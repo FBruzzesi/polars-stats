@@ -10,6 +10,7 @@ aspectRatio: 16/9
 codeCopy: false
 transition: fade
 mdc: true
+routerMode: hash
 fonts:
   sans: Inter
   mono: JetBrains Mono

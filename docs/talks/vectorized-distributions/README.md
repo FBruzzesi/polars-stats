@@ -43,7 +43,7 @@ Open <http://localhost:3030>. Space or the right arrow advances one click, the l
 arrows skip whole slides, `o` shows every slide and `g` jumps to a slide by number. Saving `slides.md` or `style.css`
 reloads the browser.
 
-For presenting, open <http://localhost:3030/presenter> on the laptop and <http://localhost:3030> on the projector. The
+For presenting, open <http://localhost:3030/#/presenter> on the laptop and <http://localhost:3030> on the projector. The
 presenter view shows the current and next slide, a timer and the notes. In the notes, `[click]` marks where to press the
 next key and `[pause]` means stop and let the room think. The cover's notes carry the timing marks and the cut list.
 
