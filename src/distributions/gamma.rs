@@ -705,14 +705,14 @@ const MAX_NEWTON_STEPS: usize = 200;
 const SETTLED_STEP_FRACTION: f64 = 1.0 / 1024.0;
 
 /// `Gamma(shape, rate)`: the standard gamma's incomplete gamma, read at `t = rate x`.
-struct ScaledGamma {
+pub(super) struct ScaledGamma {
     standard: IncompleteGamma,
     rate: f64,
     ln_rate: f64,
 }
 
 impl ScaledGamma {
-    fn new(shape: f64, rate: f64) -> Self {
+    pub(super) fn new(shape: f64, rate: f64) -> Self {
         Self {
             standard: IncompleteGamma::new(shape),
             rate,
@@ -773,7 +773,7 @@ impl ScaledGamma {
     }
 }
 
-fn ln_pdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn ln_pdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     Some(if x < 0.0 {
         f64::NEG_INFINITY
     } else if x == 0.0 {
@@ -790,14 +790,14 @@ fn ln_pdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
 
 /// `exp` of the log density: every factor of `rate^shape x^(shape - 1) e^(-rate x) / Gamma(shape)`
 /// over- or underflows on its own somewhere the density is ordinary, which is where statrs is `NaN`.
-fn pdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn pdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     if x == 0.0 {
         return Some(gamma.pdf_at_origin());
     }
     ln_pdf_value(gamma, x).map(f64::exp)
 }
 
-fn cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     Some(if x <= 0.0 {
         0.0
     } else {
@@ -807,7 +807,7 @@ fn cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     })
 }
 
-fn ln_cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn ln_cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     Some(if x <= 0.0 {
         f64::NEG_INFINITY
     } else {
@@ -817,7 +817,7 @@ fn ln_cdf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     })
 }
 
-fn sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     Some(if x <= 0.0 {
         1.0
     } else {
@@ -827,7 +827,7 @@ fn sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     })
 }
 
-fn ln_sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
+pub(super) fn ln_sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     Some(if x <= 0.0 {
         0.0
     } else {
@@ -837,11 +837,11 @@ fn ln_sf_value(gamma: &ScaledGamma, x: f64) -> Option<f64> {
     })
 }
 
-fn ppf_value(gamma: &ScaledGamma, q: f64) -> Option<f64> {
+pub(super) fn ppf_value(gamma: &ScaledGamma, q: f64) -> Option<f64> {
     on_unit_interval(&|q| gamma.quantile(Tail::Lower, q), q)
 }
 
-fn isf_value(gamma: &ScaledGamma, q: f64) -> Option<f64> {
+pub(super) fn isf_value(gamma: &ScaledGamma, q: f64) -> Option<f64> {
     on_unit_interval(&|q| gamma.quantile(Tail::Upper, q), q)
 }
 
@@ -951,8 +951,17 @@ const ENTROPY_SERIES: [f64; 8] = [
 
 pub(super) const LN_2PI_E: f64 = 2.8378770664093453;
 
-/// Differential entropy (nats), `shape - ln(rate) + ln Gamma(shape) + (1 - shape) psi(shape)`:
-/// digamma has no Polars expression to move to.
+/// Differential entropy (nats), `shape - ln(rate) + ln Gamma(shape) + (1 - shape) psi(shape)`.
+pub(super) fn entropy(shape: f64, rate: f64) -> f64 {
+    if shape < ENTROPY_SERIES_FROM {
+        return shape - rate.ln() + ln_gamma(shape) + (1.0 - shape) * digamma(shape);
+    }
+    let inverse_shape = shape.recip();
+    let correction = polynomial(&ENTROPY_SERIES, inverse_shape) * inverse_shape;
+    0.5 * (LN_2PI_E + shape.ln()) + correction - rate.ln()
+}
+
+/// Differential entropy (nats): digamma has no Polars expression to move to.
 #[polars_expr(output_type=Float64)]
 fn gamma_entropy(inputs: &[Series]) -> PolarsResult<Series> {
     param_keyed(
@@ -960,14 +969,7 @@ fn gamma_entropy(inputs: &[Series]) -> PolarsResult<Series> {
         coerce_f64,
         coerce_f64,
         check_params,
-        |shape, rate| {
-            if shape < ENTROPY_SERIES_FROM {
-                return Ok(shape - rate.ln() + ln_gamma(shape) + (1.0 - shape) * digamma(shape));
-            }
-            let inverse_shape = shape.recip();
-            let correction = polynomial(&ENTROPY_SERIES, inverse_shape) * inverse_shape;
-            Ok(0.5 * (LN_2PI_E + shape.ln()) + correction - rate.ln())
-        },
+        |shape, rate| Ok(entropy(shape, rate)),
     )
 }
 
