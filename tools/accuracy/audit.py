@@ -1086,7 +1086,7 @@ def students_t_central(dof: mp.mpf, t: mp.mpf) -> mp.mpf:
     y = t * t / (dof + t * t)
     if y <= mp.mpf(1) / 2:
         return mp.betainc(mp.mpf(1) / 2, dof / 2, 0, y, regularized=True)
-    return 1 - 2 * students_t_far(dof, t)
+    return cast("mp.mpf", 1 - 2 * students_t_far(dof, t))
 
 
 STUDENTS_T_CENTRAL_FROM = mp.mpf(1) / 4

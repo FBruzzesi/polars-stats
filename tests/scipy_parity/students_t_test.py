@@ -4,6 +4,8 @@ from typing import Literal
 
 import polars as pl
 import pytest
+import scipy
+from packaging.version import Version
 from scipy.stats import t as scipy_t
 
 from polars_stats import StudentsT
@@ -36,6 +38,12 @@ _VALUE_KEYED_CASES: list[Case[StudentsT]] = [
     Case("entropy", "scalar", lambda d, _: d.entropy(), "entropy"),
 ]
 _MEAN = Case[StudentsT]("mean", "scalar", lambda d, _: d.mean(), "mean")
+
+_INVERSES_NEED_SCIPY_1_17 = pytest.mark.skipif(
+    Version(scipy.__version__) < Version("1.17"),
+    reason="scipy < 1.17's `t.ppf` / `t.isf` are up to `2e-11` relative off, `9e-12` at `t(1).ppf(1e-5)` against "
+    "Cauchy's closed form, so the comparison would check scipy",
+)
 _SPREAD_CASES: list[Case[StudentsT]] = [
     Case("variance", "scalar", lambda d, _: d.variance(), "var"),
     Case("std", "scalar", lambda d, _: d.std(), "std"),
@@ -56,7 +64,16 @@ def _cases(dof: float) -> list[Case[StudentsT]]:
 
 @pytest.mark.parametrize(
     ("case", "dof"),
-    [pytest.param(case, dof, id=f"{case.name}-dof={dof}") for dof in _DOFS for case in _cases(dof)],
+    [
+        pytest.param(
+            case,
+            dof,
+            id=f"{case.name}-dof={dof}",
+            marks=_INVERSES_NEED_SCIPY_1_17 if case.name in ("ppf", "isf") else (),
+        )
+        for dof in _DOFS
+        for case in _cases(dof)
+    ],
 )
 def test_method_matches_scipy(case: Case[StudentsT], dof: float) -> None:
     """Every method matches `scipy.stats.t(dof, loc, scale)` across the parameter grid.
@@ -77,6 +94,7 @@ _INVERSE_DOFS = [0.5, 1.0, 2.0, 3.0, 4.0, 4.5, 30.0, 1e6]
 _INVERSE_QUANTILES = [1e-10, 1e-7, 1e-5, 0.9999, 1 - 1e-7, 1 - 1e-10]
 
 
+@_INVERSES_NEED_SCIPY_1_17
 @pytest.mark.parametrize("dof", _INVERSE_DOFS, ids=lambda dof: f"dof={dof}")
 @pytest.mark.parametrize("method", ["ppf", "isf"])
 def test_inverses_match_scipy_in_both_tails(dof: float, method: Literal["ppf", "isf"]) -> None:
@@ -91,6 +109,7 @@ def test_inverses_match_scipy_in_both_tails(dof: float, method: Literal["ppf", "
     assert_series_equal(got, expected, rel_tol=1e-12, abs_tol=0.0, check_names=False)
 
 
+@_INVERSES_NEED_SCIPY_1_17
 def test_inverses_on_a_dof_column_match_scipy() -> None:
     """A `dof` column builds each row's state on its own, so the closed forms at `1`, `2` and `4` and the solver's
     fallback bracket below `dof = 1` are reached per row, not only on the constant path.
