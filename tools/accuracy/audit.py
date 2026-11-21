@@ -1077,21 +1077,47 @@ def students_t_pdf(params: Params, x: float) -> mp.mpf:
     return exp_neg(-students_t_log_pdf(params, x))
 
 
-def students_t_root(params: Params, ln_p: mp.mpf, seed: float) -> mp.mpf:
-    """`|t|` with `ln P(T < -|t|) = ln_p`, solved in `ln|t|`.
+def students_t_central(dof: mp.mpf, t: mp.mpf) -> mp.mpf:
+    """`1 - 2 P(T < -|t|) = I_y(1 / 2, dof / 2)` at `y = t^2 / (dof + t^2)`.
 
-    Seeded from the library's `|t|`, or where that has saturated from the far tail's leading term
-    `x^(dof / 2) / ((dof / 2) B(dof / 2, 1 / 2)) = 2p`, with `|t| ~ sqrt(dof / x)`.
+    Read directly up to `y = 1/2`, where `1 - 2P` would cancel, and off [`students_t_far`] past it, where `betainc`
+    at `y -> 1` would not converge.
+    """
+    y = t * t / (dof + t * t)
+    if y <= mp.mpf(1) / 2:
+        return mp.betainc(mp.mpf(1) / 2, dof / 2, 0, y, regularized=True)
+    return 1 - 2 * students_t_far(dof, t)
+
+
+STUDENTS_T_CENTRAL_FROM = mp.mpf(1) / 4
+"""From this `p` on the inverse is solved on the central mass `1 - 2p`, which stays resolved as `|t| -> 0`."""
+
+
+def students_t_root(params: Params, p: mp.mpf, seed: float) -> mp.mpf:
+    """`|t|` with `P(T < -|t|) = p`, solved in `ln|t|` on `ln P` in the tail and on `ln(1 - 2P)` at the center.
+
+    Seeded from the library's `|t|`, or where that has saturated from a leading term: the far tail's
+    `x^(dof / 2) / ((dof / 2) B(dof / 2, 1 / 2)) = 2p`, with `|t| ~ sqrt(dof / x)`, or the center's
+    `|t| f(0) = 1/2 - p`.
     """
     dof = mp.mpf(params[0])
+    half = dof / 2
+    ln_beta = ln_beta_fn(half, mp.mpf(1) / 2)
+    central = p > STUDENTS_T_CENTRAL_FROM
     if seed != 0 and math.isfinite(seed):
         u_seed = mp.log(abs(mp.mpf(seed)))
+    elif central:
+        u_seed = mp.log(mp.mpf(1) / 2 - p) + mp.log(dof) / 2 + ln_beta
     else:
-        half = dof / 2
-        ln_x = (mp.log(2) + ln_p + mp.log(half) + ln_beta_fn(half, mp.mpf(1) / 2)) / half
+        ln_x = (mp.log(2 * p) + mp.log(half) + ln_beta) / half
         u_seed = (mp.log(dof) - min(ln_x, mp.mpf(0))) / 2
-    root = solve_monotone(lambda u: mp.log(students_t_far(dof, mp.e**u)) - ln_p, float(u_seed))
-    return cast("mp.mpf", mp.e**root)
+    ln_target = mp.log(1 - 2 * p) if central else mp.log(p)
+
+    def residual(u: mp.mpf) -> mp.mpf:
+        t = mp.e**u
+        return mp.log(students_t_central(dof, t) if central else students_t_far(dof, t)) - ln_target
+
+    return cast("mp.mpf", mp.e ** solve_monotone(residual, float(u_seed)))
 
 
 def students_t_offset(params: Params, q: float, seed: float) -> mp.mpf:
@@ -1102,8 +1128,8 @@ def students_t_offset(params: Params, q: float, seed: float) -> mp.mpf:
         return mp.mpf(0)
     standard_seed = float((mp.mpf(seed) - loc) / scale) if math.isfinite(seed) else seed
     if quantile < mp.mpf(0.5):
-        return -scale * students_t_root(params, mp.log(quantile), standard_seed)
-    return scale * students_t_root(params, mp.log1p(-quantile), standard_seed)
+        return -scale * students_t_root(params, quantile, standard_seed)
+    return scale * students_t_root(params, 1 - quantile, standard_seed)
 
 
 def students_t_ppf(params: Params, q: float, seed: float) -> mp.mpf:
@@ -1173,6 +1199,20 @@ def students_t_points(params: Params, rng: random.Random, count: int) -> list[Po
     for k in (switch * (1 - 1e-6), switch * (1 + 1e-6)):
         points.extend(((loc + scale * k, "danger"), (loc - scale * k, "danger")))
     return [(x, origin) for x, origin in points if math.isfinite(x)]
+
+
+STUDENTS_T_NEAR_HALF = tuple(0.5 + sign * offset for offset in (1e-15, 1e-10, 1e-6) for sign in (-1, 1))
+"""Levels next to the median, where `ppf - loc` is `O(q - 1/2)` and must stay relatively exact."""
+
+
+def students_t_quantile_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`quantile_points`] plus [`STUDENTS_T_NEAR_HALF`]."""
+    return [*quantile_points(params, rng, count), *((q, "danger") for q in STUDENTS_T_NEAR_HALF)]
+
+
+def students_t_survival_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`survival_points`] plus [`STUDENTS_T_NEAR_HALF`]."""
+    return [*survival_points(params, rng, count), *((q, "danger") for q in STUDENTS_T_NEAR_HALF)]
 
 
 # Binomial oracles.
@@ -2646,8 +2686,8 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 AuditedMethod("log_cdf", stable_log(students_t_cdf, students_t_sf), LOG_RTOL, students_t_points),
                 AuditedMethod("sf", students_t_sf, SPECIAL_RTOL, students_t_points),
                 AuditedMethod("log_sf", stable_log(students_t_sf, students_t_cdf), LOG_RTOL, students_t_points),
-                AuditedMethod("ppf", students_t_ppf, SPECIAL_RTOL, quantile_points, seeded_oracle=True),
-                AuditedMethod("isf", students_t_isf, SPECIAL_RTOL, survival_points, seeded_oracle=True),
+                AuditedMethod("ppf", students_t_ppf, SPECIAL_RTOL, students_t_quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", students_t_isf, SPECIAL_RTOL, students_t_survival_points, seeded_oracle=True),
                 *moments(
                     mean=students_t_mean,
                     variance=students_t_variance,
