@@ -4,6 +4,7 @@
 //! hangs `Beta.ppf`. The tails are `beta.rs`'s log-space incomplete beta at `x = dof / (dof + t^2)`, with
 //! `y = t^2 / (dof + t^2)` formed directly beside it.
 
+use std::borrow::Cow;
 use std::f64::consts::{LN_2, SQRT_2};
 
 use polars::prelude::arity::unary_elementwise;
@@ -67,7 +68,7 @@ impl StudentsTParams {
     fn value_keyed(
         &self,
         value: &Series,
-        select: impl Fn(&ScaledT, f64) -> Option<f64>,
+        select: impl Fn(&ScaledT<'_>, f64) -> Option<f64>,
     ) -> PolarsResult<Series> {
         self.check()?;
         value_keyed_scalar(value, &ScaledT::new(self.dof, self.loc, self.scale), select)
@@ -100,6 +101,7 @@ impl Ratio {
 }
 
 /// The standard `t` distribution of `dof` degrees of freedom, with every `dof`-only term hoisted.
+#[derive(Clone)]
 struct StandardT {
     dof: f64,
     ln_dof: f64,
@@ -377,18 +379,22 @@ impl Magnitude {
 }
 
 /// `StudentsT(dof, loc, scale)`: the standard distribution read at `t = (x - loc) / scale`, which is never formed
-/// before the ratio `t^2 / dof` needs it.
-struct ScaledT {
-    standard: StandardT,
+/// before the ratio `t^2 / dof` needs it. The standard part is borrowed where one `dof` serves every row.
+struct ScaledT<'s> {
+    standard: Cow<'s, StandardT>,
     loc: f64,
     scale: f64,
     ln_scale: f64,
 }
 
-impl ScaledT {
+impl<'s> ScaledT<'s> {
     fn new(dof: f64, loc: f64, scale: f64) -> Self {
+        Self::over(Cow::Owned(StandardT::new(dof)), loc, scale)
+    }
+
+    fn over(standard: Cow<'s, StandardT>, loc: f64, scale: f64) -> Self {
         Self {
-            standard: StandardT::new(dof),
+            standard,
             loc,
             scale,
             ln_scale: scale.ln(),
@@ -476,14 +482,30 @@ fn isf_value(dist: &ScaledT, q: f64) -> Option<f64> {
 
 fn value_keyed(
     inputs: &[Series],
-    select: impl Fn(&ScaledT, f64) -> Option<f64>,
+    select: impl Fn(&ScaledT<'_>, f64) -> Option<f64>,
 ) -> PolarsResult<Series> {
+    let shared = shared_standard(&inputs[1])?;
     value_keyed_quaternary(
         inputs,
         check_params,
-        |dof, loc, scale| Ok(ScaledT::new(dof, loc, scale)),
+        |dof, loc, scale| {
+            let standard = shared
+                .as_ref()
+                .map_or_else(|| Cow::Owned(StandardT::new(dof)), Cow::Borrowed);
+            Ok(ScaledT::over(standard, loc, scale))
+        },
         select,
     )
+}
+
+/// The standard distribution of a length-1 `dof`, built once rather than on every row it is broadcast to.
+fn shared_standard(dof: &Series) -> PolarsResult<Option<StandardT>> {
+    if dof.len() != 1 {
+        return Ok(None);
+    }
+    let dof = coerce_f64(dof)?;
+    DOF.check_column(&dof)?;
+    Ok(dof.get(0).map(StandardT::new))
 }
 
 #[polars_expr(output_type=Float64)]

@@ -123,6 +123,7 @@ fn stirling_remainder_increment(z: f64, a: f64) -> f64 {
 /// From [`STIRLING_FROM`] on in both shapes the prefactor is DiDonato and Morris' `brcomp` form, which has
 /// no `a ln a`-sized terms to cancel; below it `ln B(a, b)` is read off [`series_offset`] at the smaller shape, so
 /// no term goes through statrs' `ln_gamma` and its `1e-14`.
+#[derive(Clone)]
 enum LnPrefactor {
     LnBeta(f64),
     /// `ln(x0^a y0^b / B(a, b)) = ln(a b / (2 pi (a + b))) / 2 - mu(a) - mu(b) + mu(a + b)` at the mean
@@ -138,6 +139,7 @@ enum LnPrefactor {
 ///
 /// Every evaluation takes the point twice, as `x` and as its complement `y = 1 - x`, and reads each logarithm
 /// off whichever of the two is the smaller, so a caller holding only `y` exactly never forms `1 - y`.
+#[derive(Clone)]
 pub(super) struct IncompleteBeta {
     a: f64,
     b: f64,
