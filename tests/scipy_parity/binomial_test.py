@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
 
-from polars_stats import Binomial
+from polars_stats import Beta, Binomial
 from tests.scipy_parity._harness import Case, assert_case_matches_scipy
 
 # Parameter and evaluation grids for the parity sweep. Owned by this test category and independent.
@@ -57,6 +57,30 @@ def test_method_matches_scipy(case: Case[Binomial], n: int, p: float) -> None:
 
 
 # Regressions from `make audit`, in a regime `_QUANTILES` / `_VALUE_GRID` above never reach.
+
+# (n, p, k) where the linear tail underflows, so `cdf().log()` / `sf().log()` are `-inf`.
+_DEEP_TAIL_CASES = [(100000, 0.001, 5000), (1000, 0.5, 50), (1000, 0.5, 950), (50, 1e-8, 10), (1000, 0.999, 900)]
+
+
+@pytest.mark.parametrize(("n", "p", "k"), _DEEP_TAIL_CASES, ids=str)
+def test_log_tails_are_the_beta_tails_at_p(n: int, p: float, k: int) -> None:
+    """Bit for bit: `P(X > k) = I_p(k + 1, n - k)` is `Beta(k + 1, n - k).cdf(p)`, and `P(X <= k)` its `sf`.
+
+    scipy's `binom.logcdf` / `logsf` are the naive log of the linear value and are `-inf` at every row here.
+    """
+    got = pl.DataFrame({"k": [float(k)]}).select(
+        lc=Binomial(n, p).log_cdf(pl.col("k")), ls=Binomial(n, p).log_sf(pl.col("k"))
+    )
+    beta = Beta(a=float(k + 1), b=float(n - k))
+    reference = pl.DataFrame({"p": [p]}).select(lc=beta.log_sf(pl.col("p")), ls=beta.log_cdf(pl.col("p")))
+    assert all(math.isfinite(value) for value in got.row(0))
+    assert got.row(0) == reference.row(0)
+
+
+def test_log_sf_far_past_the_mean_matches_the_oracle() -> None:
+    """`Binomial(100000, 0.001).log_sf(5000)`, against a 50-digit mpmath value; the linear sf is `0.0`."""
+    got = pl.DataFrame({"k": [5000.0]}).select(r=Binomial(100000, 0.001).log_sf(pl.col("k")))["r"].item()
+    assert got == pytest.approx(-14791.394818813615, rel=1e-14)
 
 
 @pytest.mark.parametrize(("n", "p"), [(1000, 0.5), (5000, 0.001), (50, 1e-8), (1000, 0.999), (10, 0.5)])

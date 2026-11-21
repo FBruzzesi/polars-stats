@@ -56,14 +56,6 @@ class Binomial(DiscreteDistribution):
     def _validated_params(self) -> pl.Expr:
         return self._validated("params", self._p)
 
-    def _log_cdf(self, value: pl.Expr) -> pl.Expr:
-        """No Rust ``ln_cdf`` body yet, so this underflows to ``-inf`` where ``cdf`` rounds to ``0``."""
-        return self._cdf(value).log()
-
-    def _log_sf(self, value: pl.Expr) -> pl.Expr:
-        """No Rust ``ln_sf`` body yet, so this underflows to ``-inf`` where ``sf`` rounds to ``0``."""
-        return self._sf(value).log()
-
     def mean(self) -> pl.Expr:
         """Expected value, ``n * p``."""
         return self._moment(self._n * self._p)

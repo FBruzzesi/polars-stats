@@ -64,7 +64,7 @@ impl GammaParams {
 }
 
 const EULER: f64 = 0.5772156649015329;
-const LN_2PI: f64 = 1.8378770664093453;
+pub(super) const LN_2PI: f64 = 1.8378770664093453;
 
 /// Below this `|a|` the Taylor series of `ln Gamma(1 + a)` keeps full relative precision, where
 /// statrs' `ln_gamma(1.0 + a)` rounds `1 + a` first and is off by `~1e-16` absolute.
@@ -105,11 +105,11 @@ fn ln_gamma_1p_series(a: f64) -> f64 {
 
 /// From this shape the prefactor is read off Stirling's formula, which cancels the `a ln a` terms
 /// exactly instead of rounding each of them.
-const STIRLING_FROM: f64 = 10.0;
+pub(super) const STIRLING_FROM: f64 = 10.0;
 
 /// `B_2k / (2k (2k - 1))` for `k = 1..=7`: the asymptotic series of Binet's remainder
 /// `mu(a) = ln Gamma(a + 1) - (a + 1/2) ln a + a - ln(2 pi) / 2`, truncated at `3e-17` at `a = 10`.
-const STIRLING_REMAINDER_SERIES: [f64; 7] = [
+pub(super) const STIRLING_REMAINDER_SERIES: [f64; 7] = [
     0.08333333333333333,
     -0.002777777777777778,
     0.0007936507936507937,
@@ -123,7 +123,7 @@ const STIRLING_REMAINDER_SERIES: [f64; 7] = [
 /// `-s^2 / (2 + s) + 2 (w^3 / 3 + w^5 / 5 + ...)` with `w = s / (2 + s)`, the `atanh` series of
 /// `ln(1 + s)` with the linear term cancelled exactly: the literal difference keeps only `~ulp / s`
 /// relative.
-fn ln_1p_mx(s: f64) -> f64 {
+pub(super) fn ln_1p_mx(s: f64) -> f64 {
     if s.abs() >= 0.5 {
         return s.ln_1p() - s;
     }
@@ -136,7 +136,7 @@ fn ln_1p_mx(s: f64) -> f64 {
     loop {
         let term = power / odd;
         sum += term;
-        if term.abs() <= INCOMPLETE_GAMMA_EPS * lead.abs() {
+        if term.abs() <= CONVERGENCE_EPS * lead.abs() {
             return lead + 2.0 * sum;
         }
         power *= w_squared;
@@ -144,8 +144,8 @@ fn ln_1p_mx(s: f64) -> f64 {
     }
 }
 
-/// Relative convergence target of the series and continued fractions below.
-const INCOMPLETE_GAMMA_EPS: f64 = f64::EPSILON / 2.0;
+/// Relative convergence target of the incomplete gamma and incomplete beta series and continued fractions.
+pub(super) const CONVERGENCE_EPS: f64 = f64::EPSILON / 2.0;
 
 /// Terms after which a series or continued fraction gives up and answers `NaN`, a guard no shape
 /// reaches: Temme's expansion takes the bulk from [`TEMME_FROM`] on, which bounds what is left to
@@ -337,10 +337,11 @@ impl Tail {
 
 /// The smaller of `P` and `Q` at a point, on the log scale; the other one is its complement.
 pub(super) struct Tails {
-    /// `ln(t^a e^-t / Gamma(a + 1))`.
-    ln_prefactor: f64,
-    smaller: Tail,
-    ln_smaller: f64,
+    /// The log of the prefactor the tails' series share: `ln(t^a e^-t / Gamma(a + 1))` for the incomplete
+    /// gamma, `ln(x^a y^b / B(a, b))` for the incomplete beta.
+    pub(super) ln_prefactor: f64,
+    pub(super) smaller: Tail,
+    pub(super) ln_smaller: f64,
 }
 
 impl Tails {
@@ -524,7 +525,7 @@ impl IncompleteGamma {
             denominator += 1.0;
             term *= t / denominator;
             sum += term;
-            if term * t <= INCOMPLETE_GAMMA_EPS * sum * (denominator + 1.0 - t) {
+            if term * t <= CONVERGENCE_EPS * sum * (denominator + 1.0 - t) {
                 return sum.ln();
             }
         }
@@ -556,7 +557,7 @@ impl IncompleteGamma {
             }
             let delta = numerator_side * denominator_side;
             value *= delta;
-            if (delta - 1.0).abs() <= INCOMPLETE_GAMMA_EPS {
+            if (delta - 1.0).abs() <= CONVERGENCE_EPS {
                 return value.ln();
             }
         }
@@ -576,7 +577,7 @@ impl IncompleteGamma {
             numerator *= -t / i;
             let term = numerator / (a + i);
             sum += term;
-            if term.abs() <= INCOMPLETE_GAMMA_EPS * sum.abs() {
+            if term.abs() <= CONVERGENCE_EPS * sum.abs() {
                 break;
             }
         }
