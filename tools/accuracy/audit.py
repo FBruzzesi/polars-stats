@@ -75,6 +75,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Poisson,
+    StudentsT,
     Uniform,
     Weibull,
 )
@@ -994,6 +995,184 @@ def beta_entropy(params: Params, _x: float) -> mp.mpf:
     """`ln B(a, b) - (a-1) psi(a) - (b-1) psi(b) + (a+b-2) psi(a+b)`."""
     a, b = mp.mpf(params[0]), mp.mpf(params[1])
     return ln_beta_fn(a, b) - (a - 1) * mp.digamma(a) - (b - 1) * mp.digamma(b) + (a + b - 2) * mp.digamma(a + b)
+
+
+# StudentsT oracles: the far tail is `I_x(dof / 2, 1 / 2) / 2` at `x = dof / (dof + t^2)`, formed in mpf from the
+# exact `t`. mpmath's `betainc` is a `2F1` whose `c - a - b` is `1/2` here, never the integer where its `z -> 1`
+# transform fails, so it holds next to the center too, up to a large `dof`; from there the tail is a quadrature.
+
+
+def students_t_standard(params: Params, x: float) -> mp.mpf:
+    """`t = (x - loc) / scale` at oracle precision."""
+    _dof, loc, scale = params
+    return (mp.mpf(x) - mp.mpf(loc)) / mp.mpf(scale)
+
+
+def students_t_ln_standard_density(dof: mp.mpf, t: mp.mpf) -> mp.mpf:
+    """`ln Gamma((dof + 1) / 2) - ln Gamma(dof / 2) - ln(dof pi) / 2 - (dof + 1) / 2 ln(1 + t^2 / dof)`."""
+    return (
+        mp.loggamma((dof + 1) / 2)
+        - mp.loggamma(dof / 2)
+        - mp.log(dof * mp.pi) / 2
+        - (dof + 1) / 2 * mp.log1p(t * t / dof)
+    )
+
+
+STUDENTS_T_QUAD_FROM = 1e4
+"""From this `dof` the far tail is [`students_t_far_by_quadrature`]: `betainc`'s `z -> 1` transform then sums two
+terms of size `x^-(dof / 2)` that cancel, past any working precision it will raise to (it gives up at `dof = 1e6`).
+The two oracles agree to `2e-28` at `dof = 1e3` and `1e4` from `|t| = 1e-8` to `1e300`."""
+
+
+def students_t_far_by_quadrature(dof: mp.mpf, t: mp.mpf) -> mp.mpf:
+    """`f(t) int_0^inf (1 + u (2t + u) / (dof + t^2))^(-(dof + 1) / 2) du` for `t > 0`: the density ratio
+    `f(t + u) / f(t)` is in `(0, 1]`, so the integral has nothing to cancel, and the split points at its decay width
+    (`(dof + t^2) / ((dof + 1) t)` in the far tail, `sqrt((dof + t^2) / (dof + 1))` near the center) let tanh-sinh
+    resolve it at every `t`.
+    """  # noqa: D205
+    spread = dof + t * t
+    power = (dof + 1) / 2
+    width = min(spread / ((dof + 1) * t), mp.sqrt(spread / (dof + 1)))
+    integral = mp.quad(
+        lambda u: mp.e ** (-power * mp.log1p(u * (2 * t + u) / spread)), [0, *(width * 4**k for k in range(4)), mp.inf]
+    )
+    return mp.e ** students_t_ln_standard_density(dof, t) * integral
+
+
+def students_t_far(dof: mp.mpf, t: mp.mpf) -> mp.mpf:
+    """`P(T < -|t|)`, the tail beyond `|t|`."""
+    if mp.isinf(t):
+        return mp.mpf(0)
+    if t == 0:
+        return mp.mpf(1) / 2
+    if dof >= STUDENTS_T_QUAD_FROM:
+        return students_t_far_by_quadrature(dof, abs(t))
+    return mp.betainc(dof / 2, mp.mpf(1) / 2, 0, dof / (dof + t * t), regularized=True) / 2
+
+
+def students_t_cdf(params: Params, x: float) -> mp.mpf:
+    """The far tail below the center, its complement above it."""
+    t = students_t_standard(params, x)
+    far = students_t_far(mp.mpf(params[0]), t)
+    return far if t < 0 else 1 - far
+
+
+def students_t_sf(params: Params, x: float) -> mp.mpf:
+    """[`students_t_cdf`] mirrored."""
+    t = students_t_standard(params, x)
+    far = students_t_far(mp.mpf(params[0]), t)
+    return far if t > 0 else 1 - far
+
+
+def students_t_log_pdf(params: Params, x: float) -> mp.mpf:
+    """The standard log density at `t`, less `ln scale`."""
+    t = students_t_standard(params, x)
+    if mp.isinf(t):
+        return mp.ninf
+    return students_t_ln_standard_density(mp.mpf(params[0]), t) - mp.log(mp.mpf(params[2]))
+
+
+def students_t_pdf(params: Params, x: float) -> mp.mpf:
+    """`exp` of [`students_t_log_pdf`]."""
+    return exp_neg(-students_t_log_pdf(params, x))
+
+
+def students_t_root(params: Params, ln_p: mp.mpf, seed: float) -> mp.mpf:
+    """`|t|` with `ln P(T < -|t|) = ln_p`, solved in `ln|t|`.
+
+    Seeded from the library's `|t|`, or where that has saturated from the far tail's leading term
+    `x^(dof / 2) / ((dof / 2) B(dof / 2, 1 / 2)) = 2p`, with `|t| ~ sqrt(dof / x)`.
+    """
+    dof = mp.mpf(params[0])
+    if seed != 0 and math.isfinite(seed):
+        u_seed = mp.log(abs(mp.mpf(seed)))
+    else:
+        half = dof / 2
+        ln_x = (mp.log(2) + ln_p + mp.log(half) + ln_beta_fn(half, mp.mpf(1) / 2)) / half
+        u_seed = (mp.log(dof) - min(ln_x, mp.mpf(0))) / 2
+    root = solve_monotone(lambda u: mp.log(students_t_far(dof, mp.e**u)) - ln_p, float(u_seed))
+    return cast("mp.mpf", mp.e**root)
+
+
+def students_t_offset(params: Params, q: float, seed: float) -> mp.mpf:
+    """`ppf(q) - loc`, solved on the smaller of `q` and `1 - q`; `seed` is the library's `ppf(q)`."""
+    loc, scale = mp.mpf(params[1]), mp.mpf(params[2])
+    quantile = mp.mpf(q)
+    if quantile == mp.mpf(0.5):
+        return mp.mpf(0)
+    standard_seed = float((mp.mpf(seed) - loc) / scale) if math.isfinite(seed) else seed
+    if quantile < mp.mpf(0.5):
+        return -scale * students_t_root(params, mp.log(quantile), standard_seed)
+    return scale * students_t_root(params, mp.log1p(-quantile), standard_seed)
+
+
+def students_t_ppf(params: Params, q: float, seed: float) -> mp.mpf:
+    """`loc + offset(q)`, with the closed endpoints."""
+    if q <= 0:
+        return mp.ninf
+    if q >= 1:
+        return mp.inf
+    return mp.mpf(params[1]) + students_t_offset(params, q, seed)
+
+
+def students_t_isf(params: Params, q: float, seed: float) -> mp.mpf:
+    """`loc - offset(q)`: `isf(q)` is `ppf(q)` reflected about `loc`, so the seed is reflected too."""
+    if q <= 0:
+        return mp.inf
+    if q >= 1:
+        return mp.ninf
+    loc = mp.mpf(params[1])
+    return loc - students_t_offset(params, q, float(2 * loc - mp.mpf(seed)) if math.isfinite(seed) else -seed)
+
+
+STUDENTS_T_MEAN_DOF = 1
+STUDENTS_T_VARIANCE_DOF = 2
+"""Largest `dof` with no mean, respectively a divergent variance."""
+
+
+def students_t_mean(params: Params, _x: float) -> mp.mpf:
+    """`loc` past `dof = 1`; no value up to it."""
+    return mp.mpf(params[1]) if params[0] > STUDENTS_T_MEAN_DOF else mp.nan
+
+
+def students_t_variance(params: Params, _x: float) -> mp.mpf:
+    """`scale^2 dof / (dof - 2)` past `dof = 2`, `+inf` past `1`, no value up to it."""
+    dof, scale = mp.mpf(params[0]), mp.mpf(params[2])
+    if params[0] > STUDENTS_T_VARIANCE_DOF:
+        return scale**2 * dof / (dof - 2)
+    return mp.inf if params[0] > STUDENTS_T_MEAN_DOF else mp.nan
+
+
+def students_t_entropy(params: Params, _x: float) -> mp.mpf:
+    """`ln scale + (dof + 1) / 2 (psi((dof + 1) / 2) - psi(dof / 2)) + ln(sqrt(dof) B(dof / 2, 1 / 2))`.
+
+    The digamma difference is `~1 / dof`; 50 digits carry it through the cancellation at `dof = 1e8`.
+    """
+    dof, scale = mp.mpf(params[0]), mp.mpf(params[2])
+    half = dof / 2
+    return (
+        mp.log(scale)
+        + (half + mp.mpf(1) / 2) * (mp.digamma(half + mp.mpf(1) / 2) - mp.digamma(half))
+        + mp.log(dof) / 2
+        + ln_beta_fn(half, mp.mpf(1) / 2)
+    )
+
+
+STUDENTS_T_FAR_FROM_LN_RATIO = 690.0  # keep in sync with `FAR_FROM_LN_RATIO` in `src/distributions/students_t.rs`
+"""Past `ln(t^2 / dof) = 690` the tails are read off the leading term."""
+
+
+def students_t_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`cauchy_points`] at `(loc, scale)`, plus both sides of the switch to the far tail's leading term.
+
+    The decades reach past `|t| = 1.3e154`, where `t^2` overflows and scipy's tail is `0`.
+    """
+    dof, loc, scale = params
+    points = cauchy_points((loc, scale), rng, count)
+    switch = math.sqrt(dof) * math.exp(STUDENTS_T_FAR_FROM_LN_RATIO / 2)
+    for k in (switch * (1 - 1e-6), switch * (1 + 1e-6)):
+        points.extend(((loc + scale * k, "danger"), (loc - scale * k, "danger")))
+    return [(x, origin) for x, origin in points if math.isfinite(x)]
 
 
 # Binomial oracles.
@@ -2435,6 +2614,48 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 (-(2**63) + 1, -(2**62)),
             ),
             methods=discrete_uniform_moments,
+        ),
+        DistributionSpec(
+            name="StudentsT",
+            build=lambda p: StudentsT(dof=p[0], loc=p[1], scale=p[2]),
+            param_names=("dof", "loc", "scale"),
+            # Eleven decades of `dof`, the moment regimes at `1` and `2`, the closed-form quantiles at `1`, `2` and `4`,
+            # the solver at `3`, and the entropy's switch to its series at `20`; `loc` and `scale` far from `(0, 1)`
+            # on each side of the bulk.
+            params=(
+                (1e-3, 0.0, 1.0),
+                (0.1, 0.0, 1.0),
+                (0.1, -3.5, 1e8),
+                (1.0, 0.0, 1.0),
+                (1.0, -3.5, 1e-8),
+                (2.0, 0.0, 1.0),
+                (3.0, 0.0, 1.0),
+                (3.0, -3.5, 1e-8),
+                (3.0, 0.0, 1e8),
+                (4.0, -3.5, 1.0),
+                (10.0, 0.0, 1.0),
+                (20.0, -3.5, 1e-8),
+                (1e3, 0.0, 1.0),
+                (1e6, -3.5, 1e8),
+                (1e8, 0.0, 1.0),
+            ),
+            methods=(
+                AuditedMethod("pdf", students_t_pdf, SPECIAL_RTOL, students_t_points),
+                AuditedMethod("log_pdf", students_t_log_pdf, LOG_RTOL, students_t_points),
+                AuditedMethod("cdf", students_t_cdf, SPECIAL_RTOL, students_t_points),
+                AuditedMethod("log_cdf", stable_log(students_t_cdf, students_t_sf), LOG_RTOL, students_t_points),
+                AuditedMethod("sf", students_t_sf, SPECIAL_RTOL, students_t_points),
+                AuditedMethod("log_sf", stable_log(students_t_sf, students_t_cdf), LOG_RTOL, students_t_points),
+                AuditedMethod("ppf", students_t_ppf, SPECIAL_RTOL, quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", students_t_isf, SPECIAL_RTOL, survival_points, seeded_oracle=True),
+                *moments(
+                    mean=students_t_mean,
+                    variance=students_t_variance,
+                    median=lambda p, _x: mp.mpf(p[1]),
+                    entropy=students_t_entropy,
+                    tolerance=SPECIAL_RTOL,
+                ),
+            ),
         ),
     )
 

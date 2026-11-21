@@ -38,6 +38,7 @@ from scipy.stats import (
     pareto,
     poisson,
     randint,
+    t,
     uniform,
     weibull_min,
 )
@@ -57,6 +58,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Poisson,
+    StudentsT,
     Uniform,
     Weibull,
 )
@@ -99,6 +101,12 @@ def _lognormal(params: Params) -> tuple[Distribution, ScipyFrozen]:
 def _cauchy(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Cauchy(loc=params.plugin("loc"), scale=params.plugin("scale")), cauchy(
         loc=params.scipy("loc"), scale=params.scipy("scale")
+    )
+
+
+def _students_t(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return StudentsT(dof=params.plugin("dof"), loc=params.plugin("loc"), scale=params.plugin("scale")), t(
+        df=params.scipy("dof"), loc=params.scipy("loc"), scale=params.scipy("scale")
     )
 
 
@@ -185,6 +193,17 @@ REGISTRY: dict[str, Comparison] = {
             params={"loc": ParamSpec(0.0, -1.0, 1.0), "scale": ParamSpec(1.0, 0.5, 2.0)},
             build=_cauchy,
             undefined_moments=frozenset({"mean", "variance", "std"}),
+        ),
+        Comparison(
+            # `dof = 4.5` has no closed-form quantile, so `ppf` / `isf` time the solver; the column draws stay above
+            # `2` so every moment is finite and the correctness gate has a value to compare.
+            name="studentst",
+            params={
+                "dof": ParamSpec(4.5, 3.0, 30.0),
+                "loc": ParamSpec(0.0, -1.0, 1.0),
+                "scale": ParamSpec(1.0, 0.5, 2.0),
+            },
+            build=_students_t,
         ),
         Comparison(
             # `shape` stays above 2 so every moment is finite and the correctness gate has a value to compare.
