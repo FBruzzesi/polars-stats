@@ -3,15 +3,18 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, scalar_float, scalar_kwargs
+from polars_stats.distributions._base import (
+    UNDEFINED_MOMENT,
+    ContinuousDistribution,
+    coerce_param,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
-    from polars_stats._typing import DistributionName, IntoExprColumn
+    import polars as pl
 
-_UNDEFINED_MOMENT = pl.lit(None, dtype=pl.Float64)
-"""A moment the distribution does not have, as a typed null so the output schema stays `Float64` rather than `Null`."""
+    from polars_stats._typing import DistributionName, IntoExprColumn
 
 _LOG_FOUR_PI = math.log(4 * math.pi)
 """Added to `log(scale)` rather than multiplied into it: `log(4 pi scale)` overflows above `scale ~ 1.43e307`, where
@@ -54,11 +57,11 @@ class Cauchy(ContinuousDistribution):
 
     def mean(self) -> pl.Expr:
         """Undefined, so **null** on every valid row; an invalid ``scale`` still raises."""
-        return self._moment(_UNDEFINED_MOMENT)
+        return self._moment(UNDEFINED_MOMENT)
 
     def variance(self) -> pl.Expr:
         """Undefined, so **null** on every valid row; an invalid ``scale`` still raises."""
-        return self._moment(_UNDEFINED_MOMENT)
+        return self._moment(UNDEFINED_MOMENT)
 
     def median(self) -> pl.Expr:
         """Median, ``loc``."""
