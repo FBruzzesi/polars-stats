@@ -1422,15 +1422,21 @@ def negative_binomial_pmf(params: Params, x: float) -> mp.mpf:
     return exp_neg(-negative_binomial_log_pmf(params, x))
 
 
-QUANTILE_TIE = mp.mpf(10) ** -40
-"""A tail within this of `ln q` is a tie, and a tie reaches `q`: at a probe where `p ** r` is `q` bit for bit, the
-50-digit tail and `ln q` differ only in their own last digits, which cannot order an equality."""
+SMALLER_TAIL_SWITCH = 0.5
+"""Past this level the library compares the other tail, at `ln(1 - q)`."""
+
+QUANTILE_TIE = mp.mpf(10) ** -12
+"""A smaller tail within this of its log target reaches it: the library's search compares with the same absolute slack
+(`STEP_TOLERANCE` in `src/distributions/mod.rs`), its documented step-boundary contract. At a step boundary such as
+`NegativeBinomial(1, 1e-3).isf(0.999)`, where `sf(0) = 1 - p` and `q` differ only by the rounding of the two literals,
+the answer is the step's own `k`."""
 
 
 def negative_binomial_quantile(params: Params, q: float, seed: float, tail: NegativeBinomialTail) -> mp.mpf:
     """The smallest `k` with `P(X <= k) >= q` (`cdf`) or `P(X > k) <= q` (`sf`), exact on the integer support.
 
-    Compared in logs; `p = 1` is the point mass at `0`.
+    Compared in logs on the smaller tail, as the library compares: past `q = 1/2` the other tail against `ln(1 - q)`,
+    so [`QUANTILE_TIE`] is the same slack relative to the same tail. `p = 1` is the point mass at `0`.
     """
     if params[1] == 1:
         return mp.mpf(0)
@@ -1438,10 +1444,12 @@ def negative_binomial_quantile(params: Params, q: float, seed: float, tail: Nega
         return mp.mpf(0) if tail == "cdf" else mp.inf
     if q >= 1:
         return mp.inf if tail == "cdf" else mp.mpf(0)
-    target = mp.log(mp.mpf(q))
+    level = mp.mpf(q)
+    compared: NegativeBinomialTail = tail if q <= SMALLER_TAIL_SWITCH else ("sf" if tail == "cdf" else "cdf")
+    target = mp.log(level) if q <= SMALLER_TAIL_SWITCH else mp.log1p(-level)
     mean = params[0] * (1 - params[1]) / params[1]
     start = int(seed) if math.isfinite(seed) and seed >= 0 else math.floor(mean)
-    if tail == "cdf":
+    if compared == "cdf":
         return smallest_from(start, lambda k: negative_binomial_log_cdf(params, float(k)) >= target - QUANTILE_TIE)
     return smallest_from(start, lambda k: negative_binomial_log_sf(params, float(k)) <= target + QUANTILE_TIE)
 
