@@ -853,9 +853,9 @@ def moment_is_unimplemented(spec_name: DistributionName, moment: Moment) -> bool
     return moment in UNIMPLEMENTED_MOMENTS.get(spec_name, frozenset())
 
 
-def implemented_moments(spec_name: DistributionName, moments: tuple[Moment, ...] = MOMENTS) -> tuple[Moment, ...]:
-    """`moments` less the ones `UNIMPLEMENTED_MOMENTS` records for this spec."""
-    return tuple(moment for moment in moments if not moment_is_unimplemented(spec_name, moment))
+def implemented_moments(spec_name: DistributionName) -> tuple[Moment, ...]:
+    """`MOMENTS` less the ones `UNIMPLEMENTED_MOMENTS` records for this spec."""
+    return tuple(moment for moment in MOMENTS if not moment_is_unimplemented(spec_name, moment))
 
 
 # Parameterisations where the mass collapses onto one point: `p` at an endpoint, no trials, a

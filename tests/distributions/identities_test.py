@@ -537,7 +537,7 @@ def test_degenerate_negative_binomial_draws_are_the_mass_point() -> None:
 _NB_POINTS = [0.0, 1.0, 4.0, 37.0, 400.0]
 
 
-def _negative_binomial(r: float, p: float, method: Method) -> pl.Series:
+def _negative_binomial_at_points(r: float, p: float, method: Method) -> pl.Series:
     return pl.DataFrame({"k": _NB_POINTS}).select(r=getattr(NegativeBinomial(r=r, p=p), method)(pl.col("k")))["r"]
 
 
@@ -548,7 +548,9 @@ def test_negative_binomial_log_tails_are_the_beta_tails_at_p(r: float, p: float,
     """Bit for bit: one incomplete beta, called with the same shapes at the same `(p, 1 - p)`."""
     frame = pl.DataFrame({"b": [k + 1.0 for k in _NB_POINTS]})
     via_beta = frame.select(r=getattr(Beta(a=r, b=pl.col("b")), method)(p))["r"]
-    assert_series_equal(_negative_binomial(r, p, method), via_beta, rel_tol=0.0, abs_tol=0.0, check_names=False)
+    assert_series_equal(
+        _negative_binomial_at_points(r, p, method), via_beta, rel_tol=0.0, abs_tol=0.0, check_names=False
+    )
 
 
 @pytest.mark.parametrize("p", [1e-6, 0.3, 0.9])
@@ -562,9 +564,9 @@ def test_negative_binomial_cdf_is_the_binomial_tail_at_integer_r(r: int, p: floa
     frame = pl.DataFrame({"n": [r + int(k) for k in _NB_POINTS]})
     binomial = Binomial(n=pl.col("n"), p=p)
     via_binomial = frame.select(ls=binomial.log_sf(r - 1), sf=binomial.sf(r - 1))
-    log_cdf = _negative_binomial(float(r), p, "log_cdf")
+    log_cdf = _negative_binomial_at_points(float(r), p, "log_cdf")
     assert_series_equal(log_cdf, via_binomial["ls"], rel_tol=0.0, abs_tol=0.0, check_names=False)
-    cdf = _negative_binomial(float(r), p, "cdf")
+    cdf = _negative_binomial_at_points(float(r), p, "cdf")
     assert_series_equal(cdf, via_binomial["sf"], rel_tol=1e-12, abs_tol=1e-300, check_names=False)
 
 
@@ -579,5 +581,5 @@ def test_single_success_negative_binomial_is_the_geometric_shifted_by_one(method
         r=getattr(Geometric(p=p), method)(pl.col("k"))
     )
     assert_series_equal(
-        _negative_binomial(1.0, p, method), geometric["r"], rel_tol=1e-14, abs_tol=1e-300, check_names=False
+        _negative_binomial_at_points(1.0, p, method), geometric["r"], rel_tol=1e-14, abs_tol=1e-300, check_names=False
     )
