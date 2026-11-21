@@ -12,10 +12,10 @@ use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use rand_distr::Poisson as PoissonSampler;
 
-use crate::distributions::gamma::{IncompleteGamma, Tail, Tails, LN_2PI_E};
+use crate::distributions::gamma::{IncompleteGamma, LN_2PI_E};
 use crate::distributions::{
     coerce_f64, discrete_quantile, on_unit_interval, polynomial, validated_param,
-    value_keyed_derived_binary, value_keyed_scalar, ParamDomain,
+    value_keyed_derived_binary, value_keyed_scalar, ParamDomain, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row_binary,

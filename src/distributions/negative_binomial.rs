@@ -13,10 +13,9 @@ use rand_distr::Poisson as PoissonSampler;
 use statrs::distribution::Gamma;
 
 use crate::distributions::beta::IncompleteBeta;
-use crate::distributions::gamma::{Tail, Tails};
 use crate::distributions::{
     coerce_f64, discrete_quantile, on_unit_interval, validated_pair, value_keyed_derived_ternary,
-    value_keyed_scalar, ParamDomain, Rule,
+    value_keyed_scalar, ParamDomain, Rule, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row_ternary,

@@ -47,8 +47,6 @@ use polars_arrow::datatypes::ArrowDataType;
 use polars_core::utils::{align_chunks_binary, align_chunks_ternary};
 use statrs::function::erf::erfc_inv;
 
-use crate::distributions::gamma::{Tail, Tails};
-
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
 /// Polars broadcasts nothing into a plugin and the `*_elementwise` kernels truncate to their shortest
@@ -637,6 +635,55 @@ pub(crate) fn polynomial(coefficients: &[f64], x: f64) -> f64 {
 pub(crate) fn scale_exp(scale: f64, t: f64) -> f64 {
     let half = (t / 2.0).exp();
     (scale * half) * half
+}
+
+/// Which tail of a regularized incomplete gamma or beta: `Lower` is `P(a, t)` or `I_x(a, b)`, `Upper` its
+/// complement.
+#[derive(Clone, Copy, PartialEq)]
+enum Tail {
+    Lower,
+    Upper,
+}
+
+impl Tail {
+    const fn complement(self) -> Self {
+        match self {
+            Self::Lower => Self::Upper,
+            Self::Upper => Self::Lower,
+        }
+    }
+}
+
+/// The smaller of the two tails at a point, on the log scale; the other one is its complement.
+struct Tails {
+    /// The log of the prefactor the tails' series share: `ln(t^a e^-t / Gamma(a + 1))` for the incomplete
+    /// gamma, `ln(x^a y^b / B(a, b))` for the incomplete beta.
+    ln_prefactor: f64,
+    smaller: Tail,
+    ln_smaller: f64,
+}
+
+impl Tails {
+    fn ln_probability(&self, tail: Tail) -> f64 {
+        if self.smaller == tail {
+            self.ln_smaller
+        } else {
+            (-self.ln_smaller.exp()).ln_1p()
+        }
+    }
+
+    /// The complement is `-expm1` of the smaller tail's log only while that tail is not small: the
+    /// `sinh` identity behind [`expm1`] overflows past `|ln| ~ 1420`, and below `e^-1` the plain
+    /// `1 - exp` has nothing to cancel.
+    fn probability(&self, tail: Tail) -> f64 {
+        if self.smaller == tail {
+            self.ln_smaller.exp()
+        } else if self.ln_smaller > -1.0 {
+            -expm1(self.ln_smaller)
+        } else {
+            1.0 - self.ln_smaller.exp()
+        }
+    }
 }
 
 /// Relative slack on the discrete inverses' step comparison, as `binomial.rs`'s `PPF_CDF_TOL`. The tails are

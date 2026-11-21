@@ -12,12 +12,11 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::gamma::{
-    ln_1p_mx, stirling_remainder, Tail, Tails, CONVERGENCE_EPS, LN_2PI, STIRLING_FROM,
-    STIRLING_REMAINDER_SERIES,
+    ln_1p_mx, stirling_remainder, CONVERGENCE_EPS, LN_2PI, STIRLING_FROM, STIRLING_REMAINDER_SERIES,
 };
 use crate::distributions::{
     coerce_f64, expm1, param_keyed, validated_pair, value_keyed_derived_ternary,
-    value_keyed_scalar, value_keyed_ternary, ParamDomain,
+    value_keyed_scalar, value_keyed_ternary, ParamDomain, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,

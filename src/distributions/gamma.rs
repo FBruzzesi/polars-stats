@@ -16,7 +16,7 @@ use statrs::function::gamma::{digamma, ln_gamma};
 
 use crate::distributions::{
     coerce_f64, expm1, on_unit_interval, param_keyed, polynomial, validated_pair,
-    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain,
+    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -322,54 +322,6 @@ fn erfcx(w: f64) -> f64 {
         .rev()
         .fold(w, |fraction, level| w + 0.5 * level as f64 / fraction);
     0.5 * FRAC_2_SQRT_PI / fraction
-}
-
-/// Which regularized incomplete gamma: `P(a, t)` below `t`, or `Q(a, t) = 1 - P(a, t)` above it.
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum Tail {
-    Lower,
-    Upper,
-}
-
-impl Tail {
-    pub(super) fn complement(self) -> Self {
-        match self {
-            Self::Lower => Self::Upper,
-            Self::Upper => Self::Lower,
-        }
-    }
-}
-
-/// The smaller of `P` and `Q` at a point, on the log scale; the other one is its complement.
-pub(super) struct Tails {
-    /// The log of the prefactor the tails' series share: `ln(t^a e^-t / Gamma(a + 1))` for the incomplete
-    /// gamma, `ln(x^a y^b / B(a, b))` for the incomplete beta.
-    pub(super) ln_prefactor: f64,
-    pub(super) smaller: Tail,
-    pub(super) ln_smaller: f64,
-}
-
-impl Tails {
-    pub(super) fn ln_probability(&self, tail: Tail) -> f64 {
-        if self.smaller == tail {
-            self.ln_smaller
-        } else {
-            (-self.ln_smaller.exp()).ln_1p()
-        }
-    }
-
-    /// The complement is `-expm1` of the smaller tail's log only while that tail is not small: the
-    /// `sinh` identity behind [`expm1`] overflows past `|ln| ~ 1420`, and below `e^-1` the plain
-    /// `1 - exp` has nothing to cancel.
-    pub(super) fn probability(&self, tail: Tail) -> f64 {
-        if self.smaller == tail {
-            self.ln_smaller.exp()
-        } else if self.ln_smaller > -1.0 {
-            -expm1(self.ln_smaller)
-        } else {
-            1.0 - self.ln_smaller.exp()
-        }
-    }
 }
 
 /// The standard gamma of shape `a`, with every shape-only term of its incomplete gamma hoisted.

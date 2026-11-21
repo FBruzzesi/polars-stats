@@ -6,9 +6,9 @@ use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::beta::IncompleteBeta;
-use crate::distributions::gamma::Tail;
 use crate::distributions::{
     coerce_f64, param_keyed, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
+    Tail,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row_ternary,
