@@ -47,11 +47,11 @@ The table below is the rule, which every distribution follows. Method by method:
 | `sample` / `samples` | **always** | Not derivable in Python. Usually `statrs`' own `Distribution::sample`. |
 | parameter validation | **always** | One validation-only round-trip per distribution, since a bare `pl.Expr` cannot raise per row. |
 | `pdf` / `pmf`, `cdf` | **always** | Native `Continuous::pdf` / `Discrete::pmf`, `*CDF::cdf` where `statrs` has them; a hand-written Rust body where the closed form is elementary. Branching on the value puts the validator inside an arm, so these cannot stay in Polars. |
-| `ppf` | **always** | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. Elementary inverses are hand-written Rust bodies, for the same arm-masking reason, and so is `Gamma`'s, a bracketed Newton iteration on its log tails. |
+| `ppf` | **always** | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. Elementary inverses are hand-written Rust bodies, for the same arm-masking reason, and so are `Gamma`'s and `StudentsT`'s, a bracketed Newton iteration on their log tails. |
 | `log_pdf` / `log_pmf` | **always** | Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body; `pdf(x).log()` would underflow. |
 | `sf` | **always** | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
 | `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
-| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma (`Beta`, `Gamma`, `ChiSquared`). `NegativeBinomial` has neither a closed form nor an affordable sum (`O(sd)` terms per row), so its `entropy` raises `NotImplementedError`. |
+| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma (`Beta`, `Gamma`, `ChiSquared`, and `StudentsT`'s standard entropy, to which Polars adds `log(scale)`). `NegativeBinomial` has neither a closed form nor an affordable sum (`O(sd)` terms per row), so its `entropy` raises `NotImplementedError`. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
 | `std` | override the default | The base default `variance().sqrt()` saturates long before the answer does. Polars where the formula is closed-form, Rust where it needs a special function (`Weibull`). |
 | `isf` | **always** | Solved against `q` itself: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
@@ -104,7 +104,8 @@ path is selected only when the parameters are known scalars, so nothing column-v
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
-`pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`, `chisquared_dof`, `negativebinomial_p`) so an invalid
+`pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`, `chisquared_dof`, `negativebinomial_p`,
+`studentst_scale`) so an invalid
 parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing
 a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin checks each parameter column
 once, over the whole column, before any row is built.
@@ -175,11 +176,12 @@ validating plugin (see [Architecture / Plugin granularity](architecture.md#plugi
 
 ### Moments that are undefined return null; divergent ones return `+inf`
 
-`Cauchy` and `Pareto` are the two shipped distributions this bites, one per half: `Cauchy`'s `mean()`, `variance()` and
-`std()` are null on every valid row, `Pareto`'s are `+inf` below `shape = 1` (the mean) and `shape = 2` (the variance).
+`Cauchy` and `Pareto` bite one half each: `Cauchy`'s `mean()`, `variance()` and `std()` are null on every valid row,
+`Pareto`'s are `+inf` below `shape = 1` (the mean) and `shape = 2` (the variance). `StudentsT` bites both, by `dof`:
+all three are null up to `dof = 1`, and `variance()` / `std()` are `+inf` up to `dof = 2`.
 Three outcomes, and the distinction is what the quantity does rather than whether the user asked a reasonable question:
 
-* **Undefined**, permanently or only on part of the range (a Cauchy mean; a Student-t mean at `df <= 1`): **null**.
+* **Undefined**, permanently or only on part of the range (a Cauchy mean; a Student-t mean at `dof <= 1`): **null**.
   It is Polars' own representation of "no value here", it is what scipy's `nan` maps to under the Polars idiom, and it
   keeps a parameter sweep across the threshold from dying on an exception.
 * **Divergent** (a Pareto mean at `shape <= 1`, its variance at `shape <= 2`): **`+inf`**, matching scipy. The

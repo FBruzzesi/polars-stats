@@ -158,7 +158,7 @@ fn derive_ln_sf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
 /// The single form loses digits in both tails: `q - 1/2` drops the low bits of a small `q` and the
 /// tangent magnifies them by `1 / (pi q)^2`, to `~1e-9` relative at `q = 1e-8`. `q.abs()` keeps a
 /// `-0.0` quantile on the `-inf` side; the closed endpoints fall out of `1 / tan(0)`.
-fn standard_quantile(q: f64) -> f64 {
+pub(super) fn standard_quantile(q: f64) -> f64 {
     if q < 0.25 {
         -1.0 / (PI * q.abs()).tan()
     } else if q > 0.75 {

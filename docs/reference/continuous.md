@@ -32,6 +32,8 @@ The concrete classes follow, alphabetically, and list only what they define or o
 
 ::: polars_stats.Pareto
 
+::: polars_stats.StudentsT
+
 ::: polars_stats.Uniform
 
 ::: polars_stats.Weibull

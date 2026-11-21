@@ -133,7 +133,7 @@ def test_an_undefined_moment_is_a_typed_null_not_a_null_column(
 
     A `Null` column widens the schema of whatever it is concatenated, joined or written into, where a
     typed null does not. No value assertion sees the difference, so nothing else pins the dtype that
-    `_cauchy.py`'s `_UNDEFINED_MOMENT` sets.
+    `_base.py`'s `UNDEFINED_MOMENT` sets.
     """
     expr = getattr(SPECS_BY_NAME[spec_name].build(regime), moment)()
     got = pl.DataFrame({"_": range(4)}).select(m=expr)["m"]
@@ -170,3 +170,38 @@ def test_a_divergent_pareto_moment_is_positive_infinity(
             assert value == math.inf, f"{moment} at shape={shape}: {value}"
         else:
             assert math.isfinite(value), f"{moment} at shape={shape}: {value}"
+
+
+# StudentsT's regimes by `dof`: the mean has no value up to `1` and the variance none either, then the variance
+# diverges up to `2`. Both thresholds are closed, as in `scipy.stats.t`. `UNDEFINED_MOMENTS` is per distribution, not
+# per parameter value, so it cannot hold these.
+_STUDENTS_T_MOMENTS_BY_DOF = [
+    pytest.param(0.5, ("mean", "variance", "std"), (), id="dof=0.5"),
+    pytest.param(1.0, ("mean", "variance", "std"), (), id="dof=1"),
+    pytest.param(1.5, (), ("variance", "std"), id="dof=1.5"),
+    pytest.param(2.0, (), ("variance", "std"), id="dof=2"),
+    pytest.param(3.0, (), (), id="dof=3"),
+]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("dof", "undefined", "divergent"), _STUDENTS_T_MOMENTS_BY_DOF)
+def test_a_students_t_moment_is_null_infinite_or_finite_by_dof(
+    regime: Regime, dof: float, undefined: tuple[Moment, ...], divergent: tuple[Moment, ...]
+) -> None:
+    """A typed `Float64` null where the moment has no value, `+inf` where its integral diverges, finite elsewhere, on
+    both routings.
+
+    `median` and `entropy` are finite at every `dof`.
+    """
+    dist = SPECS_BY_NAME["studentst"].build(regime, params=(dof, 1.5, 2.0))
+    got = pl.DataFrame({"_": range(4)}).select(**{moment: getattr(dist, moment)() for moment in MOMENTS})
+    for moment in MOMENTS:
+        value = got[moment][0]
+        if moment in undefined:
+            assert value is None, f"{moment} at dof={dof}: {value}"
+        elif moment in divergent:
+            assert value == math.inf, f"{moment} at dof={dof}: {value}"
+        else:
+            assert math.isfinite(value), f"{moment} at dof={dof}: {value}"
+    assert all(dtype == pl.Float64 for dtype in got.dtypes), got.schema

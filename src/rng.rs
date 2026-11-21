@@ -8,9 +8,10 @@
 //! Every sampler plugin is a one-line shell over a driver here: [`sample_by_index`] /
 //! [`samples_by_index`] when every parameter is constant (only the row index crosses FFI),
 //! `sample_per_row_*` / `samples_per_row_*` when one is a column. Driver names count plugin inputs:
-//! `_binary` takes `(param, row_index)`, `_ternary` takes `(a, b, row_index)`. A distribution supplies
-//! `build` (a row's draw state from its parameters) and `draw` (one value from that state); the output
-//! dtype follows the drawn value through [`DrawValue`]. A null in any input nulls the row.
+//! `_binary` takes `(param, row_index)`, `_ternary` takes `(a, b, row_index)`, `_quaternary` takes
+//! `(a, b, c, row_index)`. A distribution supplies `build` (a row's draw state from its parameters) and
+//! `draw` (one value from that state); the output dtype follows the drawn value through [`DrawValue`]. A
+//! null in any input nulls the row.
 
 use std::alloc::{alloc_zeroed, Layout};
 
@@ -234,6 +235,44 @@ where
             }
         })?;
     Ok(out.with_name(inputs[0].name().clone()).into_series())
+}
+
+/// Three-parameter counterpart of [`sample_per_row_binary`], over `(a, b, c, row_index)`, every parameter a float;
+/// `check_params` is the caller's pass over the three columns.
+pub(crate) fn sample_per_row_quaternary<V, State, Check, Build, Draw>(
+    inputs: &[Series],
+    kwargs: SampleKwargs,
+    check_params: Check,
+    build: Build,
+    draw: Draw,
+) -> PolarsResult<Series>
+where
+    V: DrawValue,
+    ChunkedArray<V::Data>: IntoSeries,
+    Check: Fn(&Float64Chunked, &Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
+    Build: Fn(f64, f64, f64) -> PolarsResult<State>,
+    Draw: Fn(&State, &mut Pcg64Mcg) -> V,
+{
+    let inputs = align_inputs(inputs)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
+    let c = coerce_f64(&inputs[2])?;
+    let index = coerce_index(&inputs[3])?;
+    check_params(&a, &b, &c)?;
+    let rngs = RowRngs::new(kwargs.seed)?;
+
+    let rows = a.iter().zip(b.iter()).zip(c.iter()).zip(index.iter());
+    let draws = rows.map(|(((a, b), c), index)| -> PolarsResult<Option<V>> {
+        match (a, b, c, index) {
+            (Some(a), Some(b), Some(c), Some(index)) => {
+                Ok(Some(draw(&build(a, b, c)?, &mut rngs.row_rng(index))))
+            },
+            _ => Ok(None),
+        }
+    });
+    let out =
+        <<V::Data as PolarsDataType>::Array as ArrayFromIter<Option<V>>>::try_arr_from_iter(draws)?;
+    Ok(ChunkedArray::<V::Data>::with_chunk(inputs[0].name().clone(), out).into_series())
 }
 
 /// Total draw count below which the multi-draw fill runs serially: a fork-join dispatch costs more
@@ -468,6 +507,44 @@ where
             (Some(a), Some(b), Some(index)) => Ok(Some((index, build(a, b)?))),
             _ => Ok(None),
         });
+    samples_per_row(
+        inputs[0].name().clone(),
+        rows,
+        kwargs.seed,
+        kwargs.size,
+        draw,
+    )
+}
+
+/// Three-parameter counterpart of [`samples_per_row_binary`], over `(a, b, c, row_index)`; `check_params` as in
+/// [`sample_per_row_quaternary`].
+pub(crate) fn samples_per_row_quaternary<V, State, Check, Build, Draw>(
+    inputs: &[Series],
+    kwargs: SamplesKwargs,
+    check_params: Check,
+    build: Build,
+    draw: Draw,
+) -> PolarsResult<Series>
+where
+    V: DrawValue,
+    ChunkedArray<V::Data>: NewChunkedArray<V::Data, V> + IntoSeries,
+    State: Sync,
+    Check: Fn(&Float64Chunked, &Float64Chunked, &Float64Chunked) -> PolarsResult<()>,
+    Build: Fn(f64, f64, f64) -> PolarsResult<State>,
+    Draw: Fn(&State, &mut Pcg64Mcg) -> V + Sync,
+{
+    let inputs = align_inputs(inputs)?;
+    let a = coerce_f64(&inputs[0])?;
+    let b = coerce_f64(&inputs[1])?;
+    let c = coerce_f64(&inputs[2])?;
+    let index = coerce_index(&inputs[3])?;
+    check_params(&a, &b, &c)?;
+
+    let rows = a.iter().zip(b.iter()).zip(c.iter()).zip(index.iter());
+    let rows = rows.map(|(((a, b), c), index)| match (a, b, c, index) {
+        (Some(a), Some(b), Some(c), Some(index)) => Ok(Some((index, build(a, b, c)?))),
+        _ => Ok(None),
+    });
     samples_per_row(
         inputs[0].name().clone(),
         rows,

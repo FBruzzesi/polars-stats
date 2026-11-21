@@ -123,6 +123,7 @@ fn stirling_remainder_increment(z: f64, a: f64) -> f64 {
 /// From [`STIRLING_FROM`] on in both shapes the prefactor is DiDonato and Morris' `brcomp` form, which has
 /// no `a ln a`-sized terms to cancel; below it `ln B(a, b)` is read off [`series_offset`] at the smaller shape, so
 /// no term goes through statrs' `ln_gamma` and its `1e-14`.
+#[derive(Clone)]
 enum LnPrefactor {
     LnBeta(f64),
     /// `ln(x0^a y0^b / B(a, b)) = ln(a b / (2 pi (a + b))) / 2 - mu(a) - mu(b) + mu(a + b)` at the mean
@@ -138,6 +139,7 @@ enum LnPrefactor {
 ///
 /// Every evaluation takes the point twice, as `x` and as its complement `y = 1 - x`, and reads each logarithm
 /// off whichever of the two is the smaller, so a caller holding only `y` exactly never forms `1 - y`.
+#[derive(Clone)]
 pub(super) struct IncompleteBeta {
     a: f64,
     b: f64,
@@ -195,8 +197,21 @@ impl IncompleteBeta {
         }
     }
 
+    /// `ln B(a, b)`. Relatively exact where the smaller shape is below [`STIRLING_FROM`]; from there it is read back
+    /// off the prefactor at the mean, which cancels terms of order `a ln a`.
+    pub(super) fn ln_beta(&self) -> f64 {
+        match self.prefactor {
+            LnPrefactor::LnBeta(ln_beta) => ln_beta,
+            LnPrefactor::Stirling {
+                at_mean,
+                ln_x0,
+                ln_y0,
+            } => self.a * ln_x0 + self.b * ln_y0 - at_mean,
+        }
+    }
+
     /// `-ln(shape B(a, b))` for `shape` = `a` ([`Tail::Lower`]) or `b`, where that shape is at most `1`.
-    fn series_offset_on(&self, side: Tail) -> Option<f64> {
+    pub(super) fn series_offset_on(&self, side: Tail) -> Option<f64> {
         let (shape, other) = match side {
             Tail::Lower => (self.a, self.b),
             Tail::Upper => (self.b, self.a),

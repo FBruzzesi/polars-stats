@@ -33,8 +33,8 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 ## Use the log methods in the tails, where they are log methods
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
-limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `Beta`, `Binomial`,
-`Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`,
+limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `StudentsT`, `Beta`,
+`Binomial`, `Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`,
 `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the
 right methods for tail scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on all of those but `Beta` and `Binomial`:
 forming the complement quantises the tail mass to `1.1e-16` absolute before any inverse runs.
@@ -191,6 +191,24 @@ below `1.1e-16` the complement is exactly `1.0`, so `Beta.isf` returns the upper
     meaningful below `shape ~ 1e4`. The audited range is `shape` in `1e-8` to `1e8` and `rate` in `1e-8` to `1e8`.
 * **`ChiSquared(dof)` runs `Gamma(dof / 2, 1 / 2)`'s code**, so every limit above holds at `shape = dof / 2`. The
   audited range is `dof` in `2e-8` to `2e8`.
+* **`StudentsT` reads the same log-space incomplete beta as `Beta`'s log tails**, at `x = dof / (dof + t^2)` with
+  `y = t^2 / (dof + t^2)` formed beside it rather than as `1 - x`, and solves its own inverse. `statrs`' `StudentsT`
+  switches to the normal from `dof = 1e8` and squares the standardised point, and `scipy` does the latter too:
+  `t(1).sf(1e200)` is `0.0` there and `StudentsT(1.0).sf(1e200)` is `3.18e-201` here. Past `ln(t^2 / dof) = 690` the
+  tail is the leading term of its power series, exact to `O(x)` with `x < 1e-300`. Three limits hold inside the
+  audited range:
+
+    * `pdf`, `cdf` and `sf` are the exponentials of their logs, as for `Gamma`: `1.6e-13` relative at
+      `StudentsT(1e-3).pdf(2.3e243)`, which is `1.2e-247`.
+    * `ppf` and `isf` are closed forms at `dof` `1`, `2` and `4`, and elsewhere a bracketed Newton iteration,
+      finished by one step in `t` itself: `1.6e-13` relative at worst. It solves on the log tail out to `q = 1/4` and
+      on the central mass `1 - 2q` from there, which keeps `StudentsT(3.0).ppf(0.5 + 1e-15)` relatively exact;
+      `scipy`'s `t(3).ppf` is `5.8e-7` relative off at that `q`. `StudentsT(5.0).ppf(1e-300)` is `-1.57e60`;
+      `scipy`'s `t(5).ppf(1e-300)` is `+inf`.
+    * `entropy` is the digamma form below `dof = 20`, whose digamma difference cancels to `4.3e-15` relative just
+      below it, and its asymptotic series in `1 / dof` from there.
+
+    The audited range is `dof` in `1e-3` to `1e8` and `scale` in `1e-8` to `1e8`.
 * **`Poisson` reads `Gamma`'s incomplete gamma at `t = rate`.** `cdf` and `sf` are its upper and lower tails at shape
   `floor(k) + 1`, and `pmf` is its prefactor at shape `k`, Stirling's form of `-rate + k ln(rate) - ln(k!)`. Written
   out, that difference cancels: `scipy`'s `logpmf` and `statrs`' `ln_pmf` are `1.1e-12` absolute off at `rate = 1e3`
