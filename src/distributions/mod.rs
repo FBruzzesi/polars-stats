@@ -866,3 +866,60 @@ fn discrete_isf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
 pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) -> Option<f64> {
     (0.0..=1.0).contains(&quantile).then(|| arm(quantile))
 }
+
+/// The inverse's step budget, past which it answers `NaN` rather than an unconverged iterate. Only a
+/// pathological seed could spend it on bisection: from the callers' seeds Newton settles in a handful of
+/// steps.
+const MAX_NEWTON_STEPS: usize = 200;
+
+/// Two Newton steps in a row, `p` then `s`, put the next one at about `s^3 / p^2`. Once that is below
+/// this fraction of the tolerance the iterate is returned without the evaluation that would only
+/// confirm it; after a bisection there is no `p` and the iteration runs on.
+const SETTLED_STEP_FRACTION: f64 = 1.0 / 1024.0;
+
+/// The root of an increasing `residual(u)` in `[lo, hi]`, by Newton with every proposal that leaves the bracket
+/// (or is `NaN`) replaced by bisection. `residual_and_slope(u)` returns the residual and its derivative. `NaN` on a
+/// `NaN` residual or past [`MAX_NEWTON_STEPS`]; never an unconverged iterate.
+pub(crate) fn bracketed_newton(
+    seed: f64,
+    mut lo: f64,
+    mut hi: f64,
+    residual_and_slope: impl Fn(f64) -> (f64, f64),
+) -> f64 {
+    let mut u = seed.max(lo).min(hi);
+    let mut previous_step: f64 = 0.0;
+    for _ in 0..MAX_NEWTON_STEPS {
+        let (residual, slope) = residual_and_slope(u);
+        if residual.is_nan() {
+            return f64::NAN;
+        }
+        if residual == 0.0 {
+            return u;
+        }
+        if residual < 0.0 {
+            lo = u;
+        } else {
+            hi = u;
+        }
+        let newton = u - residual / slope;
+        let step = (newton - u).abs();
+        let tolerance = f64::EPSILON * u.abs().max(1.0);
+        if step <= tolerance {
+            return newton;
+        }
+        if hi - lo <= 4.0 * tolerance {
+            return u;
+        }
+        if newton.is_nan() || newton <= lo || newton >= hi {
+            u = 0.5 * (lo + hi);
+            previous_step = 0.0;
+            continue;
+        }
+        if step.powi(3) <= SETTLED_STEP_FRACTION * tolerance * previous_step.powi(2) {
+            return newton;
+        }
+        u = newton;
+        previous_step = step;
+    }
+    f64::NAN
+}

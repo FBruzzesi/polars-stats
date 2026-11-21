@@ -15,7 +15,7 @@ use statrs::function::erf::erfc_inv;
 use statrs::function::gamma::{digamma, ln_gamma};
 
 use crate::distributions::{
-    coerce_f64, expm1, on_unit_interval, param_keyed, polynomial, validated_pair,
+    bracketed_newton, coerce_f64, expm1, on_unit_interval, param_keyed, polynomial, validated_pair,
     value_keyed_derived_ternary, value_keyed_scalar, ParamDomain, Tail, Tails,
 };
 use crate::rng::{
@@ -552,7 +552,7 @@ impl IncompleteGamma {
     /// `Q <= 2^a e^(-t / 2)` above.
     fn ln_quantile(&self, tail: Tail, ln_target: f64) -> f64 {
         let a = self.a;
-        let (mut lo, mut hi, seed) = match tail {
+        let (lo, hi, seed) = match tail {
             Tail::Lower => {
                 let power_bound = (ln_target + self.ln_gamma_1p) / a;
                 (
@@ -571,49 +571,15 @@ impl IncompleteGamma {
                 )
             },
         };
-        let mut u = seed.max(lo).min(hi);
-        let mut previous_step: f64 = 0.0;
-        for _ in 0..MAX_NEWTON_STEPS {
+        bracketed_newton(seed, lo, hi, |u| {
             let tails = self.tails(u.exp(), u);
             let ln_value = tails.ln_probability(tail);
-            let residual = ln_value - ln_target;
-            if residual.is_nan() {
-                return f64::NAN;
-            }
-            if residual == 0.0 {
-                return u;
-            }
             let slope = (self.ln_a + tails.ln_prefactor - ln_value).exp();
-            let (slope, below_root) = match tail {
-                Tail::Lower => (slope, residual < 0.0),
-                Tail::Upper => (-slope, residual > 0.0),
-            };
-            if below_root {
-                lo = u;
-            } else {
-                hi = u;
+            match tail {
+                Tail::Lower => (ln_value - ln_target, slope),
+                Tail::Upper => (ln_target - ln_value, slope),
             }
-            let newton = u - residual / slope;
-            let step = (newton - u).abs();
-            let tolerance = f64::EPSILON * u.abs().max(1.0);
-            if step <= tolerance {
-                return newton;
-            }
-            if hi - lo <= 4.0 * tolerance {
-                return u;
-            }
-            if newton <= lo || newton >= hi {
-                u = 0.5 * (lo + hi);
-                previous_step = 0.0;
-                continue;
-            }
-            if step.powi(3) <= SETTLED_STEP_FRACTION * tolerance * previous_step.powi(2) {
-                return newton;
-            }
-            u = newton;
-            previous_step = step;
-        }
-        f64::NAN
+        })
     }
 
     /// Wilson-Hilferty, `t ~ a (1 - 1 / (9a) + z / (3 sqrt a))^3` at the normal quantile `z`, where the
@@ -650,16 +616,6 @@ impl IncompleteGamma {
         }
     }
 }
-
-/// The inverse's step budget, past which it answers `NaN` rather than an unconverged iterate. Only a
-/// pathological seed could spend it on bisection: from these seeds Newton settles in a handful of
-/// steps across `shape` in `1e-8` to `1e8`.
-const MAX_NEWTON_STEPS: usize = 200;
-
-/// Two Newton steps in a row, `p` then `s`, put the next one at about `s^3 / p^2`. Once that is below
-/// this fraction of the tolerance the iterate is returned without the evaluation that would only
-/// confirm it; after a bisection there is no `p` and the iteration runs on.
-const SETTLED_STEP_FRACTION: f64 = 1.0 / 1024.0;
 
 /// `Gamma(shape, rate)`: the standard gamma's incomplete gamma, read at `t = rate x`.
 pub(super) struct ScaledGamma {
