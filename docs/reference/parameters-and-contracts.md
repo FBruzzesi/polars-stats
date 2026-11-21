@@ -101,6 +101,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `LogNormal(mu, sigma)` | `sigma > 0` | both finite |
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
 | `Pareto(scale, shape)` | `scale > 0`, `shape > 0` | both finite |
+| `StudentsT(dof, loc, scale)` | `dof > 0`, `scale > 0` | all finite: `dof = inf` is `Normal(loc, scale)`, not a `StudentsT` |
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
 | `Weibull(shape, scale)` | `shape > 0`, `scale > 0` | both finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
@@ -135,7 +136,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric`, `NegativeBinomial`, `Poisson` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `LogNormal`, `Normal`, `Pareto`, `Uniform`, `Weibull` | `Float64` |
+| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `LogNormal`, `Normal`, `Pareto`, `StudentsT`, `Uniform`, `Weibull` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|
@@ -163,8 +164,8 @@ parameter outranks a `NaN` evaluation point. "Present" means non-null.
 | `rows * size` in `samples` too large to address or allocate | Rust evaluation | `ComputeError`, fails the whole evaluation (see [Sampling](#sampling)) |
 | `null` parameter on a row | per row | `null` on that row, on every method and at every evaluation point, `NaN` and off-support included (see below) |
 | `null` value or quantile argument on a row | per row | `null` on that row |
-| A moment the distribution does not have (`Cauchy.mean()`, `variance()`, `std()`) | per row | `null` on every valid row; an invalid parameter on the row still raises |
-| A moment whose integral diverges (`Pareto.mean()` at `shape <= 1`, `variance()` / `std()` at `shape <= 2`) | per row | `+inf`, as scipy returns; a `null` is reserved for a moment with no value at all |
+| A moment the distribution does not have (`Cauchy.mean()`, `variance()`, `std()`; `StudentsT`'s at `dof <= 1`) | per row | `null` on every valid row; an invalid parameter on the row still raises |
+| A moment whose integral diverges (`Pareto.mean()` at `shape <= 1`, `variance()` / `std()` at `shape <= 2`; `StudentsT.variance()` / `std()` at `1 < dof <= 2`) | per row | `+inf`, as scipy returns; a `null` is reserved for a moment with no value at all |
 | `NaN` value or quantile argument on a row | per row | `NaN` on that row, `ppf` / `isf` included (matches scipy) |
 | `q` outside `[0, 1]` in `ppf` / `isf` | per row | `null`, guaranteed for every distribution and both parameter regimes (pinned by `tests/property/ppf_domain_test.py`). `q` exactly `0` or `1` is in range and maps to a support bound |
 | `x` outside the support (e.g. `pdf` below a `Uniform`'s `min`) | per row | `0.0` (matches scipy) |
@@ -186,8 +187,9 @@ returns an empty result instead. This applies to a value the strict cast refuses
 to one outside its domain. The same once-per-call check runs before the value column's dtype gate, so when both are
 invalid a constant parameterisation reports the parameter and a parameter column reports the value column.
 
-`Cauchy` is the only shipped distribution with a moment that has no value, and `Pareto` the only one with a moment
-that diverges on part of its parameter range; every other one has finite moments wherever its parameters are valid.
+`Cauchy` and `StudentsT` (at `dof <= 1`) are the shipped distributions with a moment that has no value, and `Pareto`
+and `StudentsT` (at `1 < dof <= 2`) the ones with a moment that diverges on part of its parameter range; every other one
+has finite moments wherever its parameters are valid.
 The policy behind the two answers is in
 [Design notes](../explanation/design.md#moments-that-are-undefined-return-null-divergent-ones-return-inf).
 

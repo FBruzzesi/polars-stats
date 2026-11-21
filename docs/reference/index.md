@@ -22,6 +22,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `LogNormal(mu, sigma)` | continuous | `sigma > 0` | `lognorm(s=sigma, scale=exp(mu))` |
 | `Normal(mu, sigma)` | continuous | `sigma > 0` | `norm(loc=mu, scale=sigma)` |
 | `Pareto(scale, shape)` | continuous | `scale > 0`, `shape > 0` | `pareto(b=shape, scale=scale)`; the divergent moments are `+inf` in both |
+| `StudentsT(dof, loc, scale)` | continuous | `dof > 0`, `scale > 0` | `t(df=dof, loc=loc, scale=scale)`; the moments it has no value for are `null` here, `nan` there |
 | `Uniform(min, max)` | continuous | `max > min` | `uniform(loc=min, scale=max - min)` |
 | `Weibull(shape, scale)` | continuous | `shape > 0`, `scale > 0` | `weibull_min(c=shape, scale=scale)` |
 | `Bernoulli(p)` | discrete | `0 <= p <= 1` | `bernoulli(p)` |
@@ -32,7 +33,8 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Poisson(rate)` | discrete | `rate > 0` | `poisson(mu=rate)`; `mu = 0` is a point mass there and raises here |
 
 Each class names its parameters after the distribution's conventional parameters. `Normal` and `LogNormal` default to
-`mu=0.0, sigma=1.0`; the others have no defaults. Parameter values are validated at evaluation, not at construction.
+`mu=0.0, sigma=1.0` and `StudentsT` to `loc=0.0, scale=1.0`; the others have no defaults. Parameter values are
+validated at evaluation, not at construction.
 
 ## Method surface
 

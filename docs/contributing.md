@@ -138,8 +138,9 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       an input or writes a row loop itself, which is what keeps seeding, `null` propagation (a `null` in any input
       nulls the row) and the invalid-parameter error contract in one place. The per-row `<name>_sample` /
       `<name>_samples` (multi-draw, backing `samples`) take the parameter columns plus a row index as the last input
-      and call `sample_per_row_binary` / `samples_per_row_binary` (one parameter, passing its `ParamDomain`) or
+      and call `sample_per_row_binary` / `samples_per_row_binary` (one parameter, passing its `ParamDomain`),
       `sample_per_row_ternary` / `samples_per_row_ternary` (two, passing each parameter's coercer and the
+      `check_params` pass) or `sample_per_row_quaternary` / `samples_per_row_quaternary` (three floats, passing the
       `check_params` pass), plus a `build` that constructs the row's draw state. The constant-parameter fast paths
       `<name>_sample_scalar` / `<name>_samples_scalar` build once from `SampleScalarKwargs<<Name>Params>` /
       `SamplesScalarKwargs<<Name>Params>` and hand `sample_by_index` / `samples_by_index` the row index and a draw
@@ -189,8 +190,10 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
         * The per-row shell is one line over `value_keyed_derived_binary(inputs, &DOMAIN, derive, select)` (one
           parameter) or `value_keyed_derived_ternary(inputs, check_params, derive, select)` (two); these wrap
           `value_keyed_binary` / `value_keyed_ternary` with `derive` as an infallible `build`, so every column call
-          runs the drivers' one row loop, `LazyNullOutput::write_chunk`. `discrete_uniform.rs`'s six `point_keyed`
-          methods keep polars' `try_ternary_elementwise` instead, to hold an integer point in integer arithmetic. The
+          runs the drivers' one row loop, `LazyNullOutput::write_chunk`. Three float parameters call
+          `value_keyed_quaternary(inputs, check_params, build, select)` directly. `discrete_uniform.rs`'s six
+          `point_keyed` methods keep polars' `try_ternary_elementwise` instead, to hold an integer point in integer
+          arithmetic. The
           `_scalar` twin is `kwargs.value_keyed(&inputs[0], derive, select)`, an inherent method that checks the
           constant and calls `value_keyed_scalar(value, &derive(p), select)`, the same call the driver's constant
           branch makes.
@@ -220,7 +223,8 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       `normal_sigma` the validated `sigma`); its suffix must be in `ParamFunction`. Cast each input, run the domain
       pass, then return the quantity: `validated_param(inputs, &DOMAIN)` returns the checked column itself for one
       parameter (`bernoulli_proba`); `validated_pair(inputs, coerce_a, check_params)` returns the second parameter
-      where both are present (`normal_sigma`, `beta_params`); `param_keyed(inputs, coerce_a, coerce_b, check_params,
+      where both are present (`normal_sigma`, `beta_params`), and `validated_triple(inputs, check_params)` the third of
+      three float parameters (`studentst_scale`); `param_keyed(inputs, coerce_a, coerce_b, check_params,
       |a, b| ...)` returns any other per-row quantity, null where either parameter is null (`uniform_range`,
       `beta_entropy`). It takes no output name: polars resolves an expression's output name from its first input. In
       Python, `_validated_params` is `self._validated("<suffix>", <the same quantity as a polars expr>)`, which runs
