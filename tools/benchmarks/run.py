@@ -33,6 +33,7 @@ from scipy.stats import (
     gamma,
     geom,
     lognorm,
+    nbinom,
     norm,
     pareto,
     poisson,
@@ -52,6 +53,7 @@ from polars_stats import (
     Gamma,
     Geometric,
     LogNormal,
+    NegativeBinomial,
     Normal,
     Pareto,
     Poisson,
@@ -159,6 +161,10 @@ def _poisson(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Poisson(rate=params.plugin("rate")), poisson(params.scipy("rate"))
 
 
+def _negative_binomial(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return NegativeBinomial(r=params.plugin("r"), p=params.plugin("p")), nbinom(params.scipy("r"), params.scipy("p"))
+
+
 # Ordered domains (`min` below `max`) are kept non-overlapping so every draw is a valid
 # parameterisation. Keyed by each comparison's own name, which is also its report file name.
 REGISTRY: dict[str, Comparison] = {
@@ -221,6 +227,13 @@ REGISTRY: dict[str, Comparison] = {
         ),
         Comparison(name="geometric", params={"p": ParamSpec(0.3, 0.1, 0.9)}, build=_geometric),
         Comparison(name="poisson", params={"rate": ParamSpec(4.5, 0.5, 20.0)}, build=_poisson),
+        Comparison(
+            # A non-integer `r`; `entropy` raises `NotImplementedError`, so it has no cell.
+            name="negativebinomial",
+            params={"r": ParamSpec(3.5, 1.0, 10.0), "p": ParamSpec(0.3, 0.1, 0.9)},
+            build=_negative_binomial,
+            undefined_moments=frozenset({"entropy"}),
+        ),
     )
 }
 

@@ -25,6 +25,7 @@ from tests._registry import (
     ULP_ABS_TOL,
     ULP_REL_TOL,
     UNDEFINED_MOMENTS,
+    UNIMPLEMENTED_MOMENTS,
     compares_bit_exactly,
     moment_is_undefined,
 )
@@ -37,6 +38,10 @@ _UNDEFINED_PAIRS = [
     (spec_name, moment) for spec_name, moments in UNDEFINED_MOMENTS.items() for moment in sorted(moments)
 ]
 """`UNDEFINED_MOMENTS` flattened, so the dtype contract below has one node per pair rather than a skip per spec."""
+
+_UNIMPLEMENTED_PAIRS = [
+    (spec_name, moment) for spec_name, moments in UNIMPLEMENTED_MOMENTS.items() for moment in sorted(moments)
+]
 
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
@@ -105,6 +110,18 @@ def test_the_variance_is_non_negative(spec: DistSpec, regime: Regime) -> None:
         assert got is None, f"{spec.name}: variance is recorded undefined but answered {got}"
         return
     assert got >= 0.0, f"{spec.name}: variance {got} is negative"
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+@pytest.mark.parametrize(("spec_name", "moment"), _UNIMPLEMENTED_PAIRS, ids=str)
+def test_an_unimplemented_moment_raises_when_built(spec_name: DistributionName, moment: Moment, regime: Regime) -> None:
+    """An unimplemented moment raises `NotImplementedError` as the expression is built, on both routings.
+
+    Not a null, which would read as "undefined" (`UNDEFINED_MOMENTS`), and not an error deferred to evaluation, which
+    a lazy query would only meet at `collect`.
+    """
+    with pytest.raises(NotImplementedError, match=moment):
+        getattr(SPECS_BY_NAME[spec_name].build(regime), moment)()
 
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)

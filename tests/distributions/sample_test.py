@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
-from polars_stats import Bernoulli, DiscreteUniform, Geometric, Poisson, Uniform
+from polars_stats import Bernoulli, DiscreteUniform, Geometric, NegativeBinomial, Poisson, Uniform
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
@@ -293,6 +293,82 @@ def test_a_poisson_sample_refuses_a_rate_past_the_uint64_count(regime: Regime) -
         frame.select(dist.samples(size=2, seed=_SEED))
     cdf = frame.select(cdf=dist.cdf(1e20))["cdf"][0]
     assert cdf == pytest.approx(0.5, abs=1e-9)
+
+
+# `(r, p)`: a skewed small `r`, a Polya `r`, and `r = 1e20` at a mean of `1e16`, where the Gamma stage is all but
+# constant and the draw is a Poisson count at a rate near `1e16`.
+_NEGATIVE_BINOMIAL_DRAWS = [(2.5, 0.3), (0.5, 0.01), (1e20, 1.0 - 1e-4)]
+
+
+@pytest.mark.parametrize(("r", "p"), _NEGATIVE_BINOMIAL_DRAWS, ids=str)
+def test_a_negative_binomial_draw_keeps_its_mean_and_variance(r: float, p: float) -> None:
+    """The Gamma-Poisson mixture keeps `r (1 - p) / p` and `r (1 - p) / p**2`.
+
+    The variance's allowance is the standard error of a sample variance, `sqrt((2 + excess kurtosis) / n)` relative,
+    with the excess kurtosis `6 / r + p**2 / (r (1 - p))`.
+    """
+    q = 1.0 - p
+    mean, variance = r * q / p, r * q / p**2
+    excess = 6.0 / r + p**2 / (r * q)
+    drawn = _frame(_CLT_ROWS).select(z=NegativeBinomial(r=r, p=p).sample(seed=_SEED))["z"].cast(pl.Float64)
+    observed_mean, observed_variance = drawn.mean(), drawn.var()
+    assert isinstance(observed_mean, float)
+    assert isinstance(observed_variance, float)
+    assert abs(observed_mean - mean) <= _CLT_SIGMAS * math.sqrt(variance / _CLT_ROWS)
+    assert observed_variance == pytest.approx(variance, rel=_CLT_SIGMAS * math.sqrt((2.0 + excess) / _CLT_ROWS))
+
+
+def test_a_negative_binomial_draw_keeps_its_shape_at_a_large_poisson_rate() -> None:
+    """At `r = 1e20` and a mean of `1e16` the draw is a Poisson count at a rate near `1e16`, with excess kurtosis
+    `~1e-16`, so the standardised fourth moment is `3`.
+
+    statrs' own Poisson stage accepts a logistic proposal outright at such a rate, which keeps the mean and variance and
+    moves only this moment. Allowance as `test_a_poisson_draw_keeps_its_shape_at_a_large_rate`.
+    """
+    r, p = 1e20, 1.0 - 1e-4
+    mean, sd = r * (1.0 - p) / p, math.sqrt(r * (1.0 - p)) / p
+    drawn = _frame(_CLT_ROWS).select(z=NegativeBinomial(r=r, p=p).sample(seed=_SEED))["z"].cast(pl.Float64)
+    fourth_moment = (((drawn - mean) / sd) ** 4).mean()
+    assert isinstance(fourth_moment, float)
+    assert abs(fourth_moment - 3.0) <= _CLT_SIGMAS * math.sqrt(96.0 / _CLT_ROWS)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_negative_binomial_sample_refuses_a_mean_past_the_uint64_count(regime: Regime) -> None:
+    """A mean `r (1 - p) / p` past `1.844e19` has no `UInt64` count: both samplers refuse it, and nothing else does."""
+    dist = SPECS_BY_NAME["negativebinomial"].build(regime, params=(1e3, 1e-17))
+    frame = _frame(4)
+    for expr in (dist.sample(seed=_SEED), dist.samples(size=2, seed=_SEED)):
+        with pytest.raises(pl.exceptions.ComputeError, match=r"mean r \(1 - p\) / p must be at most 1\.844e19"):
+            frame.select(expr)
+    assert frame.select(m=dist.cdf(0.0))["m"][0] == 0.0
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_negative_binomial_draw_past_the_uint64_count_raises_rather_than_saturating(regime: Regime) -> None:
+    """At a small `r` the Gamma rate is heavy-tailed enough to pass `1.844e19` below a mean that is accepted.
+
+    `r = 1e-3` at a mean of `1e17` puts `P(rate > 1.844e19)` at `r E1(0.18) ~ 1.3e-3`, about 26 of the draws here.
+    """
+    dist = SPECS_BY_NAME["negativebinomial"].build(regime, params=(1e-3, 1e-3 / (1e17 + 1e-3)))
+    for expr in (dist.sample(seed=_SEED), dist.samples(size=2, seed=_SEED)):
+        with pytest.raises(pl.exceptions.ComputeError, match=r"Gamma rate exceeded 1\.844e19"):
+            _frame(_CLT_ROWS).select(expr)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_a_negative_binomial_draw_at_a_zero_gamma_rate_is_a_zero_count(regime: Regime) -> None:
+    """At `r = 1e-3` about half the Gamma draws are exactly `0`, a rate `rand_distr::Poisson` refuses: each is a
+    count of `0`, not an overflow, and the counts keep the mean `r (1 - p) / p`.
+    """
+    r, p = 1e-3, 0.5
+    mean, variance = r * (1 - p) / p, r * (1 - p) / p**2
+    dist = SPECS_BY_NAME["negativebinomial"].build(regime, params=(r, p))
+    drawn = _frame(_CLT_ROWS).select(z=dist.sample(seed=_SEED))["z"]
+    assert drawn.dtype == pl.UInt64
+    observed = drawn.cast(pl.Float64).mean()
+    assert isinstance(observed, float)
+    assert abs(observed - mean) <= _CLT_SIGMAS * math.sqrt(variance / _CLT_ROWS)
 
 
 def test_a_bernoulli_draw_at_an_extreme_p_is_deterministic() -> None:

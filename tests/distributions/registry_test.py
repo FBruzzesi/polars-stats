@@ -27,6 +27,7 @@ from tests._registry import (
     MOMENTS,
     ULP_TOLERANT_MOMENTS,
     UNDEFINED_MOMENTS,
+    UNIMPLEMENTED_MOMENTS,
     Regime,
 )
 
@@ -165,13 +166,17 @@ def test_spec_invalid_table_is_not_empty_and_names_its_parameter(spec: DistSpec)
 
 @pytest.mark.parametrize(
     ("table_name", "moments_by_spec"),
-    [("ULP_TOLERANT_MOMENTS", ULP_TOLERANT_MOMENTS), ("UNDEFINED_MOMENTS", UNDEFINED_MOMENTS)],
-    ids=["ULP_TOLERANT_MOMENTS", "UNDEFINED_MOMENTS"],
+    [
+        ("ULP_TOLERANT_MOMENTS", ULP_TOLERANT_MOMENTS),
+        ("UNDEFINED_MOMENTS", UNDEFINED_MOMENTS),
+        ("UNIMPLEMENTED_MOMENTS", UNIMPLEMENTED_MOMENTS),
+    ],
+    ids=["ULP_TOLERANT_MOMENTS", "UNDEFINED_MOMENTS", "UNIMPLEMENTED_MOMENTS"],
 )
 def test_the_sparse_moment_tables_name_real_specs_and_real_moments(
     table_name: str, moments_by_spec: Mapping[DistributionName, frozenset[Moment]]
 ) -> None:
-    """Every `(spec, moment)` pair in the two sparse moment tables exists, so a rename cannot silently unpin one.
+    """Every `(spec, moment)` pair in the three sparse moment tables exists, so a rename cannot silently unpin one.
 
     `ULP_TOLERANT_MOMENTS` is the one place the suite gives up bit-exactness between the two parameter
     routings, and `UNDEFINED_MOMENTS` the one place it replaces a value with a null. A typo in either is

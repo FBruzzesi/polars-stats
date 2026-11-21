@@ -23,7 +23,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests._polars_compat import assert_series_equal
-from tests._registry import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL, compares_bit_exactly
+from tests._registry import ALL_SPECS, ULP_ABS_TOL, ULP_REL_TOL, compares_bit_exactly, moment_is_unimplemented
 
 if TYPE_CHECKING:
     from tests._registry import DistSpec, Moment
@@ -34,10 +34,15 @@ _N_ROWS = 64
 # derived from the validated parameters; `median` is excluded as it routes through `ppf` for the
 # discrete families (covered by the value-keyed suite) rather than the moment validator.
 _MOMENTS: tuple[Moment, ...] = ("mean", "variance", "std", "entropy")
+_IMPLEMENTED_PAIRS = [
+    pytest.param(spec, moment, id=f"{moment}-{spec.name}")
+    for moment in _MOMENTS
+    for spec in ALL_SPECS
+    if not moment_is_unimplemented(spec.name, moment)
+]
 
 
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
-@pytest.mark.parametrize("moment", _MOMENTS)
+@pytest.mark.parametrize(("spec", "moment"), _IMPLEMENTED_PAIRS)
 @given(data=st.data())
 def test_moment_scalar_fast_path_matches_per_row(spec: DistSpec, moment: Moment, data: st.DataObject) -> None:
     """Constant scalar parameters and the equivalent per-row columns evaluate each moment identically."""

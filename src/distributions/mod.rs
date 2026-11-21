@@ -27,6 +27,7 @@ pub mod exponential;
 pub mod gamma;
 pub mod geometric;
 pub mod lognormal;
+pub mod negative_binomial;
 pub mod normal;
 pub mod pareto;
 pub mod poisson;

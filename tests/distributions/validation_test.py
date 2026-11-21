@@ -38,6 +38,7 @@ from tests._registry import (
     DRIVER_REGIMES,
     MOMENTS,
     all_value_keyed,
+    implemented_moments,
     invalid_cases,
     moment_is_undefined,
     point_column,
@@ -117,20 +118,21 @@ def _probes(spec: DistSpec, overrides: _Overrides, points: tuple[float | None, .
     ]
     row = _frame(spec, overrides, spec.on_support_point)
     probes += [
-        _Probe(method, row, getattr(dist, method)(), not moment_is_undefined(spec.name, method)) for method in MOMENTS
+        _Probe(method, row, getattr(dist, method)(), not moment_is_undefined(spec.name, method))
+        for method in implemented_moments(spec.name)
     ]
     probes += [_Probe("sample", row, dist.sample(seed=0)), _Probe("samples", row, dist.samples(3, seed=0))]
     return probes
 
 
-def _every_call(dist: _UnivariateDistribution) -> list[tuple[str, pl.Expr]]:
+def _every_call(spec: DistSpec, dist: _UnivariateDistribution) -> list[tuple[str, pl.Expr]]:
     """`(label, expression)` for every public method: the value-keyed ones, the moments, both samplers.
 
     The label is what a failure names, so a refusal that only some methods make points at the method
     rather than at the distribution.
     """
     calls: list[tuple[str, pl.Expr]] = [(m, getattr(dist, m)(pl.col(point_column(m)))) for m in all_value_keyed(dist)]
-    calls += [(m, getattr(dist, m)()) for m in MOMENTS]
+    calls += [(m, getattr(dist, m)()) for m in implemented_moments(spec.name)]
     return [*calls, ("sample", dist.sample(seed=0)), ("samples", dist.samples(3, seed=0))]
 
 
@@ -203,7 +205,7 @@ def test_an_invalid_parameter_in_a_later_chunk_raises_the_same_refusal(
     chunked = pl.concat([_frame(spec, {slot: None}, point), invalid], rechunk=False)
     assert chunked.n_chunks() > 1
 
-    for label, expr in _every_call(spec.build("name")):
+    for label, expr in _every_call(spec, spec.build("name")):
         expected = _Probe(label, invalid, expr).refusal()
         got = [_Probe(label, frame, expr).refusal() for frame in (chunked, chunked.rechunk())]
         assert expected is not None, f"{spec.name}.{label} computed on {case.label}"
@@ -484,7 +486,10 @@ def test_a_non_numeric_parameter_raises_on_every_method(spec: DistSpec, slot: st
     polars' own `InvalidOperationError` for those, whose arithmetic meets the column first.
     """
     probes = _dtype_probes(spec, slot)
-    probes += [_Probe(m, _frame(spec, {}, spec.on_support_point), getattr(spec.build("name"), m)()) for m in MOMENTS]
+    probes += [
+        _Probe(m, _frame(spec, {}, spec.on_support_point), getattr(spec.build("name"), m)())
+        for m in implemented_moments(spec.name)
+    ]
     accepted = _accepted(slot, dtype, probes)
     assert not accepted, f"{spec.name} took a {dtype} `{slot}`: {accepted}"
 
@@ -532,7 +537,7 @@ def test_a_scalar_and_a_column_parameterisation_refuse_the_same_thing(spec: Dist
         (f"{case.label}/{regime}/{method}", report or "computed")
         for case in spec.invalid
         for regime in DRIVER_REGIMES
-        for method, expr in _every_call(spec.build(regime, case.params))
+        for method, expr in _every_call(spec, spec.build(regime, case.params))
         if (report := _Probe(method, frame, expr).refusal()) is None or not re.search(case.match, report)
     ]
     assert not unreported, f"{spec.name} did not report the rule it broke: {unreported}"

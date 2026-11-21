@@ -12,6 +12,7 @@ from polars_stats.distributions._exponential import Exponential
 from polars_stats.distributions._gamma import Gamma
 from polars_stats.distributions._geometric import Geometric
 from polars_stats.distributions._lognormal import LogNormal
+from polars_stats.distributions._negative_binomial import NegativeBinomial
 from polars_stats.distributions._normal import Normal
 from polars_stats.distributions._pareto import Pareto
 from polars_stats.distributions._poisson import Poisson
@@ -31,6 +32,7 @@ __all__ = (
     "Gamma",
     "Geometric",
     "LogNormal",
+    "NegativeBinomial",
     "Normal",
     "Pareto",
     "Poisson",
