@@ -75,10 +75,9 @@ impl StudentsTParams {
     }
 }
 
-/// From this `ln(t^2 / dof)` on, `x = dof / (dof + t^2)` is below `1e-300`: its logarithm is read off `ln(t^2 / dof)`
-/// and the far tail off the leading term of its power series, whose correction is `O(x)`. `x` itself would turn
-/// subnormal within another decade and then `0`.
-const FAR_FROM_LN_RATIO: f64 = 690.0; // keep in sync with `STUDENTS_T_FAR_FROM_LN_RATIO` in `tools/accuracy/audit.py`
+/// From this `ln(t^2 / dof)` on, `x = dof / (dof + t^2)` is below `1e-300`, a decade short of subnormal: `ln x` is read
+/// off `ln(t^2 / dof)` and the far tail off the leading term of its power series, whose correction is `O(x)`.
+const FAR_FROM_LN_RATIO: f64 = 690.0; // keep in sync with `tools/accuracy/audit.py` and `precision_test.py`
 
 /// The largest `r` whose `ln` is not above [`FAR_FROM_LN_RATIO`], so a normal `r` is classified without its `ln`.
 const FAR_FROM_RATIO: f64 = 4.604_606_404_783_251e299;
@@ -134,7 +133,7 @@ impl StandardT {
         }
     }
 
-    /// `ln((dof / 2) B(dof / 2, 1 / 2))`, relatively exact as `dof -> 0`. Only the far tail and the inverse read it.
+    /// `ln((dof / 2) B(dof / 2, 1 / 2))`, relatively exact as `dof -> 0`.
     fn ln_half_dof_beta(&self) -> f64 {
         self.beta
             .series_offset_on(Tail::Lower)
@@ -269,11 +268,10 @@ impl StandardT {
     fn ln_quantile_magnitude(&self, p: f64, equation: QuantileEquation) -> f64 {
         let ln_p = p.ln();
         let a = self.half_dof;
-        let ln_x_lower = (LN_2 + ln_p + self.ln_half_dof_beta()) / a;
-        let (mut lo, mut hi) = if ln_x_lower < 0.0 {
-            let ln_y_lower = ln_one_minus_exp(ln_x_lower);
-            let ln_x_upper = ln_x_lower + 0.5 * ln_y_lower / a;
-            (self.ln_t_at_ln_x(ln_x_lower), self.ln_t_at_ln_x(ln_x_upper))
+        let ln_x_max = (LN_2 + ln_p + self.ln_half_dof_beta()) / a;
+        let (mut lo, mut hi) = if ln_x_max < 0.0 {
+            let ln_x_min = ln_x_max + 0.5 * ln_one_minus_exp(ln_x_max) / a;
+            (self.ln_t_at_ln_x(ln_x_max), self.ln_t_at_ln_x(ln_x_min))
         } else {
             (MIN_LN_QUANTILE, MAX_LN_QUANTILE)
         };
@@ -594,8 +592,8 @@ fn studentst_scale(inputs: &[Series]) -> PolarsResult<Series> {
     validated_triple(inputs, check_params)
 }
 
-/// From this `dof` the standard entropy is its asymptotic series: the digamma difference in the direct form is
-/// `~1 / dof` and cancels digits that grow with `dof`. The 13 terms below are good to `6.4e-17` relative here.
+/// From this `dof` the standard entropy is its asymptotic series: the direct form's digamma difference is `~1 / dof`
+/// and cancels more digits as `dof` grows. The 13 terms below are within `6.4e-17` relative here.
 const ENTROPY_SERIES_FROM: f64 = 20.0;
 
 /// The coefficients `c_j` of `dof^-j`, `j = 1..=13`, in the standard entropy less `ln(2 pi e) / 2`.
@@ -628,7 +626,7 @@ fn standard_entropy(dof: f64) -> f64 {
     0.5 * LN_2PI_E + polynomial(&ENTROPY_SERIES, inverse_dof) * inverse_dof
 }
 
-/// The standard distribution's entropy; Python adds `ln(scale)`. Digamma has no Polars expression to move to.
+/// The entropy of the standard distribution, which depends on `dof` alone.
 #[polars_expr(output_type=Float64)]
 fn studentst_entropy(inputs: &[Series]) -> PolarsResult<Series> {
     let dof = coerce_f64(&inputs[0])?;

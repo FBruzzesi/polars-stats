@@ -18,8 +18,10 @@ if TYPE_CHECKING:
     from polars_stats._typing import DistributionName, IntoExprColumn
 
 _MEAN_DEFINED_ABOVE = 1
+"""The largest `dof` with no mean."""
+
 _VARIANCE_FINITE_ABOVE = 2
-"""Largest `dof` at which the mean has no value, respectively the variance integral diverges."""
+"""The largest `dof` whose variance diverges."""
 
 
 class StudentsT(ContinuousDistribution):

@@ -946,9 +946,8 @@ pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) ->
     (0.0..=1.0).contains(&quantile).then(|| arm(quantile))
 }
 
-/// The inverse's step budget, past which it answers `NaN` rather than an unconverged iterate. Only a
-/// pathological seed could spend it on bisection: from the callers' seeds Newton settles in a handful of
-/// steps.
+/// The step budget, past which [`bracketed_newton`] answers `NaN` rather than an unconverged iterate. Only a
+/// pathological seed spends it on bisection.
 const MAX_NEWTON_STEPS: usize = 200;
 
 /// Two Newton steps in a row, `p` then `s`, put the next one at about `s^3 / p^2`. Once that is below
