@@ -1350,15 +1350,19 @@ for dof in {_FAR_TAIL_DOFS!r}:
 """
 
 
-def _leading_term_quantile(dof: float, q: float) -> float:
-    """`|t|` where the far tail's leading term `x^a / (2 a B(a, 1/2))`, `a = dof / 2`, is `q`, with `x ~ dof / t^2`.
+def _leading_term_ln_quantile(dof: float, q: float) -> float:
+    """`ln|t|` where the far tail's leading term `x^a / (2 a B(a, 1/2))`, `a = dof / 2`, is `q`, with `x ~ dof / t^2`.
 
     The tail is that term times `1 + O(x)`, and `x < 1e-20` at `q = 1e-300` for every `dof` here.
     """
     a = dof / 2
     ln_a_beta = math.log(a) + math.lgamma(a) + math.lgamma(0.5) - math.lgamma(a + 0.5)
     ln_x = (math.log(2 * q) + ln_a_beta) / a
-    ln_t = 0.5 * (math.log(dof) - ln_x)
+    return 0.5 * (math.log(dof) - ln_x)
+
+
+def _leading_term_quantile(dof: float, q: float) -> float:
+    ln_t = _leading_term_ln_quantile(dof, q)
     return math.exp(ln_t) if ln_t < math.log(sys.float_info.max) else math.inf
 
 
@@ -1386,6 +1390,9 @@ def test_students_t_entropy_is_continuous_where_the_digamma_form_gives_way_to_th
     assert got[0] == pytest.approx(got[1], rel=1e-14)
 
 
+_FAR_FROM_LN_RATIO = 690.0  # keep in sync with `FAR_FROM_LN_RATIO` in `src/distributions/students_t.rs`
+
+
 @pytest.mark.parametrize("dof", [0.5, 5.0], ids=lambda dof: f"dof={dof}")
 def test_students_t_far_tail_is_continuous_where_it_switches_to_the_leading_term(dof: float) -> None:
     """Across `ln(t^2 / dof) = 690`, `log_pdf` and `log_cdf` move by the power laws `-(dof + 1)` and `-dof` in `ln|t|`.
@@ -1393,13 +1400,24 @@ def test_students_t_far_tail_is_continuous_where_it_switches_to_the_leading_term
     The two points sit `2e-6` either side of the switch in `ln(t^2 / dof)`, where both forms are exact to `O(e^-690)`,
     so a jump between them shows as a residual above the `~1e-13` rounding of the logs themselves.
     """
-    center = math.sqrt(dof) * math.exp(345.0)
+    center = math.sqrt(dof) * math.exp(_FAR_FROM_LN_RATIO / 2)
     ts = [-center * (1 - 1e-6), -center * (1 + 1e-6)]
     dist = StudentsT(dof=dof)
     got = pl.DataFrame({"t": ts}).select(log_pdf=dist.log_pdf(pl.col("t")), log_cdf=dist.log_cdf(pl.col("t")))
     ln_step = math.log1p(1e-6) - math.log1p(-1e-6)
     assert got["log_pdf"][1] - got["log_pdf"][0] == pytest.approx(-(dof + 1) * ln_step, abs=1e-11)
     assert got["log_cdf"][1] - got["log_cdf"][0] == pytest.approx(-dof * ln_step, abs=1e-11)
+
+
+def test_students_t_quantile_past_the_largest_float_is_rescaled_by_a_tiny_scale() -> None:
+    """At `dof = 0.5` the standard quantile at `1e-300` is `e^1380`, past `f64`, yet `1e-300` times it is `~1e299`.
+
+    The allowance is the `~1400` ulps both sides spend exponentiating a logarithm that large.
+    """
+    dof, scale = 0.5, 1e-300
+    got = pl.select(StudentsT(dof=dof, scale=scale).ppf(_FAR_TAIL_Q)).item()
+    expected = -math.exp(math.log(scale) + _leading_term_ln_quantile(dof, _FAR_TAIL_Q))
+    assert got == pytest.approx(expected, rel=2e-12, abs=0.0)
 
 
 @pytest.mark.parametrize("dof", [0.5, 3.0, 4.5, 10.0], ids=lambda dof: f"dof={dof}")
