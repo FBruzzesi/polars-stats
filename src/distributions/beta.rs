@@ -197,7 +197,7 @@ impl IncompleteBeta {
     }
 
     /// `-ln(shape B(a, b))` for `shape` = `a` ([`Tail::Lower`]) or `b`, where that shape is at most `1`.
-    fn series_offset(&self, side: Tail) -> Option<f64> {
+    fn series_offset_on(&self, side: Tail) -> Option<f64> {
         let (shape, other) = match side {
             Tail::Lower => (self.a, self.b),
             Tail::Upper => (self.b, self.a),
@@ -269,10 +269,10 @@ impl IncompleteBeta {
         let ln_y = if y <= x { y.ln() } else { (-x).ln_1p() };
         let ln_prefactor = self.ln_prefactor(x, y, ln_x, ln_y);
         let series = if x < (a + 1.0) / (a + b + 2.0) {
-            self.series_offset(Tail::Lower)
+            self.series_offset_on(Tail::Lower)
                 .map(|offset| (Tail::Lower, a, b, x, a * ln_x + offset))
         } else {
-            self.series_offset(Tail::Upper)
+            self.series_offset_on(Tail::Upper)
                 .map(|offset| (Tail::Upper, b, a, y, b * ln_y + offset))
         };
         let (smaller, ln_smaller) = if let Some((side, shape, other_shape, u, exponent)) = series {
@@ -334,8 +334,8 @@ fn continued_fraction(a: f64, b: f64, x: f64, y: f64, lambda: f64) -> f64 {
     let mut growth = 1.0;
     let mut s = a + 1.0;
     let mut ratio = c1 / c;
-    // Normalised by the first denominator `c / c1`, as every later step is: at `lambda ~ 1e200` it times `beta`
-    // overflows.
+    // Normalised by the first denominator `c / c1`, as every later step is: unnormalised, its product with `beta`
+    // overflows at `lambda ~ 1e200`.
     let (mut numerator_previous, mut denominator_previous, mut numerator, mut denominator) =
         (0.0, ratio, ratio, 1.0);
     for m in 1..MAX_TERMS {
