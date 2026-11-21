@@ -1287,23 +1287,36 @@ def _poisson_underflow_points(rate: float) -> list[float]:
     return [float(k) for crossing in crossings for k in (crossing - 1, crossing, crossing + 1) if k >= 0]
 
 
-def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
-    """Poisson support probes: off the support, the mode, both underflow crossings, and far up to `+inf`.
+def count_points(
+    mean: float,
+    sd: float,
+    rng: random.Random,
+    count: int,
+    *,
+    snap: Callable[[float], int],
+    extra: Iterable[float] = (),
+) -> list[Point]:
+    """Support probes for a count distribution: off the support, the mode, `extra`, and far up to `+inf`.
 
-    Around the mean in steps of `sqrt(rate)` out to `30`, plus random support points around the mean and
-    log-uniform above it, out to `100 rate`.
+    Around the mean in steps of `sd` out to `30`, each snapped to the support by `snap`, plus random support points
+    around the mean and log-uniform above it, out to `100 mean`.
     """
-    rate = params[0]
-    mode = math.floor(rate)
-    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(mode), float(mode + 1), float(max(mode - 1, 0))}
-    danger |= {float(max(0, round(rate + c * math.sqrt(rate)))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
-    danger |= set(_poisson_underflow_points(rate))
-    danger |= {float(math.ceil(10 * rate + 1000)), 1e300, math.inf}
+    mode = math.floor(mean)
+    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(mode), float(mode + 1), *extra}
+    danger |= {float(max(0, snap(mean + c * sd))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
+    danger |= {float(math.ceil(10 * mean + 1000)), 1e300, math.inf}
     points: list[Point] = [(v, "danger") for v in sorted(danger)]
-    points.extend((float(max(0, round(rate + math.sqrt(rate) * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
-    top = math.log10(100.0 * max(rate, 1.0))
+    points.extend((float(max(0, snap(mean + sd * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
+    top = math.log10(100.0 * max(mean, 1.0))
     points.extend((float(round(10.0 ** rng.uniform(0.0, top))), "random") for _ in range(count))
     return points
+
+
+def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """Poisson support probes, with the point below the mode and both underflow crossings."""
+    rate = params[0]
+    extra = [float(max(math.floor(rate) - 1, 0)), *_poisson_underflow_points(rate)]
+    return count_points(rate, math.sqrt(rate), rng, count, snap=round, extra=extra)
 
 
 # NegativeBinomial oracles. `params` is `(r, p)`; `P(X <= k)` is `I_p(r, k + 1)` and `P(X > k)` its complement.
@@ -1444,20 +1457,9 @@ def negative_binomial_isf(params: Params, q: float, seed: float) -> mp.mpf:
 
 
 def negative_binomial_points(params: Params, rng: random.Random, count: int) -> list[Point]:
-    """NegativeBinomial support probes: off the support, `0`, the mode, and far up to `+inf`.
-
-    Out to 30 standard deviations either side of the mean, plus random points around it and log-uniform above it.
-    """
+    """NegativeBinomial support probes."""
     r, p = params
-    mean, sd = r * (1 - p) / p, math.sqrt(r * (1 - p)) / p
-    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(math.floor(mean)), float(math.floor(mean) + 1)}
-    danger |= {float(max(0, math.floor(mean + c * sd))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
-    danger |= {float(math.ceil(10 * mean + 1000)), 1e300, math.inf}
-    points: list[Point] = [(v, "danger") for v in sorted(danger)]
-    points.extend((float(max(0, math.floor(mean + sd * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
-    top = math.log10(100.0 * max(mean, 1.0))
-    points.extend((float(round(10.0 ** rng.uniform(0.0, top))), "random") for _ in range(count))
-    return points
+    return count_points(r * (1 - p) / p, math.sqrt(r * (1 - p)) / p, rng, count, snap=math.floor)
 
 
 # DiscreteUniform oracles. `params` is `(min, max)`, both bounds inclusive.
