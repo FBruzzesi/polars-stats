@@ -12,10 +12,11 @@ use statrs::distribution::{Beta, Continuous, ContinuousCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
 use crate::distributions::gamma::{
-    ln_1p_mx, Tail, Tails, CONVERGENCE_EPS, LN_2PI, STIRLING_FROM, STIRLING_REMAINDER_SERIES,
+    ln_1p_mx, stirling_remainder, Tail, Tails, CONVERGENCE_EPS, LN_2PI, STIRLING_FROM,
+    STIRLING_REMAINDER_SERIES,
 };
 use crate::distributions::{
-    coerce_f64, expm1, param_keyed, polynomial, validated_pair, value_keyed_derived_ternary,
+    coerce_f64, expm1, param_keyed, validated_pair, value_keyed_derived_ternary,
     value_keyed_scalar, value_keyed_ternary, ParamDomain,
 };
 use crate::rng::{
@@ -66,11 +67,6 @@ impl BetaParams {
         B.check(self.b)?;
         value_keyed_scalar(value, &IncompleteBeta::new(self.a, self.b), select)
     }
-}
-
-/// Binet's remainder `mu(z) = ln Gamma(z) - (z - 1/2) ln z + z - ln(2 pi) / 2`, from [`STIRLING_FROM`] on.
-fn stirling_remainder(z: f64) -> f64 {
-    polynomial(&STIRLING_REMAINDER_SERIES, (z * z).recip()) / z
 }
 
 /// `ln Gamma(b + a) - ln Gamma(b)`, relatively exact as `a -> 0` where the difference of two `ln_gamma` calls

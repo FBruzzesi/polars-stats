@@ -119,6 +119,11 @@ pub(super) const STIRLING_REMAINDER_SERIES: [f64; 7] = [
     0.00641025641025641,
 ];
 
+/// Binet's remainder `mu(z) = ln Gamma(z) - (z - 1/2) ln z + z - ln(2 pi) / 2`, from [`STIRLING_FROM`] on.
+pub(super) fn stirling_remainder(z: f64) -> f64 {
+    polynomial(&STIRLING_REMAINDER_SERIES, (z * z).recip()) / z
+}
+
 /// `ln(1 + s) - s`, scipy's `log1pmx`. Below `|s| = 1/2` it is
 /// `-s^2 / (2 + s) + 2 (w^3 / 3 + w^5 / 5 + ...)` with `w = s / (2 + s)`, the `atanh` series of
 /// `ln(1 + s)` with the linear term cancelled exactly: the literal difference keeps only `~ulp / s`
@@ -386,9 +391,8 @@ pub(super) struct IncompleteGamma {
 impl IncompleteGamma {
     pub(super) fn new(a: f64) -> Self {
         let ln_a = a.ln();
-        let stirling_offset = (a >= STIRLING_FROM).then(|| {
-            0.5 * (LN_2PI + ln_a) + polynomial(&STIRLING_REMAINDER_SERIES, 1.0 / (a * a)) / a
-        });
+        let stirling_offset =
+            (a >= STIRLING_FROM).then(|| 0.5 * (LN_2PI + ln_a) + stirling_remainder(a));
         let ln_gamma_1p = match stirling_offset {
             Some(offset) => a * (ln_a - 1.0) + offset,
             None if a < LN_GAMMA_1P_SERIES_BELOW => ln_gamma_1p_series(a),
