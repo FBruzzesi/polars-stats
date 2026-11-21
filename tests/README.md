@@ -28,7 +28,7 @@ sweep from the float parameters.
 `polars_stats.__all__` against the rows, so a distribution exported without a row fails a test rather
 than being silently skipped.
 
-Four sparse per-distribution tables sit outside the row, because most distributions have no entry
+Five sparse per-distribution tables sit outside the row, because most distributions have no entry
 and a field that is empty more often than not is a bespoke fact wearing a row's clothes. The split is
 by reader: a table more than one module reads lives in `_registry.py` beside the rows, and one only
 its own test file reads stays in that file.
@@ -38,10 +38,11 @@ its own test file reads stays in that file.
 | `DEGENERATE` | `_registry.py` | parameterisations where the mass collapses onto one point |
 | `ULP_TOLERANT_MOMENTS` | `_registry.py` | the `(spec, moment)` pairs that are not bit-exact across routings |
 | `UNDEFINED_MOMENTS` | `_registry.py` | the `(spec, moment)` pairs with no value, pinned to null on every valid row |
+| `UNIMPLEMENTED_MOMENTS` | `_registry.py` | the `(spec, moment)` pairs that raise `NotImplementedError`, skipped by the shared moment contracts |
 | `_DENSITY_AT_ENDPOINT` | `support_test.py` | the density *at* a finite support endpoint |
 
-None is invisible. All four are keyed by `DistributionName`, so a mistyped key is a type error; the
-three in `_registry.py` are additionally tied back to `ALL_SPECS` by `registry_test.py`, and
+None is invisible. All five are keyed by `DistributionName`, so a mistyped key is a type error; the
+four in `_registry.py` are additionally tied back to `ALL_SPECS` by `registry_test.py`, and
 `_DENSITY_AT_ENDPOINT` is asserted present whenever the support has a finite endpoint.
 
 ## 2. Behavioural contracts: `tests/distributions/`

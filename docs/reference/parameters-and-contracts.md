@@ -107,6 +107,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Binomial(n, p)` | `n >= 0`, `0 <= p <= 1` | `n` integral |
 | `DiscreteUniform(min, max)` | `min <= max`, both inclusive | `max - min + 1` fits `Int64` |
 | `Geometric(p)` | `0 < p <= 1` | `p = 0` rejected, unlike `Bernoulli` |
+| `NegativeBinomial(r, p)` | `r > 0`, `0 < p <= 1` | both finite; `sample` / `samples` also need `r (1 - p) / p <= 1.844e19` |
 | `Poisson(rate)` | `rate > 0` | finite; `sample` / `samples` also need `rate <= 1.844e19` |
 
 A violation raises `ComputeError` and fails the whole evaluation. The check runs over each parameter column before
@@ -132,7 +133,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | Distribution | Sample dtype |
 |---|---|
 | `Bernoulli` | `Boolean` |
-| `Binomial`, `Geometric`, `Poisson` | `UInt64` |
+| `Binomial`, `Geometric`, `NegativeBinomial`, `Poisson` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
 | `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `LogNormal`, `Normal`, `Pareto`, `Uniform`, `Weibull` | `Float64` |
 

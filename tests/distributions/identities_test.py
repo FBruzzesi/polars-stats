@@ -26,6 +26,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    NegativeBinomial,
     Normal,
     Pareto,
     Poisson,
@@ -507,3 +508,78 @@ def test_degenerate_geometric_sample_is_always_the_mass_point() -> None:
     drawn = frame.select(r=Geometric(p=1.0).sample(seed=7))["r"]
     assert drawn.dtype == pl.UInt64
     assert drawn.unique().to_list() == [1]
+
+
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+def test_degenerate_negative_binomial_inverses_collapse_to_the_mass_point(method: str) -> None:
+    """At `p = 1` every quantile is `0`, from a constant `p` and from a column of them."""
+    frame = pl.DataFrame({"p": [1.0] * len(_DEGENERATE_QUANTILES), "q": _DEGENERATE_QUANTILES})
+    for dist in (NegativeBinomial(r=2.5, p=1.0), NegativeBinomial(r=2.5, p=pl.col("p"))):
+        got = frame.select(r=getattr(dist, method)(pl.col("q")))["r"].to_list()
+        assert got == [0.0] * len(_DEGENERATE_QUANTILES)
+
+
+def test_degenerate_negative_binomial_draws_are_the_mass_point() -> None:
+    """At `p = 1` no trial fails, so every draw is `0`, from a constant `p` and from a column of them."""
+    frame = pl.DataFrame({"p": [1.0] * 64})
+    for dist in (NegativeBinomial(r=2.5, p=1.0), NegativeBinomial(r=2.5, p=pl.col("p"))):
+        drawn = frame.select(one=dist.sample(seed=7), many=dist.samples(3, seed=7))
+        assert drawn["one"].dtype == pl.UInt64
+        assert drawn["one"].unique().to_list() == [0]
+        assert drawn["many"].explode().unique().to_list() == [0]
+
+
+# --------------------------------------------------------------------------------------------------
+# NegativeBinomial(r, p) at `k` is the incomplete beta `I_p(r, k + 1)`: `Beta(r, k + 1)` at `p`, and for an integer `r`
+# the binomial tail `P(Binomial(r + k, p) >= r)`. At `r = 1` it is `Geometric(p)` read at `k + 1`.
+# --------------------------------------------------------------------------------------------------
+
+_NB_POINTS = [0.0, 1.0, 4.0, 37.0, 400.0]
+
+
+def _negative_binomial_at_points(r: float, p: float, method: Method) -> pl.Series:
+    return pl.DataFrame({"k": _NB_POINTS}).select(r=getattr(NegativeBinomial(r=r, p=p), method)(pl.col("k")))["r"]
+
+
+@pytest.mark.parametrize("p", [1e-6, 0.3, 0.9, 1.0 - 1e-12])
+@pytest.mark.parametrize("r", [1e-3, 2.5, 40.0])
+@pytest.mark.parametrize("method", ["log_cdf", "log_sf"])
+def test_negative_binomial_log_tails_are_the_beta_tails_at_p(r: float, p: float, method: Method) -> None:
+    """Bit for bit: one incomplete beta, called with the same shapes at the same `(p, 1 - p)`."""
+    frame = pl.DataFrame({"b": [k + 1.0 for k in _NB_POINTS]})
+    via_beta = frame.select(r=getattr(Beta(a=r, b=pl.col("b")), method)(p))["r"]
+    assert_series_equal(
+        _negative_binomial_at_points(r, p, method), via_beta, rel_tol=0.0, abs_tol=0.0, check_names=False
+    )
+
+
+@pytest.mark.parametrize("p", [1e-6, 0.3, 0.9])
+@pytest.mark.parametrize("r", [1, 3, 25])
+def test_negative_binomial_cdf_is_the_binomial_tail_at_integer_r(r: int, p: float) -> None:
+    """`P(NB <= k) = P(Binomial(r + k, p) >= r)`: the `r`-th success comes within `r + k` trials.
+
+    Bit for bit on the log scale, where both read `I_p(r, k + 1)`; `1e-12` on the linear scale, where `Binomial.sf`
+    is statrs' own incomplete beta.
+    """
+    frame = pl.DataFrame({"n": [r + int(k) for k in _NB_POINTS]})
+    binomial = Binomial(n=pl.col("n"), p=p)
+    via_binomial = frame.select(ls=binomial.log_sf(r - 1), sf=binomial.sf(r - 1))
+    log_cdf = _negative_binomial_at_points(float(r), p, "log_cdf")
+    assert_series_equal(log_cdf, via_binomial["ls"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+    cdf = _negative_binomial_at_points(float(r), p, "cdf")
+    assert_series_equal(cdf, via_binomial["sf"], rel_tol=1e-12, abs_tol=1e-300, check_names=False)
+
+
+@pytest.mark.parametrize("p", [1e-6, 0.3, 0.9, 1.0])
+@pytest.mark.parametrize("method", ["pmf", "log_pmf", "cdf", "log_cdf", "sf", "log_sf"])
+def test_single_success_negative_binomial_is_the_geometric_shifted_by_one(method: Method, p: float) -> None:
+    """`NegativeBinomial(1, p)` counts failures from `0`, `Geometric(p)` trials from `1`.
+
+    `1e-14` rather than bit equality: the geometric is a closed form, the negative binomial the incomplete beta.
+    """
+    geometric = pl.DataFrame({"k": [k + 1.0 for k in _NB_POINTS]}).select(
+        r=getattr(Geometric(p=p), method)(pl.col("k"))
+    )
+    assert_series_equal(
+        _negative_binomial_at_points(1.0, p, method), geometric["r"], rel_tol=1e-14, abs_tol=1e-300, check_names=False
+    )

@@ -28,6 +28,7 @@ from polars_stats import (
     Gamma,
     Geometric,
     LogNormal,
+    NegativeBinomial,
     Normal,
     Pareto,
     Poisson,
@@ -435,6 +436,34 @@ _POISSON = DistSpec(
     support=lambda p: [float(k) for k in range(poisson_support_limit(p[0]) + 1)],
 )
 
+
+def negative_binomial_support_limit(r: float, p: float) -> int:
+    """Ten standard deviations past the mean, then `40 / p` more, where the tail mass is below `1e-23` for every
+    `(r, p)` the strategy draws (measured against scipy at the strategy's corners)."""
+    return ceil(r * (1 - p) / p + 10.0 * sqrt(r * (1 - p)) / p + 40.0 / p)
+
+
+_NEGATIVE_BINOMIAL = DistSpec(
+    name="negativebinomial",
+    cls=NegativeBinomial,
+    continuous=False,
+    parameters=(Param("r", "r"), Param("p", "p")),
+    # `r` need not be an integer; `p` stays off `0`, where the support never ends, so the mass sums inside the bounds.
+    param_strategy=st.tuples(_finite(1.0, 20.0), _finite(0.1, 0.9)),
+    example=(2.5, 0.3),
+    eval_range=lambda p: (-1.0, float(negative_binomial_support_limit(p[0], p[1]) + 1)),
+    bounds=(0.0, inf),
+    on_support_point=2.0,
+    sample_dtype=pl.UInt64(),
+    invalid=(
+        InvalidCase("r=0", (0.0, 0.5), "r must be"),
+        InvalidCase("r=-1", (-1.0, 0.5), "r must be"),
+        InvalidCase("p=0", (2.5, 0.0), "p must be in"),
+        InvalidCase("p=1.5", (2.5, 1.5), "p must be in"),
+    ),
+    support=lambda p: [float(k) for k in range(negative_binomial_support_limit(p[0], p[1]) + 1)],
+)
+
 _DISCRETE_UNIFORM = DistSpec(
     name="discreteuniform",
     cls=DiscreteUniform,
@@ -729,6 +758,7 @@ CONTRACT_FRAME = pl.DataFrame(
         "n": [5, 10, 20],
         "p": [0.2, 0.5, 0.9],
         "rate": [1.0, 2.0, 0.5],
+        "r": [2.5, 1.0, 7.0],
         "a": [2.0, 1.0, 3.0],
         "b": [3.0, 1.0, 0.5],
         "dof": [1.0, 4.0, 7.5],
@@ -746,6 +776,7 @@ ALL_SPECS = [
     _DISCRETE_UNIFORM,
     _GEOMETRIC,
     _POISSON,
+    _NEGATIVE_BINOMIAL,
     _NORMAL,
     _CAUCHY,
     _UNIFORM,
@@ -771,6 +802,7 @@ ULP_TOLERANT_MOMENTS: dict[DistributionName, frozenset[Moment]] = {
     "uniform": frozenset({"variance", "std"}),
     "geometric": frozenset({"std", "entropy"}),
     "gamma": frozenset({"variance", "std"}),
+    "negativebinomial": frozenset({"std"}),
 }
 """The `(spec, moment)` pairs that compare to `ULP_REL_TOL` instead of bit-exactly.
 
@@ -785,6 +817,9 @@ random `p`); only the `pl.repeat` spelling moves the last bit.
 
 `gamma`'s two are the same mechanism on `sqrt(shape) / rate`, which `variance` squares: 73 of 300 random
 `(shape, rate)` move the last bit under `pl.repeat`, a materialised pair none.
+
+`negativebinomial`'s `std` is `sqrt(r (1 - p)) / p`, which `variance().sqrt()` rounds differently in the last bit;
+the direct form is kept because squaring `p` overflows first, as `geometric`'s.
 """
 
 
@@ -807,6 +842,22 @@ def moment_is_undefined(spec_name: DistributionName, moment: Moment) -> bool:
     return moment in UNDEFINED_MOMENTS.get(spec_name, frozenset())
 
 
+UNIMPLEMENTED_MOMENTS: dict[DistributionName, frozenset[Moment]] = {"negativebinomial": frozenset({"entropy"})}
+"""The `(spec, moment)` pairs that exist but have no closed form here: the method raises `NotImplementedError` when
+the expression is built, on both parameter routings, and the shared moment contracts skip it.
+"""
+
+
+def moment_is_unimplemented(spec_name: DistributionName, moment: Moment) -> bool:
+    """Whether this spec's `moment` is recorded as raising `NotImplementedError`."""
+    return moment in UNIMPLEMENTED_MOMENTS.get(spec_name, frozenset())
+
+
+def implemented_moments(spec_name: DistributionName) -> tuple[Moment, ...]:
+    """`MOMENTS` less the ones `UNIMPLEMENTED_MOMENTS` records for this spec."""
+    return tuple(moment for moment in MOMENTS if not moment_is_unimplemented(spec_name, moment))
+
+
 # Parameterisations where the mass collapses onto one point: `p` at an endpoint, no trials, a
 # one-point range. Both routings must accept them, agree, and reach a finite entropy by the
 # `0 log 0 = 0` convention rather than raising.
@@ -821,6 +872,7 @@ DEGENERATE: dict[str, tuple[DistributionName, tuple[float, ...]]] = {
     "binomial n=0": ("binomial", (0, 0.5)),
     "binomial p=0": ("binomial", (5, 0.0)),
     "binomial p=1": ("binomial", (5, 1.0)),
+    "negativebinomial p=1": ("negativebinomial", (2.5, 1.0)),
     "discreteuniform min=max": ("discreteuniform", (3, 3)),
 }
 

@@ -17,7 +17,18 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_stats import ChiSquared, Exponential, Gamma, Geometric, LogNormal, Normal, Pareto, Uniform, Weibull
+from polars_stats import (
+    ChiSquared,
+    Exponential,
+    Gamma,
+    Geometric,
+    LogNormal,
+    NegativeBinomial,
+    Normal,
+    Pareto,
+    Uniform,
+    Weibull,
+)
 
 if TYPE_CHECKING:
     from polars_stats.distributions._base import _UnivariateDistribution
@@ -98,6 +109,14 @@ def test_geometric_std_is_sqrt_one_minus_p_over_p(p: float) -> None:
     assert got == pytest.approx(math.sqrt(1 - p) / p, rel=1e-15, abs=0.0)
 
 
+@pytest.mark.parametrize("p", _EXTREME_PROBABILITIES, ids=lambda p: f"p={p:.0e}")
+def test_negative_binomial_std_is_sqrt_r_one_minus_p_over_p(p: float) -> None:
+    """`NegativeBinomial(4, p).std()` is `2 sqrt(1 - p) / p` where the squared-variance route returns `inf`."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=NegativeBinomial(r=4.0, p=p).std())["r"].item()
+    assert math.isfinite(got)
+    assert got == pytest.approx(2.0 * math.sqrt(1 - p) / p, rel=1e-15, abs=0.0)
+
+
 @pytest.mark.parametrize("sigma", [1.0, 18.0, 20.0, 26.0], ids=lambda s: f"sigma={s}")
 def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
     """`LogNormal.std()` stays finite past `sigma ~ 18.8`, where the variance genuinely overflows.
@@ -120,8 +139,9 @@ def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
         (Uniform(min=-3.0, max=7.0), 10.0 / math.sqrt(12.0)),
         (Geometric(p=0.25), math.sqrt(0.75) / 0.25),
         (Pareto(scale=2.0, shape=3.0), math.sqrt(3.0)),
+        (NegativeBinomial(r=4.0, p=0.25), 2.0 * math.sqrt(0.75) / 0.25),
     ],
-    ids=["normal", "exponential", "uniform", "geometric", "pareto"],
+    ids=["normal", "exponential", "uniform", "geometric", "pareto", "negativebinomial"],
 )
 def test_std_squared_still_agrees_with_variance_in_the_ordinary_range(
     dist: _UnivariateDistribution, expected: float

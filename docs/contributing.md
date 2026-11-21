@@ -214,8 +214,7 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
     * `_param_exprs`, the coerced parameters as a tuple in plugin-input order; the *first* sets the output's root name.
     * Nothing for the value-keyed methods. The base hooks (`_pdf` / `_pmf`, `_log_*`, `_cdf`, `_sf`, `_ppf`, `_isf`)
       each call `self._value_plugin("<method>", value)`, which resolves `<name>_<method>` (`ln_` for the log forms).
-      Override a hook only where the Rust body does not exist (`Beta` and `Binomial` compose `log_cdf` / `log_sf` as
-      `log(cdf)` / `log(sf)`).
+      Override a hook only where the Rust body does not exist.
     * `_validated_params`, the validating plugin call the moments gate on. In Rust, a plugin returning a reused
       quantity that raises on invalid parameters and nulls on a null one (`uniform_range` returns `max - min`,
       `normal_sigma` the validated `sigma`); its suffix must be in `ParamFunction`. Cast each input, run the domain
@@ -252,16 +251,17 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
       `sample_dtype`, the finite out-of-domain `invalid` table, and `integration_bounds` (continuous) or
       `support` (discrete). Add a column per parameter to `CONTRACT_FRAME` in the same file; no two parameters
       of one distribution may share one. Add the name to `DistributionName` in `polars_stats/_typing.py`, which
-      is what types the row and the four sparse tables below. Every shared contract reads the row, and
+      is what types the row and the five sparse tables below. Every shared contract reads the row, and
       `tests/distributions/registry_test.py` fails if a distribution is exported without one, so this is the one
       place the old silent-skip cannot happen.
-    * Possibly a row in one of the four **sparse** tables, which a `DistSpec` field cannot hold because most
+    * Possibly a row in one of the five **sparse** tables, which a `DistSpec` field cannot hold because most
       distributions have no entry. `support_test.py::_DENSITY_AT_ENDPOINT` (the density *at* a finite support
       endpoint, whose value is the distribution's own rather than a saturated constant) is **required** when the
       support has a finite endpoint, and fails red when missing. `_registry.py::DEGENERATE` (parameterisations
       where the mass collapses onto one point), `_registry.py::ULP_TOLERANT_MOMENTS` (moments that are not
-      bit-exact across the two parameter routings) and `_registry.py::UNDEFINED_MOMENTS` (moments the
-      distribution does not have, pinned to null on every valid row) are all opt-in; add to
+      bit-exact across the two parameter routings), `_registry.py::UNDEFINED_MOMENTS` (moments the
+      distribution does not have, pinned to null on every valid row) and `_registry.py::UNIMPLEMENTED_MOMENTS`
+      (moments that exist but raise `NotImplementedError`, which the shared moment contracts skip) are all opt-in; add to
       `ULP_TOLERANT_MOMENTS` only from a failing bit-exactness assertion, never to quiet one.
     * Any **bespoke** facts, appended to the file that owns their subject in `tests/distributions/`: an algebraic
       reduction to another distribution goes in `identities_test.py`, a numerical-regime fact with no scipy oracle
@@ -275,11 +275,11 @@ code rather than halfway through, write the scipy-parity test first, and keep a 
 ## Numerical stability
 
 **Every method must be accurate in the regime it exists to serve.** `log_sf` exists for the deep tail, so a `log_sf`
-that returns `-inf` there does not work, even though every test passes. Composing `log_cdf` as `cdf().log()` (as
-`Beta` and `Binomial` still do) is a stopgap, not an implementation: shipping one is a decision to justify. Never
-write `isf` as `ppf(1 - q)`, because the loss would happen *before* your code runs: `1 - q` resolves to `1.1e-16`
-absolute, so the tail mass is already quantised to `1.1e-16 / q` relative and no inverse can recover it. Solve
-against `q` itself, via a symmetry, a closed form, or entering a two-sided solve from the other end.
+that returns `-inf` there does not work, even though every test passes. Composing `log_cdf` as `cdf().log()` is a
+stopgap, not an implementation: shipping one is a decision to justify. Never write `isf` as `ppf(1 - q)`, because the
+loss would happen *before* your code runs: `1 - q` resolves to `1.1e-16` absolute, so the tail mass is already quantised
+to `1.1e-16 / q` relative and no inverse can recover it. Solve against `q` itself, via a symmetry, a closed form, or
+entering a two-sided solve from the other end.
 
 **A composed method inherits the weakest part's range, and the composition is often wider than the part.** `std()`
 defaults to `variance().sqrt()`, and a variance that legitimately overflows can hide a standard deviation that does

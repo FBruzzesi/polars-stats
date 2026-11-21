@@ -71,6 +71,7 @@ from polars_stats import (
     Gamma,
     Geometric,
     LogNormal,
+    NegativeBinomial,
     Normal,
     Pareto,
     Poisson,
@@ -1286,23 +1287,187 @@ def _poisson_underflow_points(rate: float) -> list[float]:
     return [float(k) for crossing in crossings for k in (crossing - 1, crossing, crossing + 1) if k >= 0]
 
 
-def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
-    """Poisson support probes: off the support, the mode, both underflow crossings, and far up to `+inf`.
+def count_points(
+    mean: float,
+    sd: float,
+    rng: random.Random,
+    count: int,
+    *,
+    snap: Callable[[float], int],
+    extra: Iterable[float] = (),
+) -> list[Point]:
+    """Support probes for a count distribution: off the support, the mode, `extra`, and far up to `+inf`.
 
-    Around the mean in steps of `sqrt(rate)` out to `30`, plus random support points around the mean and
-    log-uniform above it, out to `100 rate`.
+    Around the mean in steps of `sd` out to `30`, each snapped to the support by `snap`, plus random support points
+    around the mean and log-uniform above it, out to `100 mean`.
     """
-    rate = params[0]
-    mode = math.floor(rate)
-    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(mode), float(mode + 1), float(max(mode - 1, 0))}
-    danger |= {float(max(0, round(rate + c * math.sqrt(rate)))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
-    danger |= set(_poisson_underflow_points(rate))
-    danger |= {float(math.ceil(10 * rate + 1000)), 1e300, math.inf}
+    mode = math.floor(mean)
+    danger = {-1.0, -0.5, 0.0, 0.5, 1.0, 2.5, float(mode), float(mode + 1), *extra}
+    danger |= {float(max(0, snap(mean + c * sd))) for c in (-30, -10, -5, -1, 1, 5, 10, 30)}
+    danger |= {float(math.ceil(10 * mean + 1000)), 1e300, math.inf}
     points: list[Point] = [(v, "danger") for v in sorted(danger)]
-    points.extend((float(max(0, round(rate + math.sqrt(rate) * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
-    top = math.log10(100.0 * max(rate, 1.0))
+    points.extend((float(max(0, snap(mean + sd * rng.gauss(0.0, 3.0)))), "random") for _ in range(count))
+    top = math.log10(100.0 * max(mean, 1.0))
     points.extend((float(round(10.0 ** rng.uniform(0.0, top))), "random") for _ in range(count))
     return points
+
+
+def poisson_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """Poisson support probes, with the point below the mode and both underflow crossings."""
+    rate = params[0]
+    extra = [float(max(math.floor(rate) - 1, 0)), *_poisson_underflow_points(rate)]
+    return count_points(rate, math.sqrt(rate), rng, count, snap=round, extra=extra)
+
+
+# NegativeBinomial oracles. `params` is `(r, p)`; `P(X <= k)` is `I_p(r, k + 1)` and `P(X > k)` its complement.
+
+NegativeBinomialTail = Literal["cdf", "sf"]
+
+HYP2F1_MAXTERMS = 10**8
+"""Room for the `2F1` below near the mean, where its terms fall by `(a + b) x / (a + 1)` per step, close to `1`."""
+
+DIRECT_SERIES_ABOVE = 0.8
+"""Past this argument mpmath's `hyp2f1` leaves its direct series for a `1 - z` transform, which does not return when
+`c - a - b`, here `-b`, is an integer."""
+
+BINOMIAL_SUM_TERMS = 200_000
+"""The longest finite binomial sum the oracle runs in place of a `2F1` past [`DIRECT_SERIES_ABOVE`]."""
+
+
+def ln_beta_small_tail(a: mp.mpf, b: mp.mpf, x: mp.mpf, y: mp.mpf) -> mp.mpf:
+    """`ln I_x(a, b)` for `x <= a / (a + b)`, by DLMF 8.17.8: `x^a y^b / (a B(a, b)) 2F1(a + b, 1; a + 1; x)`.
+
+    Every term of that `2F1` is positive, so it has nothing to cancel, unlike `betainc`'s, which differences near-equal
+    quantities near `x = 1` and does not return at balanced huge shapes (see [`beta_sf`]).
+    """
+    ln_prefactor = a * mp.log(x) + b * mp.log(y) - ln_beta_fn(a, b) - mp.log(a)
+    direct = x > DIRECT_SERIES_ABOVE and mp.isint(b)
+    try:
+        series = mp.hyp2f1(a + b, 1, a + 1, x, maxterms=HYP2F1_MAXTERMS, force_series=direct)
+    except Exception as exc:
+        msg = f"hyp2f1 did not converge ({type(exc).__name__})"
+        raise OracleUnavailableError(msg) from exc
+    return ln_prefactor + mp.log(series)
+
+
+def ln_binomial_sum(n: int, p: mp.mpf, q: mp.mpf, js: range) -> mp.mpf:
+    """`ln sum_{j in js} C(n, j) p^j q^(n - j)`, every term positive."""
+    return mp.log(mp.fsum(mp.binomial(n, j) * p**j * q ** (n - j) for j in js))
+
+
+def negative_binomial_ln_tail(params: Params, x: float, tail: NegativeBinomialTail) -> mp.mpf:
+    """`ln P(X <= x)` or `ln P(X > x)`, with `1 - p` at oracle precision.
+
+    The smaller of `I_p(r, k + 1)` and `I_{1-p}(k + 1, r)` directly, the other as `log1p(-small)`. Where the `2F1`'s
+    argument passes [`DIRECT_SERIES_ABOVE`] at an integer `r`, its terms fall too slowly to sum, and the smaller tail is
+    the finite sum `P(Binomial(r + k, p) >= r)` or its complement instead.
+    """
+    if x < 0:
+        return mp.ninf if tail == "cdf" else mp.mpf(0)
+    if math.isinf(x):
+        return mp.mpf(0) if tail == "cdf" else mp.ninf
+    r, k = mp.mpf(params[0]), math.floor(x)
+    p = mp.mpf(params[1])
+    q = 1 - p
+    if q == 0:
+        return mp.mpf(0) if tail == "cdf" else mp.ninf
+    small: NegativeBinomialTail = "cdf" if p * (r + k + 1) <= r else "sf"
+    argument = p if small == "cdf" else q
+    terms = k + 1 if small == "cdf" else int(r)
+    if mp.isint(r) and argument > DIRECT_SERIES_ABOVE and terms <= BINOMIAL_SUM_TERMS:
+        n = int(r) + k
+        js = range(int(r), n + 1) if small == "cdf" else range(int(r))
+        ln_small = ln_binomial_sum(n, p, q, js)
+    elif small == "cdf":
+        ln_small = ln_beta_small_tail(r, mp.mpf(k + 1), p, q)
+    else:
+        ln_small = ln_beta_small_tail(mp.mpf(k + 1), r, q, p)
+    if small == tail:
+        return ln_small
+    return -exp_neg(-ln_small) if ln_small < -EXP_STALLS_ABOVE else mp.log1p(-(mp.e**ln_small))
+
+
+def negative_binomial_log_cdf(params: Params, x: float) -> mp.mpf:
+    """`ln I_p(r, floor(x) + 1)`."""
+    return negative_binomial_ln_tail(params, x, "cdf")
+
+
+def negative_binomial_log_sf(params: Params, x: float) -> mp.mpf:
+    """`ln I_{1-p}(floor(x) + 1, r)`."""
+    return negative_binomial_ln_tail(params, x, "sf")
+
+
+def negative_binomial_cdf(params: Params, x: float) -> mp.mpf:
+    """`P(X <= x)`."""
+    return exp_neg(-negative_binomial_log_cdf(params, x))
+
+
+def negative_binomial_sf(params: Params, x: float) -> mp.mpf:
+    """`P(X > x)`."""
+    return exp_neg(-negative_binomial_log_sf(params, x))
+
+
+def negative_binomial_log_pmf(params: Params, x: float) -> mp.mpf:
+    """`ln Gamma(r + k) - ln Gamma(r) - ln k! + r ln p + k ln(1 - p)`, `-inf` off the support and at `+inf`."""
+    if x < 0 or not math.isfinite(x) or not x.is_integer():
+        return mp.ninf
+    r, p, k = mp.mpf(params[0]), mp.mpf(params[1]), int(x)
+    if p == 1:
+        return mp.mpf(0) if k == 0 else mp.ninf
+    return mp.loggamma(r + k) - mp.loggamma(r) - mp.loggamma(k + 1) + r * mp.log(p) + k * mp.log1p(-p)
+
+
+def negative_binomial_pmf(params: Params, x: float) -> mp.mpf:
+    """`exp` of [`negative_binomial_log_pmf`]."""
+    return exp_neg(-negative_binomial_log_pmf(params, x))
+
+
+SMALLER_TAIL_SWITCH = 0.5
+"""Past this level the library compares the other tail, at `ln(1 - q)`."""
+
+QUANTILE_TIE = mp.mpf(10) ** -12
+"""A smaller tail within this of its log target reaches it: the library's search compares with the same absolute slack
+(`STEP_TOLERANCE` in `src/distributions/mod.rs`), its documented step-boundary contract. At a step boundary such as
+`NegativeBinomial(1, 1e-3).isf(0.999)`, where `sf(0) = 1 - p` and `q` differ only by the rounding of the two literals,
+the answer is the step's own `k`."""
+
+
+def negative_binomial_quantile(params: Params, q: float, seed: float, tail: NegativeBinomialTail) -> mp.mpf:
+    """The smallest `k` with `P(X <= k) >= q` (`cdf`) or `P(X > k) <= q` (`sf`), exact on the integer support.
+
+    Compared in logs on the smaller tail, as the library compares: past `q = 1/2` the other tail against `ln(1 - q)`,
+    so [`QUANTILE_TIE`] is the same slack relative to the same tail. `p = 1` is the point mass at `0`.
+    """
+    if params[1] == 1:
+        return mp.mpf(0)
+    if q <= 0:
+        return mp.mpf(0) if tail == "cdf" else mp.inf
+    if q >= 1:
+        return mp.inf if tail == "cdf" else mp.mpf(0)
+    level = mp.mpf(q)
+    compared: NegativeBinomialTail = tail if q <= SMALLER_TAIL_SWITCH else ("sf" if tail == "cdf" else "cdf")
+    target = mp.log(level) if q <= SMALLER_TAIL_SWITCH else mp.log1p(-level)
+    mean = params[0] * (1 - params[1]) / params[1]
+    start = int(seed) if math.isfinite(seed) and seed >= 0 else math.floor(mean)
+    if compared == "cdf":
+        return smallest_from(start, lambda k: negative_binomial_log_cdf(params, float(k)) >= target - QUANTILE_TIE)
+    return smallest_from(start, lambda k: negative_binomial_log_sf(params, float(k)) <= target + QUANTILE_TIE)
+
+
+def negative_binomial_ppf(params: Params, q: float, seed: float) -> mp.mpf:
+    """Smallest support point with `cdf(k) >= q`."""
+    return negative_binomial_quantile(params, q, seed, "cdf")
+
+
+def negative_binomial_isf(params: Params, q: float, seed: float) -> mp.mpf:
+    """Smallest support point with `sf(k) <= q`."""
+    return negative_binomial_quantile(params, q, seed, "sf")
+
+
+def negative_binomial_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """NegativeBinomial support probes."""
+    r, p = params
+    return count_points(r * (1 - p) / p, math.sqrt(r * (1 - p)) / p, rng, count, snap=math.floor)
 
 
 # DiscreteUniform oracles. `params` is `(min, max)`, both bounds inclusive.
@@ -2173,6 +2338,38 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                 # The sum costs `~20 sqrt(rate)` 50-digit log-gammas, so it stops at `1e5`; the asymptotic series the
                 # library switches to at `100` only gains digits as `rate` grows.
                 AuditedMethod("entropy", poisson_entropy, SPECIAL_RTOL, max_first_param=1e5),
+            ),
+        ),
+        DistributionSpec(
+            name="NegativeBinomial",
+            build=lambda p: NegativeBinomial(r=p[0], p=p[1]),
+            param_names=("r", "p"),
+            # `r` from `1e-8` to `1e3` against `p` from `1e-8` to `1 - 1e-8`, then `r = 1e6` and `1e8` at `p = 0.3`
+            # and `1 - 1e-8`: the oracle's `2F1` takes over 10 s a probe from `r = 1e4` at `p = 1e-6`, and at
+            # `r = 1e6` it does not return for `p = 1e-3` or near the mean at `p = 0.9`. `(10, 1e-15)` puts the mean
+            # past `2 ** 53`.
+            params=(
+                *((r, p) for r in (1e-8, 1e-3, 0.5, 1.0, 10.0, 1e3) for p in (1e-8, 1e-3, 0.3, 0.9, 1.0 - 1e-8)),
+                *((r, p) for r in (1e6, 1e8) for p in (0.3, 1.0 - 1e-8)),
+                (10.0, 1e-15),
+            ),
+            methods=(
+                AuditedMethod("pmf", negative_binomial_pmf, SPECIAL_RTOL, negative_binomial_points),
+                AuditedMethod("log_pmf", negative_binomial_log_pmf, LOG_RTOL, negative_binomial_points),
+                AuditedMethod("cdf", negative_binomial_cdf, SPECIAL_RTOL, negative_binomial_points),
+                AuditedMethod("log_cdf", negative_binomial_log_cdf, LOG_RTOL, negative_binomial_points),
+                AuditedMethod("sf", negative_binomial_sf, SPECIAL_RTOL, negative_binomial_points),
+                AuditedMethod("log_sf", negative_binomial_log_sf, LOG_RTOL, negative_binomial_points),
+                AuditedMethod("ppf", negative_binomial_ppf, DISCRETE_PPF_RTOL, quantile_points, seeded_oracle=True),
+                AuditedMethod("isf", negative_binomial_isf, DISCRETE_PPF_RTOL, survival_points, seeded_oracle=True),
+                AuditedMethod("mean", lambda p, _x: mp.mpf(p[0]) * (1 - mp.mpf(p[1])) / mp.mpf(p[1]), CLOSED_FORM_RTOL),
+                AuditedMethod(
+                    "variance", lambda p, _x: mp.mpf(p[0]) * (1 - mp.mpf(p[1])) / mp.mpf(p[1]) ** 2, CLOSED_FORM_RTOL
+                ),
+                AuditedMethod(
+                    "std", lambda p, _x: mp.sqrt(mp.mpf(p[0]) * (1 - mp.mpf(p[1]))) / mp.mpf(p[1]), CLOSED_FORM_RTOL
+                ),
+                AuditedMethod("median", at_median_seeded(negative_binomial_ppf), DISCRETE_PPF_RTOL, seeded_oracle=True),
             ),
         ),
         DistributionSpec(

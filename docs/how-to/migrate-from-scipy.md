@@ -45,6 +45,7 @@ Some of these translations are not identities, so check this table rather than g
 | `bernoulli(p)` | `Bernoulli(p=p)` | same meaning |
 | `binom(n, p)` | `Binomial(n=n, p=p)` | same meaning |
 | `geom(p)` | `Geometric(p=p)` | same meaning; `p = 0` raises here, `scipy` allows it |
+| `nbinom(n, p)` | `NegativeBinomial(r=n, p=p)` | **`n` is `r`**, the number of successes; both count failures, not trials. `p = 0` raises here, and `entropy` raises `NotImplementedError` |
 | `poisson(mu)` | `Poisson(rate=mu)` | **`mu` is the `rate`** λ, named as in `Exponential` and `Gamma`; `mu = 0` raises here, `scipy` allows it |
 | `randint(low=min, high=max + 1)` | `DiscreteUniform(min=min, max=max)` | **`high` is exclusive, `max` is inclusive**: pass `max = high - 1` |
 

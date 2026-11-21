@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         "gamma",
         "geometric",
         "lognormal",
+        "negativebinomial",
         "normal",
         "pareto",
         "poisson",

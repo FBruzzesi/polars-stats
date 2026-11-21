@@ -5,8 +5,10 @@ use rand_distr::Binomial as BinomialSampler;
 use statrs::distribution::{Binomial, Discrete, DiscreteCDF};
 use statrs::statistics::Distribution as StatrsDistribution;
 
+use crate::distributions::beta::IncompleteBeta;
 use crate::distributions::{
     coerce_f64, param_keyed, validated_pair, value_keyed_scalar, value_keyed_ternary, ParamDomain,
+    Tail,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row_ternary,
@@ -182,6 +184,36 @@ fn sf_value(dist: &Binomial, v: f64) -> Option<f64> {
     }
 }
 
+/// `P(X > k) = I_p(k + 1, n - k)` for `0 <= k < n`, its complement `P(X <= k)`; `None` at `k >= n`, where
+/// the whole mass is at or below `k`. Both tails are keyed on `p` itself: building `1 - p` for the textbook
+/// `I_{1-p}(n - k, k + 1)` rounds a tiny `p` to `1` and loses the whole upper tail.
+fn ln_tail(dist: &Binomial, v: f64, tail: Tail) -> Option<f64> {
+    let k = v.floor() as u64;
+    let n = dist.n();
+    (k < n).then(|| {
+        let p = dist.p();
+        IncompleteBeta::new((k + 1) as f64, (n - k) as f64)
+            .tails(p, 1.0 - p)
+            .ln_probability(tail)
+    })
+}
+
+fn ln_cdf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    Some(if v < 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        ln_tail(dist, v, Tail::Upper).unwrap_or(0.0)
+    })
+}
+
+fn ln_sf_value(dist: &Binomial, v: f64) -> Option<f64> {
+    Some(if v < 0.0 {
+        0.0
+    } else {
+        ln_tail(dist, v, Tail::Lower).unwrap_or(f64::NEG_INFINITY)
+    })
+}
+
 /// Relative slack on the cdf-step comparison in [`inverse_cdf`]. The regularized-incomplete-beta
 /// cdf is accurate to a few ulp (`~1e-15`), so `1e-12` treats `cdf(k) == q` as satisfied (scipy's
 /// integer-valued `ppf`) while staying far below the gap between adjacent cdf values. Relative, not
@@ -240,8 +272,18 @@ fn binomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
 }
 
 #[polars_expr(output_type=Float64)]
+fn binomial_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_cdf_value)
+}
+
+#[polars_expr(output_type=Float64)]
 fn binomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
     value_keyed(inputs, sf_value)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
+    value_keyed(inputs, ln_sf_value)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -270,8 +312,18 @@ fn binomial_cdf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResul
 }
 
 #[polars_expr(output_type=Float64)]
+fn binomial_ln_cdf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_cdf_value)
+}
+
+#[polars_expr(output_type=Float64)]
 fn binomial_sf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
     kwargs.value_keyed(&inputs[0], sf_value)
+}
+
+#[polars_expr(output_type=Float64)]
+fn binomial_ln_sf_scalar(inputs: &[Series], kwargs: BinomialParams) -> PolarsResult<Series> {
+    kwargs.value_keyed(&inputs[0], ln_sf_value)
 }
 
 #[polars_expr(output_type=Float64)]

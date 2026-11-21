@@ -36,12 +36,19 @@ from tests._registry import (
     compares_bit_exactly,
     density,
     log_density,
+    moment_is_unimplemented,
 )
 
 if TYPE_CHECKING:
     from tests._registry import DistSpec, Moment
 
 _MOMENTS: tuple[Moment, ...] = ("mean", "variance", "std", "entropy")
+_IMPLEMENTED_PAIRS = [
+    pytest.param(spec, moment, id=f"{moment}-{spec.name}")
+    for moment in _MOMENTS
+    for spec in ALL_SPECS
+    if not moment_is_unimplemented(spec.name, moment)
+]
 
 # Uneven partitions on purpose: a length-1 validity gate that quietly broadcast against the whole
 # frame instead of the partition would match on equal-sized groups and diverge here.
@@ -108,8 +115,7 @@ def _assert_matches_across_contexts(
 
 
 @settings(max_examples=10)
-@pytest.mark.parametrize("spec", ALL_SPECS, ids=lambda s: s.name)
-@pytest.mark.parametrize("moment", _MOMENTS)
+@pytest.mark.parametrize(("spec", "moment"), _IMPLEMENTED_PAIRS)
 @given(data=st.data())
 def test_moment_fast_path_matches_per_row_across_contexts(spec: DistSpec, moment: Moment, data: st.DataObject) -> None:
     """Each closed-form moment's scalar fast path equals the per-row path under every context."""

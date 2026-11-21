@@ -28,6 +28,7 @@ For worked examples, see the [tutorial](../tutorial.md) and the [How-to guides](
 | `Binomial(n, p)` | discrete | `n >= 0`, `0 <= p <= 1` | `binom(n, p)` |
 | `DiscreteUniform(min, max)` | discrete | `min <= max`, both inclusive | `randint(low=min, high=max + 1)`; **`max` is inclusive** |
 | `Geometric(p)` | discrete | `0 < p <= 1` | `geom(p)` |
+| `NegativeBinomial(r, p)` | discrete | `r > 0`, `0 < p <= 1` | `nbinom(n=r, p=p)`; counts failures, `r` need not be an integer; `entropy` raises |
 | `Poisson(rate)` | discrete | `rate > 0` | `poisson(mu=rate)`; `mu = 0` is a point mass there and raises here |
 
 Each class names its parameters after the distribution's conventional parameters. `Normal` and `LogNormal` default to
@@ -59,8 +60,7 @@ name (`str`), or a `pl.Expr`; argument-free statistics take none. All return a `
 
 Every value-keyed method runs in Rust (a native `statrs` binding or a hand-written stable form); `median` is
 `ppf(0.5)` unless a closed form exists, and `std` is `sqrt(variance)` unless a form with a wider representable range
-does. The exceptions are `Beta` and `Binomial`, whose `log_cdf` / `log_sf` are `log(cdf)` / `log(sf)` for now (see
-[Accuracy](../explanation/accuracy.md)).
+does.
 
 Argument-free statistics return one value per row of parameters: with column-valued parameters, `mean()` yields the
 mean of a different distribution on every row. A moment the distribution does not have is **null**, one whose

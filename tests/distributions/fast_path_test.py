@@ -33,6 +33,7 @@ from tests._registry import (
     constant_column,
     density,
     invalid_cases,
+    moment_is_unimplemented,
     point_column,
 )
 
@@ -66,6 +67,11 @@ def test_the_moment_paths_agree_on_validation(spec: DistSpec, case: InvalidCase)
 
 _DEGENERATE_CASES = [
     pytest.param(SPECS_BY_NAME[name], params, id=label) for label, (name, params) in DEGENERATE.items()
+]
+_DEGENERATE_ENTROPY_CASES = [
+    pytest.param(SPECS_BY_NAME[name], params, id=label)
+    for label, (name, params) in DEGENERATE.items()
+    if not moment_is_unimplemented(name, "entropy")
 ]
 
 
@@ -196,7 +202,7 @@ def test_moment_fast_path_on_empty_frame_is_a_scalar() -> None:
     assert empty.select(r=Normal(constant_column(0.0), constant_column(-1.0)).variance()).height == 0
 
 
-@pytest.mark.parametrize(("spec", "params"), _DEGENERATE_CASES)
+@pytest.mark.parametrize(("spec", "params"), _DEGENERATE_ENTROPY_CASES)
 def test_degenerate_valid_params_entropy_is_zero(spec: DistSpec, params: tuple[float, ...]) -> None:
     """All the mass on one point means no uncertainty, so every one of these is exactly `0`.
 

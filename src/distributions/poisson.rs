@@ -4,19 +4,19 @@
 //! `rate ln(rate)`-sized terms cancel to an error of `2.5e-7` in the log at `rate = 1e8`; Stirling's form of the
 //! prefactor has nothing to cancel.
 
-use std::f64::consts::{LN_2, SQRT_2};
+use std::f64::consts::LN_2;
 
 use polars::prelude::arity::unary_elementwise;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rand::distr::Distribution as RandDistribution;
 use rand_distr::Poisson as PoissonSampler;
-use statrs::function::erf::erfc_inv;
 
-use crate::distributions::gamma::{IncompleteGamma, Tail, Tails, LN_2PI_E};
+use crate::distributions::gamma::{IncompleteGamma, LN_2PI_E};
 use crate::distributions::{
-    coerce_f64, on_unit_interval, polynomial, validated_param, value_keyed_derived_binary,
-    value_keyed_scalar, ParamDomain,
+    coerce_f64, discrete_cdf, discrete_isf, discrete_ln_cdf, discrete_ln_pmf, discrete_ln_sf,
+    discrete_pmf, discrete_ppf, discrete_quantile, discrete_sf, polynomial, validated_param,
+    value_keyed_derived_binary, value_keyed_scalar, DiscreteTails, ParamDomain, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_binary, samples_by_index, samples_per_row_binary,
@@ -24,11 +24,6 @@ use crate::rng::{
 };
 
 const RATE: ParamDomain = ParamDomain::positive("rate");
-
-/// `P(X <= k)`, the upper incomplete gamma at shape `floor(k) + 1`.
-const CDF: Tail = Tail::Upper;
-/// `P(X > k)`, the lower one.
-const SF: Tail = Tail::Lower;
 
 /// Constant parameter, deserialised once per call; every `_scalar` twin checks it once here.
 #[derive(serde::Deserialize)]
@@ -58,12 +53,6 @@ fn poisson_rate(inputs: &[Series]) -> PolarsResult<Series> {
     validated_param(inputs, &RATE)
 }
 
-/// Relative slack on the inverses' step comparison, as `binomial.rs`'s `PPF_CDF_TOL`. The tails are
-/// compared as logs, where it is an absolute slack, so `cdf(k)` or `sf(k)` itself inverts to `k`
-/// whichever way its last ulp rounded. Once the tail compared is `1 - q` below about `5e-5`, the
-/// rounding of `q` exceeds the slack and the answer can be `k + 1`.
-const STEP_TOLERANCE: f64 = 1e-12;
-
 /// `ln(k!)` for `k = 0..=9`, correctly rounded: the shapes below `gamma.rs`'s Stirling switch, where
 /// [`IncompleteGamma`] reads `ln Gamma(k + 1)` off statrs' `ln_gamma`, which is up to `3e-14` off.
 const LN_FACTORIALS: [f64; 10] = [
@@ -92,9 +81,13 @@ impl Poisson {
             ln_rate: rate.ln(),
         }
     }
+}
 
-    /// Both tails at a point `k >= 0`, or `None` at `k = +inf`, which no gamma shape stands for and
-    /// which has the whole mass below it.
+impl DiscreteTails for Poisson {
+    /// `P(X <= k)`, the upper incomplete gamma at shape `floor(k) + 1`.
+    const CDF: Tail = Tail::Upper;
+
+    /// No gamma shape stands for `k = +inf`, so it answers `None` there.
     fn tails_at(&self, k: f64) -> Option<Tails> {
         k.is_finite()
             .then(|| IncompleteGamma::new(k.floor() + 1.0).tails(self.rate, self.ln_rate))
@@ -112,229 +105,99 @@ impl Poisson {
         }
     }
 
-    /// The smallest support point where `tail` has reached the level `exp(ln_target)`: `P(X <= k) >=`
-    /// it for [`CDF`], `P(X > k) <=` it for [`SF`], each within [`STEP_TOLERANCE`].
-    ///
-    /// The gallop out from `seed` starts at one float spacing, so no step vanishes above `2^53`. Down,
-    /// it stops at `0`; up, it ends because `+inf` reaches either level. The bisection ends once no
-    /// float lies strictly inside the bracket.
-    fn smallest_reaching(&self, tail: Tail, ln_target: f64, seed: f64) -> f64 {
-        let reached = |k: f64| {
-            self.tails_at(k).is_none_or(|tails| {
-                let ln_probability = tails.ln_probability(tail);
-                if tail == CDF {
-                    ln_probability >= ln_target - STEP_TOLERANCE
-                } else {
-                    ln_probability <= ln_target + STEP_TOLERANCE
-                }
-            })
-        };
-        let mut step = (seed * f64::EPSILON).max(1.0);
-        let (mut lo, mut hi) = if reached(seed) {
-            let mut hi = seed;
-            loop {
-                if hi == 0.0 {
-                    return 0.0;
-                }
-                let below = (hi - step).max(0.0);
-                if !reached(below) {
-                    break (below, hi);
-                }
-                hi = below;
-                step *= 2.0;
-            }
-        } else {
-            let mut lo = seed;
-            loop {
-                let above = lo + step;
-                if reached(above) {
-                    break (lo, above);
-                }
-                lo = above;
-                step *= 2.0;
-            }
-        };
-        loop {
-            let mid = (lo + (hi - lo) / 2.0).floor();
-            if mid <= lo || mid >= hi {
-                return hi;
-            }
-            if reached(mid) {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
-        }
-    }
-
-    /// The smallest `k` with `P(X <= k) >= q` for [`CDF`], or with `P(X > k) <= q` for [`SF`], for
-    /// `q` in `[0, 1]`. Past `q = 1/2` it compares the other tail at `ln(1 - q)`, exact by Sterbenz,
-    /// so the comparison is always on the smaller tail. A target of `ln 0` is the support edge:
-    /// `ppf(0)` and `isf(1)` are `0`, and `ppf(1)` and `isf(0)` are `+inf`, which `P(X > k)` never
-    /// reaches.
-    ///
-    /// The search is seeded at the continuity-corrected Cornish-Fisher estimate
-    /// `rate + z sqrt(rate) + (z^2 - 1) / 6 - 1/2`, `z` the normal quantile of the cdf level: in the
-    /// bulk the gallop brackets the answer in two or three evaluations, where a search from `0` takes
+    /// Seeded at the continuity-corrected Cornish-Fisher estimate `rate + z sqrt(rate) + (z^2 - 1) / 6 - 1/2`: in
+    /// the bulk the gallop brackets the answer in two or three evaluations, where a search from `0` takes
     /// `log2(rate)`.
     fn quantile(&self, tail: Tail, q: f64) -> f64 {
-        let (smaller, ln_target) = if q <= 0.5 {
-            (tail, q.ln())
-        } else {
-            (tail.complement(), (-q).ln_1p())
-        };
-        if ln_target == f64::NEG_INFINITY {
-            return if smaller == CDF { 0.0 } else { f64::INFINITY };
-        }
-        let z = if tail == CDF {
-            -SQRT_2 * erfc_inv(2.0 * q)
-        } else {
-            SQRT_2 * erfc_inv(2.0 * q)
-        };
-        let seed = (self.rate + z * self.rate.sqrt() + (z * z - 1.0) / 6.0 - 0.5).ceil();
-        self.smallest_reaching(smaller, ln_target, seed.clamp(0.0, f64::MAX))
+        let rate = self.rate;
+        discrete_quantile(
+            |k| self.tails_at(k),
+            Self::CDF,
+            tail,
+            q,
+            |z| rate + z * rate.sqrt() + (z * z - 1.0) / 6.0 - 0.5,
+        )
     }
-}
-
-/// `-inf` off the support: below `0`, a non-integral point, and `+inf`, which `floor` keeps integral.
-fn ln_pmf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    Some(if k >= 0.0 && k.floor() == k && k.is_finite() {
-        poisson.ln_mass(k)
-    } else {
-        f64::NEG_INFINITY
-    })
-}
-
-fn pmf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    ln_pmf_value(poisson, k).map(f64::exp)
-}
-
-fn cdf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        0.0
-    } else {
-        poisson
-            .tails_at(k)
-            .map_or(1.0, |tails| tails.probability(CDF))
-    })
-}
-
-fn ln_cdf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        f64::NEG_INFINITY
-    } else {
-        poisson
-            .tails_at(k)
-            .map_or(0.0, |tails| tails.ln_probability(CDF))
-    })
-}
-
-fn sf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        1.0
-    } else {
-        poisson
-            .tails_at(k)
-            .map_or(0.0, |tails| tails.probability(SF))
-    })
-}
-
-fn ln_sf_value(poisson: &Poisson, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        0.0
-    } else {
-        poisson
-            .tails_at(k)
-            .map_or(f64::NEG_INFINITY, |tails| tails.ln_probability(SF))
-    })
-}
-
-fn ppf_value(poisson: &Poisson, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| poisson.quantile(CDF, q), q)
-}
-
-fn isf_value(poisson: &Poisson, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| poisson.quantile(SF, q), q)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, pmf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, ln_pmf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_ln_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, cdf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, ln_cdf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_ln_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, sf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, ln_sf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_ln_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, ppf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_ppf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_binary(inputs, &RATE, Poisson::new, isf_value)
+    value_keyed_derived_binary(inputs, &RATE, Poisson::new, discrete_isf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_pmf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], pmf_value)
+    kwargs.value_keyed(&inputs[0], discrete_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_pmf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_pmf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_cdf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], cdf_value)
+    kwargs.value_keyed(&inputs[0], discrete_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_cdf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_cdf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_sf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], sf_value)
+    kwargs.value_keyed(&inputs[0], discrete_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ln_sf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_sf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_ppf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ppf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ppf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn poisson_isf_scalar(inputs: &[Series], kwargs: PoissonParams) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], isf_value)
+    kwargs.value_keyed(&inputs[0], discrete_isf)
 }
 
 /// From this `rate` the entropy is its asymptotic series, truncated `8e-17` relative here and falling
