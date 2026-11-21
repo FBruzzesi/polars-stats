@@ -24,4 +24,6 @@ classes follow, alphabetically, and list only what they define or override.
 
 ::: polars_stats.Geometric
 
+::: polars_stats.NegativeBinomial
+
 ::: polars_stats.Poisson

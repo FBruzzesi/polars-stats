@@ -50,8 +50,8 @@ The table below is the rule, which every distribution follows. Method by method:
 | `ppf` | **always** | `*CDF::inverse_cdf`, a closed form for some families and a binary search for others. Which one sets the parity tolerance. Elementary inverses are hand-written Rust bodies, for the same arm-masking reason, and so is `Gamma`'s, a bracketed Newton iteration on its log tails. |
 | `log_pdf` / `log_pmf` | **always** | Bind the native `ln_pdf` / `ln_pmf` whenever `statrs` has one, otherwise hand-write the body; `pdf(x).log()` would underflow. |
 | `sf` | **always** | Bind native `*CDF::sf` when present: better upper-tail accuracy than `1 - cdf`. |
-| `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. `Beta` and `Binomial` have none yet and override the hook with `log(cdf)` / `log(sf)`, see [Accuracy](accuracy.md). See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
-| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma (`Beta`, `Gamma`, `ChiSquared`). |
+| `log_cdf` / `log_sf` | **always** | `statrs` exposes neither, so there is nothing to bind and nothing safe to inherit; each is a hand-written Rust body. See [Contributing > Numerical stability](../contributing.md#numerical-stability). |
+| `mean`, `variance`, `entropy` | Polars if closed-form | `n * p`, `loc`, `1 / rate`, `log(4 * pi * scale)`. Rust only where there is no closed form: a support sum, a gamma function (`Weibull`'s `mean`, `variance`, `std`), or log-gamma plus digamma (`Beta`, `Gamma`, `ChiSquared`). `NegativeBinomial` has neither a closed form nor an affordable sum (`O(sd)` terms per row), so its `entropy` raises `NotImplementedError`. |
 | `median` | override the default | The base default is `ppf(0.5)`. Bind native `Median::median` only where it agrees with scipy; Binomial's does not. |
 | `std` | override the default | The base default `variance().sqrt()` saturates long before the answer does. Polars where the formula is closed-form, Rust where it needs a special function (`Weibull`). |
 | `isf` | **always** | Solved against `q` itself: `ppf(1 - q)` saturates long before the answer does and, formed in polars, meets the quantile column ahead of the Rust dtype gate. It is value-keyed, so it carries the same arm-masking constraint as `ppf`. |
@@ -104,10 +104,10 @@ path is selected only when the parameters are known scalars, so nothing column-v
 The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; they compute a Polars expression. But
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
-`pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`, `chisquared_dof`) so an invalid parameterisation raises
-the same `ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see
-"Invalid parameters raise"). With column parameters that plugin checks each parameter column once, over the whole
-column, before any row is built.
+`pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`, `chisquared_dof`, `negativebinomial_p`) so an invalid
+parameterisation raises the same `ComputeError` as the sampler and value-keyed methods rather than silently producing
+a nonsense moment (see "Invalid parameters raise"). With column parameters that plugin checks each parameter column
+once, over the whole column, before any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy`, `Binomial.entropy`, `Gamma.entropy`, `ChiSquared.entropy`,
@@ -156,7 +156,8 @@ cancel to a number of order `ln(rate)`. The comparison is off by `5.5e-3` in the
 factor of `e` from `1e15`, where it accepts its logistic proposal outright. That proposal shares the Poisson's mean and
 variance, so the draws look right on both, but carry its excess kurtosis: `1.0` at `rate = 1e16`, where a Poisson's is
 `1e-16`. `rand_distr`'s (Knuth's product of uniforms below `rate = 12`, Ahrens and Dieter's PD above it) reads the same
-ratio off `ln(1 + v)` with `v = (rate - k) / k`, which has nothing to cancel.
+ratio off `ln(1 + v)` with `v = (rate - k) / k`, which has nothing to cancel. `NegativeBinomial` draws its count
+from `rand_distr::Poisson` too, at a Gamma rate, so it rests on the same algorithm.
 
 ### Invalid parameters raise, they never silently null
 
@@ -195,4 +196,5 @@ parameter, and because raising makes a mixed `select` unusable: one column havin
 The cost is real and belongs in the class docstring rather than being hidden: a null is silently absorbed by a
 downstream `.mean()`, `.sum()` or `.drop_nulls()`, so a user who does not know `Cauchy.mean()` is null can lose rows
 without noticing. `NotImplementedError` is reserved for a quantity this library has not implemented, such as a
-`NegativeBinomial` entropy with no closed form at all.
+`NegativeBinomial` entropy with no closed form at all. It raises as the expression is built, on both parameter
+routings, so a query that asks for it fails before it runs rather than carrying a null that means something else.

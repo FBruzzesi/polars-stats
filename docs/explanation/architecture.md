@@ -34,8 +34,7 @@ out, matching scipy). Nothing sits between the hook and the caller;
 the base hook for each value-keyed method calls the plugin `<name>_<method>` (`normal_cdf`, `beta_ln_pdf`, ...) through
 `_value_plugin`, or its `<name>_<method>_scalar` twin when every parameter is constant. The valid names are `Literal`
 aliases in `polars_stats/_typing.py`, so a typo is a type error. A subclass overrides a hook only where the Rust body
-does not exist yet: `Beta` and `Binomial` compose `log_cdf` / `log_sf` as `log(cdf)` / `log(sf)`, which underflow in
-the tails (see [Accuracy](accuracy.md)). **Override the private `_x` hook, never the public method**: the public
+does not exist. **Override the private `_x` hook, never the public method**: the public
 methods only coerce, and `median` (`ppf(0.5)`) and `std` (`variance().sqrt()`) are composed from the hooks and public
 moments, so a public override is bypassed by everything built on it.
 

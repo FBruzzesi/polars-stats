@@ -33,18 +33,16 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 ## Use the log methods in the tails, where they are log methods
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
-limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `Poisson` and the
-closed-form distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`,
-`DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the right methods for tail
-scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on those thirteen: forming the complement quantises the tail mass to
-`1.1e-16` absolute before any inverse runs.
+limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `Beta`, `Binomial`,
+`Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Exponential`, `Cauchy`, `Pareto`,
+`Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and `log_sf` stay finite far past that and are the
+right methods for tail scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on all of those but `Beta` and `Binomial`:
+forming the complement quantises the tail mass to `1.1e-16` absolute before any inverse runs.
 
-In this release that advice does **not** extend to `Beta` and `Binomial`. Their `log_cdf` / `log_sf`
-are the linear value's logarithm, so they return `-inf` at exactly the point where `cdf` / `sf`
-underflow, and their `isf` is the `ppf(1 - quantile)` composition, so it carries the complement's
-quantisation (`1.1e-16 / q` relative, and for `q` below `1.1e-16` the complement is exactly `1.0`,
-so `Beta.isf` returns the upper support bound `1.0` and `Binomial.isf` returns `n`). The regimes and
-magnitudes are in the inherited limits below.
+In this release that half of the advice does **not** extend to `Beta` and `Binomial`: their `isf` is the
+`ppf(1 - quantile)` composition, so it carries the complement's quantisation (`1.1e-16 / q` relative, and for `q`
+below `1.1e-16` the complement is exactly `1.0`, so `Beta.isf` returns the upper support bound `1.0` and
+`Binomial.isf` returns `n`). The regimes and magnitudes are in the inherited limits below.
 
 ## Known limits
 
@@ -52,8 +50,8 @@ magnitudes are in the inherited limits below.
 
 * **Discrete `ppf` / `isf` at a step boundary.** `Binomial.ppf` is a binary search resolved to the
   cdf's own precision, so a quantile within `1e-12` *relative* of a cdf step may return the
-  neighbouring support point. `Poisson.ppf` / `isf` search the same way, comparing whichever tail is
-  smaller at the quantile in log space, so the `1e-12` is relative in both tails and `ppf(cdf(k))` is
+  neighbouring support point. `Poisson` and `NegativeBinomial` `ppf` / `isf` search the same way, comparing
+  whichever tail is smaller at the quantile in log space, so the `1e-12` is relative in both tails and `ppf(cdf(k))` is
   `k` wherever `1 - q` still resolves the tail it is compared against. `Geometric.ppf` / `isf` decide
   the same tie in the log domain, testing `k * log1p(-p)` against `log1p(-q)` rather than re-deriving
   `cdf(k)`. That is deliberate: across
@@ -209,13 +207,31 @@ magnitudes are in the inherited limits below.
     `Poisson(1e20).cdf(1e20)` is `1.3e-11` below one half where the exact value is above it. `pmf` reads the shape
     `k` itself and is unaffected; `scipy`'s `poisson.cdf` rounds the same way. The audited range is `rate` in `1e-8`
     to `1e8`.
+* **`Beta` and `Binomial` `log_cdf` / `log_sf`, and every `NegativeBinomial` tail, read a log-space regularized
+  incomplete beta**: DLMF 8.17.7's power series where the first shape is at most `1`, DiDonato and Morris' continued
+  fraction (TOMS 708 `bfrac`) otherwise, and a prefactor in Stirling's form from shapes of `10`, which has no
+  `ln_gamma`-sized terms to cancel. The probes agree with the oracle to `2e-14` relative. Its one cost is a point
+  exactly at the mean, `x = a / (a + b)`, where the continued fraction runs longest and its rounding grows with the
+  shapes: `0.2 ms` a row at `a = b = 1e12`, and `1.9 ms` and `1.5e-13` relative at `1e15`. From `a + b ~ 2e16` it
+  stops at a million terms and answers `NaN` there; one standard deviation away takes microseconds. `Beta` and
+  `Binomial`'s linear `cdf` / `sf` still run `statrs` (below).
+* **`NegativeBinomial(r, p)` reads that incomplete beta at `x = p`.** `cdf` is `I_p(r, k + 1)` and `sf` its complement,
+  both keyed on `p` itself, and `pmf` is its prefactor at shapes `(r, k)` over `k`. `scipy`'s `logpmf` is a `gammaln`
+  difference, `7.3e-11` absolute off at `r = 300, p = 0.01`, so parity against it is looser than the oracle there. As
+  for `Poisson`, past `2 ** 53` the shape `k + 1` of an integer `k` rounds to a neighbouring float. The audited range
+  is `r` in `1e-8` to `1e3` against `p` in `1e-8` to `1 - 1e-8`, and `r` of `1e6` and `1e8` at `p = 0.3` and
+  `1 - 1e-8`: elsewhere at those `r` the oracle's hypergeometric series does not return. `entropy` raises
+  `NotImplementedError`: it has no closed form, and the support sum costs `O(sd)` terms a row.
 * **`UInt64` range, for a discrete sample.** `Geometric.sample` draws a trial count, which averages
   `1 / p`, so a small enough `p` puts the draw past `u64::MAX`, where it saturates. A single draw
   does so with probability `exp(-u64::MAX * p)`: negligible at `p = 1e-18`, 16% at `1e-19` and 83%
   at `1e-20`. `mean()` and the other moments are `Float64` and stay exact far past that.
   `Poisson.sample` / `samples` raise `ComputeError` for a `rate` above `1.844e19` instead: a draw averages
   `rate`, so past it nearly every draw would saturate to the same count, while the value-keyed methods
-  still answer there. No other sampler has a reachable limit: `Bernoulli` is `Boolean` and
+  still answer there. `NegativeBinomial.sample` / `samples` draw a Poisson count at a Gamma rate, so they refuse a
+  mean `r (1 - p) / p` above `1.844e19` the same way, and raise `ComputeError` if a single draw's rate still passes
+  it, which a small `r` makes possible below that mean: at `r = 1e-3` and a mean of `1e17`, about one draw in 780.
+  No draw saturates. No other sampler has a reachable limit: `Bernoulli` is `Boolean` and
   `Binomial`'s count is bounded by `n`.
 
 ### Inherited from `statrs` 0.19, tracked upstream
@@ -236,13 +252,7 @@ the contract at the bottom of this page, a bullet comes out of this list when a 
   well-behaved. `isf` composes `ppf(1 - q)`, so it shares all three regimes on top of the complement
   quantisation above. Filed upstream:
   [statrs#435](https://github.com/statrs-dev/statrs/issues/435).
-* **`Beta` and `Binomial` `log_cdf` / `log_sf` are linear compositions.** They return `-inf` as soon
-  as `cdf` / `sf` underflows: `Beta(200, 2).log_cdf(0.001)` is `-inf` against a true `-1376.25`, and
-  `Binomial(100_000, 0.001).log_sf(5000)` is `-inf` against a true `-14791.39`. `scipy`'s `logcdf` /
-  `logsf` are naive for this family too, so the two libraries agree while both are `-inf`. The fix is
-  a log-space regularized incomplete beta, tracked upstream as
-  [statrs PR #421](https://github.com/statrs-dev/statrs/pull/421).
-* **`Beta` and `Binomial` at very large shapes.** `cdf` / `sf` run `statrs`' regularized
+* **`Beta` and `Binomial` at very large shapes.** `cdf` / `sf`, though not the log pair, run `statrs`' regularized
   incomplete-beta continued fraction
   ([`beta_reg`](https://github.com/statrs-dev/statrs/blob/v0.19.1/src/function/beta.rs#L130)), which
   stops at 141 terms. That cap is first exceeded somewhere between shapes of `1e4` and `1e5`, after
