@@ -14,8 +14,9 @@ use statrs::distribution::Gamma;
 
 use crate::distributions::beta::IncompleteBeta;
 use crate::distributions::{
-    coerce_f64, discrete_quantile, on_unit_interval, validated_pair, value_keyed_derived_ternary,
-    value_keyed_scalar, ParamDomain, Rule, Tail, Tails,
+    coerce_f64, discrete_cdf, discrete_isf, discrete_ln_cdf, discrete_ln_pmf, discrete_ln_sf,
+    discrete_pmf, discrete_ppf, discrete_quantile, discrete_sf, validated_pair,
+    value_keyed_derived_ternary, value_keyed_scalar, DiscreteTails, ParamDomain, Rule, Tail, Tails,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_per_row_ternary,
@@ -28,11 +29,6 @@ const P: ParamDomain = ParamDomain {
     name: "p",
     rule: Rule::PositiveProbability,
 };
-
-/// `P(X <= k)`, the lower incomplete beta `I_p(r, k + 1)`.
-const CDF: Tail = Tail::Lower;
-/// `P(X > k)`, its complement.
-const SF: Tail = Tail::Upper;
 
 fn check_params(r: &Float64Chunked, p: &Float64Chunked) -> PolarsResult<()> {
     R.check_column(r)?;
@@ -94,8 +90,12 @@ impl NegativeBinomial {
             ln_q: if q <= p { q.ln() } else { (-p).ln_1p() },
         }
     }
+}
 
-    /// Both tails at a point `k >= 0`, or `None` at `k = +inf`, which has the whole mass below it.
+impl DiscreteTails for NegativeBinomial {
+    /// `P(X <= k)`, the lower incomplete beta `I_p(r, k + 1)`.
+    const CDF: Tail = Tail::Lower;
+
     fn tails_at(&self, k: f64) -> Option<Tails> {
         k.is_finite()
             .then(|| IncompleteBeta::new(self.r, k.floor() + 1.0).tails(self.p, self.q))
@@ -110,9 +110,8 @@ impl NegativeBinomial {
         IncompleteBeta::new(self.r, k).ln_prefactor(self.p, self.q, self.ln_p, self.ln_q) - k.ln()
     }
 
-    /// The smallest `k` with `P(X <= k) >= level` for [`CDF`], or with `P(X > k) <= level` for [`SF`], seeded at the
-    /// continuity-corrected Cornish-Fisher estimate `mean + sd (z + skew (z^2 - 1) / 6) - 1/2`, whose `sd skew` is
-    /// `(1 + q) / p`. At `p = 1` every quantile is the point mass at `0`.
+    /// Seeded at the continuity-corrected Cornish-Fisher estimate `mean + sd (z + skew (z^2 - 1) / 6) - 1/2`, whose
+    /// `sd skew` is `(1 + q) / p`. At `p = 1` every quantile is the point mass at `0`.
     fn quantile(&self, tail: Tail, level: f64) -> f64 {
         let (r, p, q) = (self.r, self.p, self.q);
         if q == 0.0 {
@@ -120,7 +119,7 @@ impl NegativeBinomial {
         }
         discrete_quantile(
             |k| self.tails_at(k),
-            CDF,
+            Self::CDF,
             tail,
             level,
             |z| r * q / p + (r * q).sqrt() / p * z + (1.0 + q) * (z * z - 1.0) / (6.0 * p) - 0.5,
@@ -128,99 +127,44 @@ impl NegativeBinomial {
     }
 }
 
-/// `-inf` off the support: below `0`, a non-integral point, and `+inf`, which `floor` keeps integral.
-fn ln_pmf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    Some(if k >= 0.0 && k.floor() == k && k.is_finite() {
-        dist.ln_mass(k)
-    } else {
-        f64::NEG_INFINITY
-    })
-}
-
-fn pmf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    ln_pmf_value(dist, k).map(f64::exp)
-}
-
-fn cdf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        0.0
-    } else {
-        dist.tails_at(k).map_or(1.0, |tails| tails.probability(CDF))
-    })
-}
-
-fn ln_cdf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        f64::NEG_INFINITY
-    } else {
-        dist.tails_at(k)
-            .map_or(0.0, |tails| tails.ln_probability(CDF))
-    })
-}
-
-fn sf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        1.0
-    } else {
-        dist.tails_at(k).map_or(0.0, |tails| tails.probability(SF))
-    })
-}
-
-fn ln_sf_value(dist: &NegativeBinomial, k: f64) -> Option<f64> {
-    Some(if k < 0.0 {
-        0.0
-    } else {
-        dist.tails_at(k)
-            .map_or(f64::NEG_INFINITY, |tails| tails.ln_probability(SF))
-    })
-}
-
-fn ppf_value(dist: &NegativeBinomial, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| dist.quantile(CDF, q), q)
-}
-
-fn isf_value(dist: &NegativeBinomial, q: f64) -> Option<f64> {
-    on_unit_interval(&|q| dist.quantile(SF, q), q)
-}
-
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, pmf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_ln_pmf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, ln_pmf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_ln_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, cdf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_ln_cdf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, ln_cdf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_ln_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, sf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_ln_sf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, ln_sf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_ln_sf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_ppf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, ppf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_ppf)
 }
 
 #[polars_expr(output_type=Float64)]
 fn negativebinomial_isf(inputs: &[Series]) -> PolarsResult<Series> {
-    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, isf_value)
+    value_keyed_derived_ternary(inputs, check_params, NegativeBinomial::new, discrete_isf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -228,7 +172,7 @@ fn negativebinomial_pmf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], pmf_value)
+    kwargs.value_keyed(&inputs[0], discrete_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -236,7 +180,7 @@ fn negativebinomial_ln_pmf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_pmf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_pmf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -244,7 +188,7 @@ fn negativebinomial_cdf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], cdf_value)
+    kwargs.value_keyed(&inputs[0], discrete_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -252,7 +196,7 @@ fn negativebinomial_ln_cdf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_cdf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_cdf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -260,7 +204,7 @@ fn negativebinomial_sf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], sf_value)
+    kwargs.value_keyed(&inputs[0], discrete_sf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -268,7 +212,7 @@ fn negativebinomial_ln_sf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ln_sf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ln_sf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -276,7 +220,7 @@ fn negativebinomial_ppf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], ppf_value)
+    kwargs.value_keyed(&inputs[0], discrete_ppf)
 }
 
 #[polars_expr(output_type=Float64)]
@@ -284,7 +228,7 @@ fn negativebinomial_isf_scalar(
     inputs: &[Series],
     kwargs: NegativeBinomialParams,
 ) -> PolarsResult<Series> {
-    kwargs.value_keyed(&inputs[0], isf_value)
+    kwargs.value_keyed(&inputs[0], discrete_isf)
 }
 
 /// A draw's state: the point mass at `0` at `p = 1`, where the Gamma's scale `(1 - p) / p` is `0`, and the

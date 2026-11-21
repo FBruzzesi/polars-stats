@@ -788,6 +788,79 @@ fn smallest_support_point(reached: impl Fn(f64) -> bool, seed: f64) -> f64 {
     }
 }
 
+/// A count distribution whose `P(X <= k)` is one tail of a regularized incomplete gamma or beta.
+trait DiscreteTails {
+    /// The tail that is `P(X <= k)`; its complement is `P(X > k)`.
+    const CDF: Tail;
+
+    /// Both tails at a point `k >= 0`, or `None` at `k = +inf`, which has the whole mass below it.
+    fn tails_at(&self, k: f64) -> Option<Tails>;
+
+    /// `ln P(X = k)` at a support point.
+    fn ln_mass(&self, k: f64) -> f64;
+
+    /// The smallest `k` with `P(X <= k) >= level` for [`Self::CDF`], or with `P(X > k) <= level` otherwise.
+    fn quantile(&self, tail: Tail, level: f64) -> f64;
+}
+
+/// `-inf` off the support: below `0`, a non-integral point, and `+inf`, which `floor` keeps integral.
+fn discrete_ln_pmf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    Some(if k >= 0.0 && k.floor() == k && k.is_finite() {
+        dist.ln_mass(k)
+    } else {
+        f64::NEG_INFINITY
+    })
+}
+
+fn discrete_pmf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    discrete_ln_pmf(dist, k).map(f64::exp)
+}
+
+fn discrete_cdf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    Some(if k < 0.0 {
+        0.0
+    } else {
+        dist.tails_at(k)
+            .map_or(1.0, |tails| tails.probability(D::CDF))
+    })
+}
+
+fn discrete_ln_cdf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    Some(if k < 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        dist.tails_at(k)
+            .map_or(0.0, |tails| tails.ln_probability(D::CDF))
+    })
+}
+
+fn discrete_sf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    Some(if k < 0.0 {
+        1.0
+    } else {
+        dist.tails_at(k)
+            .map_or(0.0, |tails| tails.probability(D::CDF.complement()))
+    })
+}
+
+fn discrete_ln_sf<D: DiscreteTails>(dist: &D, k: f64) -> Option<f64> {
+    Some(if k < 0.0 {
+        0.0
+    } else {
+        dist.tails_at(k).map_or(f64::NEG_INFINITY, |tails| {
+            tails.ln_probability(D::CDF.complement())
+        })
+    })
+}
+
+fn discrete_ppf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
+    on_unit_interval(&|q| dist.quantile(D::CDF, q), q)
+}
+
+fn discrete_isf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
+    on_unit_interval(&|q| dist.quantile(D::CDF.complement(), q), q)
+}
+
 /// The `select` every inverse shares: the arm on `[0, 1]`, null outside it. `-0.0` is inside.
 #[inline]
 pub(crate) fn on_unit_interval<Arm: Fn(f64) -> f64>(arm: &Arm, quantile: f64) -> Option<f64> {
