@@ -34,6 +34,8 @@ pub mod uniform;
 pub mod weibull;
 
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::f64::consts::SQRT_2;
 
 use polars::prelude::arity::{try_binary_elementwise, unary_elementwise};
 use polars::prelude::*;
@@ -42,6 +44,9 @@ use polars_arrow::bitmap::{Bitmap, MutableBitmap};
 use polars_arrow::compute::utils::{combine_validities_and, combine_validities_and3};
 use polars_arrow::datatypes::ArrowDataType;
 use polars_core::utils::{align_chunks_binary, align_chunks_ternary};
+use statrs::function::erf::erfc_inv;
+
+use crate::distributions::gamma::{Tail, Tails};
 
 /// Broadcast every length-1 input up to the call's row count, and reject lengths that cannot align.
 ///
@@ -631,6 +636,108 @@ pub(crate) fn polynomial(coefficients: &[f64], x: f64) -> f64 {
 pub(crate) fn scale_exp(scale: f64, t: f64) -> f64 {
     let half = (t / 2.0).exp();
     (scale * half) * half
+}
+
+/// Relative slack on the discrete inverses' step comparison, as `binomial.rs`'s `PPF_CDF_TOL`. The tails are
+/// compared as logs, where it is an absolute slack, so `cdf(k)` or `sf(k)` itself inverts to `k` whichever way its
+/// last ulp rounded. Once the tail compared is `1 - q` below about `5e-5`, the rounding of `q` exceeds the slack and
+/// the answer can be `k + 1`.
+const STEP_TOLERANCE: f64 = 1e-12;
+
+/// The smallest support point `k` with `P(X <= k) >= level` when `tail` is `cdf`, or with `P(X > k) <= level`
+/// otherwise, for `level` in `[0, 1]` and `tails_at(k)` the two tails at `k` (`None` at `+inf`, which holds the
+/// whole mass below it). Past `level = 1/2` it compares the other tail at `ln(1 - level)`, exact by Sterbenz, so the
+/// comparison is always on the smaller tail. A target of `ln 0` is the support edge: `ppf(0)` and `isf(1)` are `0`,
+/// `ppf(1)` and `isf(0)` are `+inf`. `seed_at(z)`, `z` the normal quantile of the cdf level, starts the search; a
+/// `NaN` seed starts it at `0`. A tail that evaluates to `NaN` makes the answer `NaN`.
+fn discrete_quantile(
+    tails_at: impl Fn(f64) -> Option<Tails>,
+    cdf: Tail,
+    tail: Tail,
+    level: f64,
+    seed_at: impl Fn(f64) -> f64,
+) -> f64 {
+    let (smaller, ln_target) = if level <= 0.5 {
+        (tail, level.ln())
+    } else {
+        (tail.complement(), (-level).ln_1p())
+    };
+    if ln_target == f64::NEG_INFINITY {
+        return if smaller == cdf { 0.0 } else { f64::INFINITY };
+    }
+    let z = SQRT_2 * erfc_inv(2.0 * level);
+    let seed = seed_at(if tail == cdf { -z } else { z });
+    let seed = if seed.is_nan() {
+        0.0
+    } else {
+        seed.ceil().clamp(0.0, f64::MAX)
+    };
+    let unresolved = Cell::new(false);
+    let reached = |k: f64| {
+        unresolved.get()
+            || tails_at(k).is_none_or(|tails| {
+                let ln_probability = tails.ln_probability(smaller);
+                if ln_probability.is_nan() {
+                    unresolved.set(true);
+                    true
+                } else if smaller == cdf {
+                    ln_probability >= ln_target - STEP_TOLERANCE
+                } else {
+                    ln_probability <= ln_target + STEP_TOLERANCE
+                }
+            })
+    };
+    let k = smallest_support_point(reached, seed);
+    if unresolved.get() {
+        f64::NAN
+    } else {
+        k
+    }
+}
+
+/// The smallest support point `k >= 0` with `reached(k)`, for a `reached` that is monotone in `k` and holds at
+/// `+inf`: the discrete inverses' search, seeded near the answer.
+///
+/// The gallop out from `seed` starts at one float spacing, so no step vanishes above `2^53`. Down, it stops at
+/// `0`; up, it ends because `reached(+inf)`, and the doubling step gets there within about 1100 evaluations. The
+/// bisection ends once no float lies strictly inside the bracket, within about 2100 more.
+fn smallest_support_point(reached: impl Fn(f64) -> bool, seed: f64) -> f64 {
+    let mut step = (seed * f64::EPSILON).max(1.0);
+    let (mut lo, mut hi) = if reached(seed) {
+        let mut hi = seed;
+        loop {
+            if hi == 0.0 {
+                return 0.0;
+            }
+            let below = (hi - step).max(0.0);
+            if !reached(below) {
+                break (below, hi);
+            }
+            hi = below;
+            step *= 2.0;
+        }
+    } else {
+        let mut lo = seed;
+        loop {
+            let above = lo + step;
+            if reached(above) {
+                break (lo, above);
+            }
+            lo = above;
+            step *= 2.0;
+        }
+    };
+    loop {
+        let mid = (lo + (hi - lo) / 2.0).floor();
+        if mid <= lo || mid >= hi {
+            return hi;
+        }
+        if reached(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
 }
 
 /// The `select` every inverse shares: the arm on `[0, 1]`, null outside it. `-0.0` is inside.
