@@ -1400,3 +1400,22 @@ def test_students_t_far_tail_is_continuous_where_it_switches_to_the_leading_term
     ln_step = math.log1p(1e-6) - math.log1p(-1e-6)
     assert got["log_pdf"][1] - got["log_pdf"][0] == pytest.approx(-(dof + 1) * ln_step, abs=1e-11)
     assert got["log_cdf"][1] - got["log_cdf"][0] == pytest.approx(-dof * ln_step, abs=1e-11)
+
+
+@pytest.mark.parametrize("dof", [0.5, 3.0, 4.5, 10.0], ids=lambda dof: f"dof={dof}")
+def test_students_t_quantile_next_to_the_median_keeps_its_relative_precision(dof: float) -> None:
+    """`ppf(q)` at `loc = 0` keeps every digit as `q -> 1/2`, where it is `O(q - 1/2)`.
+
+    Read back through the central mass `I_y(1/2, dof / 2) = |2q - 1|`, `y = t^2 / (dof + t^2)`, which is exact on
+    the right and relatively exact on the left for a small `t`; the mass is `O(t)` there, so its relative error is
+    the quantile's. The allowance is the `~|ln(1 - 2q)| eps` the log-space solve keeps, `6.4e-15`, plus as much again
+    for `Beta.cdf` itself. scipy is no oracle here: `t(3).ppf(0.5 + 1e-15)` is `5.8e-7` relative off.
+    """
+    offsets = [1e-15, 1e-10, 1e-6, 1e-3, 0.1]
+    qs = [q for offset in offsets for q in (0.5 - offset, 0.5 + offset)]
+    ts = pl.DataFrame({"q": qs}).select(t=StudentsT(dof=dof).ppf(pl.col("q")))["t"].to_list()
+    ys = [t * t / (dof + t * t) for t in ts]
+    masses = pl.DataFrame({"y": ys}).select(m=Beta(a=0.5, b=dof / 2).cdf(pl.col("y")))["m"].to_list()
+    for q, t, mass in zip(qs, ts, masses, strict=True):
+        assert math.copysign(1.0, t) == math.copysign(1.0, q - 0.5), f"q={q}: {t}"
+        assert mass == pytest.approx(abs(2 * q - 1), rel=2e-14, abs=0.0), f"q={q}: t={t}"

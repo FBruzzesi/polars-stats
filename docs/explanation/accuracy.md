@@ -200,9 +200,11 @@ below `1.1e-16` the complement is exactly `1.0`, so `Beta.isf` returns the upper
 
     * `pdf`, `cdf` and `sf` are the exponentials of their logs, as for `Gamma`: `1.6e-13` relative at
       `StudentsT(1e-3).pdf(2.3e243)`, which is `1.2e-247`.
-    * `ppf` and `isf` are closed forms at `dof` `1`, `2` and `4`, and elsewhere a bracketed Newton iteration on the
-      log tail, finished by one step in `t` itself: `2.6e-13` relative at worst. `StudentsT(5.0).ppf(1e-300)` is
-      `-1.57e60`; `scipy`'s `t(5).ppf(1e-300)` is `+inf`.
+    * `ppf` and `isf` are closed forms at `dof` `1`, `2` and `4`, and elsewhere a bracketed Newton iteration,
+      finished by one step in `t` itself: `1.6e-13` relative at worst. It solves on the log tail out to `q = 1/4` and
+      on the central mass `1 - 2q` from there, which keeps `StudentsT(3.0).ppf(0.5 + 1e-15)` relatively exact;
+      `scipy`'s `t(3).ppf` is `5.8e-7` relative off at that `q`. `StudentsT(5.0).ppf(1e-300)` is `-1.57e60`;
+      `scipy`'s `t(5).ppf(1e-300)` is `+inf`.
     * `entropy` is the digamma form below `dof = 20`, whose digamma difference cancels to `4.3e-15` relative just
       below it, and its asymptotic series in `1 / dof` from there.
 

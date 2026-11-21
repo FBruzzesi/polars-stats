@@ -222,21 +222,33 @@ impl StandardT {
         } else if self.dof == 4.0 {
             Magnitude::Value(quartic_quantile_magnitude(p))
         } else {
-            let ln_t = self.ln_quantile_magnitude(p);
+            let equation = QuantileEquation::at(p);
+            let ln_t = self.ln_quantile_magnitude(p, equation);
             let t = ln_t.exp();
             if t.is_normal() {
-                Magnitude::Value(self.refine(t, p.ln()))
+                Magnitude::Value(self.refine(t, equation))
             } else {
                 Magnitude::Log(ln_t)
             }
         }
     }
 
-    /// One Newton step on `ln P` in `t` itself: the solve in `ln t` resolves `t` only to `eps |ln t|` relative.
-    fn refine(&self, t: f64, ln_p: f64) -> f64 {
+    /// The residual of `equation` at `ratio`, increasing in `|t|`, and the log of its incomplete beta there.
+    fn residual(&self, ratio: Ratio, equation: QuantileEquation) -> (f64, f64) {
+        let ln_mass = self.tails(ratio).ln_probability(equation.tail);
+        let residual = match equation.tail {
+            Tail::Lower => equation.ln_mass - ln_mass,
+            Tail::Upper => ln_mass - equation.ln_mass,
+        };
+        (residual, ln_mass)
+    }
+
+    /// One Newton step in `t` itself: the solve in `ln t` resolves `t` only to `eps |ln t|` relative. Either incomplete
+    /// beta moves at `2 f(t)` in `t`.
+    fn refine(&self, t: f64, equation: QuantileEquation) -> f64 {
         let ratio = self.ratio_at(t, 1.0, 0.0);
-        let ln_far = self.tails(ratio).ln_probability(Tail::Lower) - LN_2;
-        let refined = t + (ln_far - ln_p) * (ln_far - self.ln_density(ratio)).exp();
+        let (residual, ln_mass) = self.residual(ratio, equation);
+        let refined = t - residual * (ln_mass - LN_2 - self.ln_density(ratio)).exp();
         if refined.is_finite() {
             refined
         } else {
@@ -244,15 +256,15 @@ impl StandardT {
         }
     }
 
-    /// `ln|t|` with `P(T < -|t|) = p`, for `p` in `(0, 1/2)`: Newton on `ln P` in `ln|t|`, every proposal clamped into a
-    /// bisection bracket.
+    /// `ln|t|` with `P(T < -|t|) = p`, for `p` in `(0, 1/2)`: Newton on `equation` in `ln|t|`, every proposal clamped
+    /// into a bisection bracket.
     ///
     /// The bracket is exact. With `x = dof / (dof + t^2)` and `a = dof / 2`, the hypergeometric series of the far
     /// tail gives `x^a / (a B) <= I_x(a, 1/2) <= x^a / (a B) (1 - x)^(-1/2)`. The left bound reaching `2p` puts `|t|` at
     /// least at `t_g`; past `t_g`, `(1 - x)^(-1/2)` is at most its value at `t_g`, which puts `|t|` at most at `t_h`.
     /// Deep in the tail the two meet, and `t_g` is the seed; elsewhere the seed is the Cornish-Fisher expansion
     /// (Abramowitz and Stegun 26.7.5).
-    fn ln_quantile_magnitude(&self, p: f64) -> f64 {
+    fn ln_quantile_magnitude(&self, p: f64, equation: QuantileEquation) -> f64 {
         let ln_p = p.ln();
         let a = self.half_dof;
         let ln_x_lower = (LN_2 + ln_p + self.ln_half_dof_beta()) / a;
@@ -270,8 +282,9 @@ impl StandardT {
         hi = (hi + BRACKET_SLACK * hi.abs().max(1.0)).min(MAX_LN_QUANTILE);
         bracketed_newton(self.cornish_fisher(p).ln(), lo, hi, |u| {
             let ratio = self.ratio_at_ln_t(u);
-            let ln_far = self.tails(ratio).ln_probability(Tail::Lower) - LN_2;
-            (ln_p - ln_far, (self.ln_density(ratio) + u - ln_far).exp())
+            let (residual, ln_mass) = self.residual(ratio, equation);
+            let slope = (LN_2 + self.ln_density(ratio) + u - ln_mass).exp();
+            (residual, slope)
         })
     }
 
@@ -292,6 +305,33 @@ impl StandardT {
             z * polynomial(&[-945.0, -1920.0, 1482.0, 776.0, 79.0], z2) / 92160.0,
         ];
         polynomial(&terms, self.dof.recip())
+    }
+}
+
+/// The equation the inverse solves at `p`: `I_x(dof / 2, 1 / 2) = 2p` in the tail, `I_y(1 / 2, dof / 2) = 1 - 2p`
+/// from [`CENTRAL_FROM`] on, where `1 - 2p` is exact (Sterbenz) and `ln 2p` next to `-ln 2` would resolve a small `t`
+/// only to `eps / t` relative.
+#[derive(Clone, Copy)]
+struct QuantileEquation {
+    tail: Tail,
+    ln_mass: f64,
+}
+
+const CENTRAL_FROM: f64 = 0.25;
+
+impl QuantileEquation {
+    fn at(p: f64) -> Self {
+        if p <= CENTRAL_FROM {
+            Self {
+                tail: Tail::Lower,
+                ln_mass: (2.0 * p).ln(),
+            }
+        } else {
+            Self {
+                tail: Tail::Upper,
+                ln_mass: (1.0 - 2.0 * p).ln(),
+            }
+        }
     }
 }
 
