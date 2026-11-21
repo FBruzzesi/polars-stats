@@ -13,6 +13,8 @@ including its own "Regressions from `make audit`" sections, and
 from __future__ import annotations
 
 import math
+import subprocess
+import sys
 from fractions import Fraction
 from typing import TYPE_CHECKING, TypedDict, TypeVar
 
@@ -31,11 +33,14 @@ from polars_stats import (
     Geometric,
     Pareto,
     Poisson,
+    StudentsT,
     Weibull,
 )
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from polars_stats.distributions._base import _UnivariateDistribution
     from tests._registry import Regime
 
@@ -1328,3 +1333,70 @@ def test_poisson_entropy_is_continuous_where_the_sum_gives_way_to_the_series() -
     below, at = math.nextafter(100.0, 0.0), 100.0
     got = pl.DataFrame({"rate": [below, at]}).select(entropy=Poisson(pl.col("rate")).entropy())["entropy"]
     assert got[0] == pytest.approx(got[1], rel=2e-15)
+
+
+# --------------------------------------------------------------------------------------------------
+# StudentsT: the far tail past where scipy's inverse leaves it.
+# --------------------------------------------------------------------------------------------------
+
+_FAR_TAIL_DOFS = [0.5, 1.0, 3.0, 4.0, 4.5, 30.0]
+_FAR_TAIL_Q = 1e-300
+_FAR_TAIL_PROBE = f"""
+import polars as pl
+import polars_stats as ps
+for dof in {_FAR_TAIL_DOFS!r}:
+    dist = ps.StudentsT(dof=dof)
+    print(pl.select(dist.ppf({_FAR_TAIL_Q!r})).item(), pl.select(dist.isf({_FAR_TAIL_Q!r})).item(), flush=True)
+"""
+
+
+def _leading_term_quantile(dof: float, q: float) -> float:
+    """`|t|` where the far tail's leading term `x^a / (2 a B(a, 1/2))`, `a = dof / 2`, is `q`, with `x ~ dof / t^2`.
+
+    The tail is that term times `1 + O(x)`, and `x < 1e-20` at `q = 1e-300` for every `dof` here.
+    """
+    a = dof / 2
+    ln_a_beta = math.log(a) + math.lgamma(a) + math.lgamma(0.5) - math.lgamma(a + 0.5)
+    ln_x = (math.log(2 * q) + ln_a_beta) / a
+    ln_t = 0.5 * (math.log(dof) - ln_x)
+    return math.exp(ln_t) if ln_t < math.log(sys.float_info.max) else math.inf
+
+
+def test_students_t_inverses_answer_at_1e_300(tmp_path: Path) -> None:
+    """`ppf(1e-300)` and `isf(1e-300)` return, within `1e-13` of the leading term, `-inf` / `+inf` where it overflows.
+
+    scipy's `t(5).ppf(1e-300)` is `+inf`. In a subprocess with a timeout, so a solver that never returns fails the test
+    instead of hanging the suite; run outside the checkout so it imports the installed build.
+    """
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _FAR_TAIL_PROBE], cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False
+    )
+    assert proc.returncode == 0, proc.stderr[-400:]
+    for dof, line in zip(_FAR_TAIL_DOFS, proc.stdout.splitlines(), strict=True):
+        ppf, isf = map(float, line.split())
+        expected = _leading_term_quantile(dof, _FAR_TAIL_Q)
+        assert isf == -ppf, f"dof={dof}: {ppf}, {isf}"
+        assert isf == pytest.approx(expected, rel=1e-13), f"dof={dof}: {isf} against {expected}"
+
+
+def test_students_t_entropy_is_continuous_where_the_digamma_form_gives_way_to_the_series() -> None:
+    """Either side of `dof = 20` agrees to the digamma form's own `4.3e-15` cancellation."""
+    below, at = math.nextafter(20.0, 0.0), 20.0
+    got = pl.DataFrame({"dof": [below, at]}).select(entropy=StudentsT(dof=pl.col("dof")).entropy())["entropy"]
+    assert got[0] == pytest.approx(got[1], rel=1e-14)
+
+
+@pytest.mark.parametrize("dof", [0.5, 5.0], ids=lambda dof: f"dof={dof}")
+def test_students_t_far_tail_is_continuous_where_it_switches_to_the_leading_term(dof: float) -> None:
+    """Across `ln(t^2 / dof) = 690`, `log_pdf` and `log_cdf` move by the power laws `-(dof + 1)` and `-dof` in `ln|t|`.
+
+    The two points sit `2e-6` either side of the switch in `ln(t^2 / dof)`, where both forms are exact to `O(e^-690)`,
+    so a jump between them shows as a residual above the `~1e-13` rounding of the logs themselves.
+    """
+    center = math.sqrt(dof) * math.exp(345.0)
+    ts = [-center * (1 - 1e-6), -center * (1 + 1e-6)]
+    dist = StudentsT(dof=dof)
+    got = pl.DataFrame({"t": ts}).select(log_pdf=dist.log_pdf(pl.col("t")), log_cdf=dist.log_cdf(pl.col("t")))
+    ln_step = math.log1p(1e-6) - math.log1p(-1e-6)
+    assert got["log_pdf"][1] - got["log_pdf"][0] == pytest.approx(-(dof + 1) * ln_step, abs=1e-11)
+    assert got["log_cdf"][1] - got["log_cdf"][0] == pytest.approx(-dof * ln_step, abs=1e-11)

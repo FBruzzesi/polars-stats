@@ -22,6 +22,7 @@ from polars_stats import (
     Bernoulli,
     Beta,
     Binomial,
+    Cauchy,
     ChiSquared,
     Exponential,
     Gamma,
@@ -30,6 +31,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Poisson,
+    StudentsT,
     Uniform,
     Weibull,
 )
@@ -583,3 +585,87 @@ def test_single_success_negative_binomial_is_the_geometric_shifted_by_one(method
     assert_series_equal(
         _negative_binomial_at_points(1.0, p, method), geometric["r"], rel_tol=1e-14, abs_tol=1e-300, check_names=False
     )
+
+
+# --------------------------------------------------------------------------------------------------
+# StudentsT(1, loc, scale) is Cauchy(loc, scale); StudentsT is symmetric about `loc`; its far tail is
+# `I_x(dof / 2, 1 / 2) / 2` at `x = dof / (dof + t^2)`; and as `dof -> inf` it is Normal(loc, scale).
+# --------------------------------------------------------------------------------------------------
+
+_T_LOC, _T_SCALE = -1.25, 2.5
+_CAUCHY_XS = [-1e200, -1e6, -40.0, -3.0, -1.25, 0.5, 2.5, 1e3, 1e200]
+_CAUCHY_QS = [0.0, 1e-12, 0.1, 0.3, 0.5, 0.6, 0.9, 1 - 1e-12, 1.0]
+
+
+@pytest.mark.parametrize("method", ["pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"])
+def test_students_t_with_one_dof_is_the_cauchy(method: Method) -> None:
+    """Every value-keyed method agrees with `Cauchy`'s closed forms out past `|t| = 1e154`, to `1e-13` relative.
+
+    Not tighter: the t's tail is the `exp` of its log, which at `|t| = 4e199` is `-460` and carries that many ulps of
+    its own rounding, `4.8e-14`. The inverses share `cauchy.rs`'s quantile, so they agree bit for bit.
+    """
+    points = _CAUCHY_QS if method in ("ppf", "isf") else _CAUCHY_XS
+    frame = pl.DataFrame({"x": points})
+    via_t = frame.select(r=getattr(StudentsT(dof=1.0, loc=_T_LOC, scale=_T_SCALE), method)(pl.col("x")))["r"]
+    via_cauchy = frame.select(r=getattr(Cauchy(loc=_T_LOC, scale=_T_SCALE), method)(pl.col("x")))["r"]
+    rel_tol = 0.0 if method in ("ppf", "isf") else 1e-13
+    assert_series_equal(via_t, via_cauchy, rel_tol=rel_tol, abs_tol=0.0)
+
+
+_SYMMETRY_DOFS = [0.5, 3.0, 4.5, 1e6]
+# `1.5 +- d` is exact for each, so both sides read the same distance.
+_SYMMETRY_DISTANCES = [0.0, 0.25, 1.0, 3.5, 1e3, 2.0**40]
+
+
+@pytest.mark.parametrize("dof", _SYMMETRY_DOFS, ids=lambda dof: f"dof={dof}")
+def test_students_t_tails_are_mirror_images_bit_for_bit(dof: float) -> None:
+    """`cdf(loc - d) == sf(loc + d)` and the same for the logs, to the last bit: one body serves both tails."""
+    dist = StudentsT(dof=dof, loc=1.5, scale=2.0)
+    frame = pl.DataFrame({"d": _SYMMETRY_DISTANCES})
+    got = frame.select(
+        cdf=dist.cdf(1.5 - pl.col("d")),
+        sf=dist.sf(1.5 + pl.col("d")),
+        log_cdf=dist.log_cdf(1.5 - pl.col("d")),
+        log_sf=dist.log_sf(1.5 + pl.col("d")),
+    )
+    assert_series_equal(got["cdf"], got["sf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+    assert_series_equal(got["log_cdf"], got["log_sf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+@pytest.mark.parametrize("dof", [*_SYMMETRY_DOFS, 1.0, 2.0, 4.0], ids=lambda dof: f"dof={dof}")
+def test_students_t_isf_is_the_reflected_ppf(dof: float) -> None:
+    """`isf(q) == 2 loc - ppf(q)`, bit for bit at `loc = 0`, where the reflection adds no rounding of its own."""
+    dist = StudentsT(dof=dof, scale=2.0)
+    got = pl.DataFrame({"q": [0.0, 1e-300, 1e-9, 0.2, 0.5, 0.7, 1 - 1e-9, 1.0]}).select(
+        isf=dist.isf(pl.col("q")), ppf=dist.ppf(pl.col("q"))
+    )
+    assert_series_equal(got["isf"], -got["ppf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+@pytest.mark.parametrize("dof", [0.5, 3.0, 4.5, 40.0], ids=lambda dof: f"dof={dof}")
+def test_students_t_far_tail_is_half_the_incomplete_beta(dof: float) -> None:
+    """`log_cdf(t) = ln(1/2) + Beta(dof / 2, 1 / 2).log_cdf(x)` below the center, one incomplete beta on both sides.
+
+    `1e-14` relative rather than bit equality: `x = dof / (dof + t^2)` is formed in Python here and as `1 / (1 + r)`
+    there, a few ulps apart. Not nearer the center than `t = -0.5`: there `x` rounds next to `1` here, which loses the
+    complement `y` the t forms directly, `1.9e-12` at `t = -1e-3` and `dof = 40`.
+    """
+    ts = [-0.5, -2.0, -30.0, -1e4]
+    via_t = pl.DataFrame({"t": ts}).select(r=StudentsT(dof=dof).log_cdf(pl.col("t")))["r"]
+    xs = [dof / (dof + t * t) for t in ts]
+    via_beta = pl.DataFrame({"x": xs}).select(r=math.log(0.5) + Beta(a=dof / 2, b=0.5).log_cdf(pl.col("x")))["r"]
+    assert_series_equal(via_t, via_beta, rel_tol=1e-14, abs_tol=0.0, check_names=False)
+
+
+@pytest.mark.parametrize("method", ["pdf", "log_pdf", "cdf", "sf", "ppf", "isf"])
+def test_students_t_at_a_huge_dof_is_the_normal_in_the_bulk(method: Method) -> None:
+    """At `dof = 1e15` the t is the normal to `O(1 / dof)` in the bulk, within the normal's own `erfc` error.
+
+    Only the bulk: in the tails the t still decays as a power, which is the difference statrs' switch to the normal
+    at `dof = 1e8` erases.
+    """
+    points = [0.05, 0.3, 0.5, 0.8, 0.95] if method in ("ppf", "isf") else [-6.0, -2.0, -1.25, 0.0, 3.0]
+    frame = pl.DataFrame({"x": points})
+    via_t = frame.select(r=getattr(StudentsT(dof=1e15, loc=_T_LOC, scale=_T_SCALE), method)(pl.col("x")))["r"]
+    via_normal = frame.select(r=getattr(Normal(mu=_T_LOC, sigma=_T_SCALE), method)(pl.col("x")))["r"]
+    assert_series_equal(via_t, via_normal, rel_tol=1e-9, abs_tol=0.0)

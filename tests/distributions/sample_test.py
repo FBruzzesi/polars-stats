@@ -19,7 +19,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
-from polars_stats import Bernoulli, DiscreteUniform, Geometric, NegativeBinomial, Poisson, Uniform
+from polars_stats import Bernoulli, DiscreteUniform, Geometric, NegativeBinomial, Poisson, StudentsT, Uniform
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
@@ -398,3 +398,27 @@ def test_a_missing_column_name_is_reported_at_evaluation(spec: DistSpec) -> None
 
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
         _frame(4).select(z=dist.sample(seed=_SEED))
+
+
+_STUDENTS_T_ROWS = 200_000
+
+
+def test_a_students_t_draw_keeps_its_mean_variance_and_kurtosis() -> None:
+    """At `dof = 10` the draw keeps the mean `loc`, the variance `scale**2 dof / (dof - 2)` and the excess kurtosis
+    `6 / (dof - 4) = 1`.
+
+    A normal draw of the same variance passes the first two, so the fourth moment is what pins the gamma stage. Its
+    allowance is the standard error of `mean(z ** 4)`, `sqrt((E z**8 - 16) / n)` with `E z**8 = 1120` at `dof = 10`,
+    which needs the `200_000` rows to fall below the excess it checks.
+    """
+    dof, loc, scale = 10.0, -1.25, 2.5
+    sd = scale * math.sqrt(dof / (dof - 2.0))
+    drawn = _frame(_STUDENTS_T_ROWS).select(z=StudentsT(dof=dof, loc=loc, scale=scale).sample(seed=_SEED))["z"]
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - loc) <= _CLT_SIGMAS * sd / math.sqrt(_STUDENTS_T_ROWS)
+    assert variance == pytest.approx(sd**2, rel=_CLT_SIGMAS * math.sqrt(3.0 / _STUDENTS_T_ROWS))
+    fourth_moment = (((drawn - loc) / sd) ** 4).mean()
+    assert isinstance(fourth_moment, float)
+    assert abs(fourth_moment - 4.0) <= _CLT_SIGMAS * math.sqrt((1120.0 - 16.0) / _STUDENTS_T_ROWS)

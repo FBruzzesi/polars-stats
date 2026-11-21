@@ -26,6 +26,7 @@ from polars_stats import (
     NegativeBinomial,
     Normal,
     Pareto,
+    StudentsT,
     Uniform,
     Weibull,
 )
@@ -78,6 +79,15 @@ def test_chisquared_std_is_the_root_of_twice_dof(dof: float) -> None:
     """`ChiSquared(dof).std()` is `sqrt(2 dof)`, finite up to the largest `dof`; `variance` is `inf` from `9e307`."""
     got = pl.DataFrame({"z": [0.0]}).select(r=ChiSquared(dof=dof).std())["r"].item()
     assert got == pytest.approx(math.sqrt(2.0) * math.sqrt(dof), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("scale", [1e-300, 1.0, 1e200, 1e300], ids=lambda scale: f"scale={scale:.0e}")
+def test_students_t_std_is_the_scale_times_a_root(scale: float) -> None:
+    """`StudentsT(5, 0, scale).std()` is `scale sqrt(5 / 3)`: finite where `variance` overflows, nonzero where it
+    underflows.
+    """
+    got = pl.DataFrame({"z": [0.0]}).select(r=StudentsT(dof=5.0, scale=scale).std())["r"].item()
+    assert got == pytest.approx(scale * math.sqrt(5.0 / 3.0), rel=1e-15, abs=0.0)
 
 
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)

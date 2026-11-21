@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         "normal",
         "pareto",
         "poisson",
+        "studentst",
         "uniform",
         "weibull",
     ]

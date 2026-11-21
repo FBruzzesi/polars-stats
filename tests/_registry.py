@@ -11,7 +11,7 @@ lives here; a table only its own test file reads stays in that file.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, exp, inf, log, log1p, nextafter, sqrt
+from math import ceil, exp, inf, lgamma, log, log1p, nextafter, sqrt
 from typing import TYPE_CHECKING, Literal, get_args
 
 import polars as pl
@@ -32,6 +32,7 @@ from polars_stats import (
     Normal,
     Pareto,
     Poisson,
+    StudentsT,
     Uniform,
     Weibull,
     is_continuous,
@@ -523,6 +524,42 @@ _CAUCHY = DistSpec(
     integration_bounds=lambda p: (p[0] - 3000.0 * p[1], p[0] + 3000.0 * p[1]),
 )
 
+
+def _students_t_tail_point(params: tuple[float, ...], tail_mass: float) -> tuple[float, float]:
+    """`loc -+ scale t` where the far tail's leading term `dof^(dof / 2 - 1) t^-dof / B(dof / 2, 1 / 2)` is `tail_mass`.
+
+    The tails are polynomial, so a multiple of the scale that bounds the mass at one `dof` does not at a smaller one.
+    The term is within `(1 - x)^(-1/2)`, `x = dof / (dof + t^2)`, of the tail itself.
+    """
+    dof, loc, scale = params
+    ln_beta = lgamma(dof / 2) + lgamma(0.5) - lgamma((dof + 1) / 2)
+    t = exp(((dof / 2 - 1) * log(dof) - ln_beta - log(tail_mass)) / dof)
+    return loc - scale * t, loc + scale * t
+
+
+_STUDENTS_T = DistSpec(
+    name="studentst",
+    cls=StudentsT,
+    continuous=True,
+    parameters=(Param("dof", "dof"), Param("loc", "loc"), Param("scale", "scale")),
+    # `dof >= 3` keeps every moment finite and the tails light enough for the trapezoid mass check. The null and
+    # divergent moments below it are `moments_test.py`'s.
+    param_strategy=st.tuples(_finite(3.0, 30.0), _finite(-10.0, 10.0), _finite(1e-2, 10.0)),
+    example=(5.0, 1.5, 2.0),
+    eval_range=lambda p: _students_t_tail_point(p, 0.01),
+    bounds=(-inf, inf),
+    # `loc` itself would be vacuous for `scale` and `dof`: the cdf is `0.5` at the median whatever either is.
+    on_support_point=1.5 + 2.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("dof=0", (0.0, 1.5, 2.0), "dof must be"),
+        InvalidCase("dof=-1", (-1.0, 1.5, 2.0), "dof must be"),
+        InvalidCase("scale=0", (5.0, 1.5, 0.0), "scale must be"),
+    ),
+    # `2.5e-5` of the mass past each end, within `5%` at `dof = 3`, well below the mass tolerance.
+    integration_bounds=lambda p: _students_t_tail_point(p, 2.5e-5),
+)
+
 _UNIFORM = DistSpec(
     name="uniform",
     cls=Uniform,
@@ -779,6 +816,7 @@ ALL_SPECS = [
     _NEGATIVE_BINOMIAL,
     _NORMAL,
     _CAUCHY,
+    _STUDENTS_T,
     _UNIFORM,
     _LOGNORMAL,
     _EXPONENTIAL,

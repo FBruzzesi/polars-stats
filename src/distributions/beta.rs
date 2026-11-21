@@ -195,8 +195,21 @@ impl IncompleteBeta {
         }
     }
 
+    /// `ln B(a, b)`. Relatively exact where the smaller shape is below [`STIRLING_FROM`]; from there it is read back
+    /// off the prefactor at the mean, which cancels terms of order `a ln a`.
+    pub(super) fn ln_beta(&self) -> f64 {
+        match self.prefactor {
+            LnPrefactor::LnBeta(ln_beta) => ln_beta,
+            LnPrefactor::Stirling {
+                at_mean,
+                ln_x0,
+                ln_y0,
+            } => self.a * ln_x0 + self.b * ln_y0 - at_mean,
+        }
+    }
+
     /// `-ln(shape B(a, b))` for `shape` = `a` ([`Tail::Lower`]) or `b`, where that shape is at most `1`.
-    fn series_offset_on(&self, side: Tail) -> Option<f64> {
+    pub(super) fn series_offset_on(&self, side: Tail) -> Option<f64> {
         let (shape, other) = match side {
             Tail::Lower => (self.a, self.b),
             Tail::Upper => (self.b, self.a),
