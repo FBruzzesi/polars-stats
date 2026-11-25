@@ -1,6 +1,6 @@
 SHELL=/bin/bash
 
-.PHONY: audit lint test benchmark typing install install-release
+.PHONY: audit lint test benchmark typing install install-release talks docs docs-serve
 
 audit:
 	uv run --group tools -m tools.accuracy.audit
@@ -26,3 +26,18 @@ install:
 
 install-release:
 	uvx maturin develop --release
+
+# Each docs/talks/<name>/ deck builds into its own dist/, published at talks/<name>/dist/.
+# The base path repeats site_url's /polars-stats/ prefix from zensical.toml.
+talks:
+	for slides in docs/talks/*/slides.md; do \
+		deck=$$(dirname "$$slides"); \
+		(cd "$$deck" && npx -y @slidev/cli@53.0.0 build slides.md \
+			--base "/polars-stats/talks/$$(basename "$$deck")/dist/" --out dist --without-notes) || exit 1; \
+	done
+
+docs: talks
+	uv run --group docs zensical build --strict
+
+docs-serve: talks
+	uv run --group docs zensical serve
