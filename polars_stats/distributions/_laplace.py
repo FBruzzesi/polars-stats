@@ -11,8 +11,8 @@ if TYPE_CHECKING:
     from polars_stats._typing import DistributionName, IntoExprColumn
 
 _LOG_TWO_E = 1.0 + math.log(2.0)
-"""Added to `log(scale)` rather than multiplied into it: `log(2 e scale)` overflows above `scale ~ 3.3e307`, where the
-true entropy is only 709.8."""
+"""`ln(2 e)`, summed with `log(scale)`: the product `2 e scale` overflows above `scale ~ 3.3e307`, where the entropy is
+still only 709.8."""
 
 
 class Laplace(ContinuousDistribution):

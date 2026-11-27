@@ -56,9 +56,9 @@ impl LaplaceParams {
     }
 }
 
-/// `(value - loc) / scale`, or `value / scale - loc / scale` where a finite distance overflows: a `value` and
-/// `loc` of opposite signs near `f64::MAX` are an ordinary number of scales apart when the scale is as large. An
-/// infinite `value` keeps the direct form, where the split one would read `inf - inf` once `loc / scale` overflows.
+/// `(value - loc) / scale`, or `value / scale - loc / scale` where the distance overflows (`value` and `loc` of
+/// opposite signs near `f64::MAX`). An infinite `value` keeps the direct form: the split one reads `inf - inf` once
+/// `loc / scale` overflows.
 #[inline]
 fn standardise(loc: f64, scale: f64, value: f64) -> f64 {
     let distance = value - loc;
@@ -69,14 +69,15 @@ fn standardise(loc: f64, scale: f64, value: f64) -> f64 {
     }
 }
 
-/// `loc + scale k`, the inverse of [`standardise`], with the same split where the offset alone overflows.
+/// `loc + scale z`, the inverse of [`standardise`], split the same way where `scale z` overflows; an infinite `z`
+/// keeps the direct form.
 #[inline]
-fn unstandardise(loc: f64, scale: f64, k: f64) -> f64 {
-    let offset = scale * k;
-    if offset.is_finite() || k.is_infinite() {
+fn unstandardise(loc: f64, scale: f64, z: f64) -> f64 {
+    let offset = scale * z;
+    if offset.is_finite() || z.is_infinite() {
         loc + offset
     } else {
-        scale * (loc / scale + k)
+        scale * (loc / scale + z)
     }
 }
 
@@ -112,8 +113,8 @@ fn derive_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     }
 }
 
-/// The standard cdf: the tail mass `exp(-|z|) / 2` below the median, its complement above, so the small side is
-/// never a difference.
+/// The tail mass `exp(-|z|) / 2` below the median and its complement above, so the small side is never a
+/// difference.
 #[inline]
 fn standard_cdf(z: f64) -> f64 {
     let tail = (-z.abs()).exp() / 2.0;
@@ -124,8 +125,8 @@ fn standard_cdf(z: f64) -> f64 {
     }
 }
 
-/// The standard `ln(cdf)`: `z - ln 2` below the median, which no underflow reaches, and `ln_1p(-exp(-z) / 2)` above,
-/// where `ln(cdf)` would round the answer's own magnitude away.
+/// `z - ln 2` below the median, which no underflow reaches, and `ln_1p(-exp(-z) / 2)` above, where `ln(cdf)` would
+/// round the answer's own magnitude away.
 #[inline]
 fn standard_ln_cdf(z: f64) -> f64 {
     if z <= 0.0 {
@@ -151,10 +152,9 @@ fn derive_ln_sf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |value: f64| standard_ln_cdf(-standardise(loc, scale, value))
 }
 
-/// The standard quantile: `ln(2 q)` up to the median and `-ln(2 (1 - q))` above, where Sterbenz makes `1 - q` exact,
-/// so each tail keeps its quantile's own relative precision. The closed endpoints fall out of `ln(0) = -inf`, and a
-/// `-0.0` quantile with them. One `ln` on a selected argument: a quantile column is rarely sorted, and a branch on
-/// its side of the median mispredicts half the time.
+/// `ln(2 q)` up to the median and `-ln(2 (1 - q))` above, where `1 - q` is exact (Sterbenz). `ln(0) = -inf` gives
+/// the closed endpoints, `-0.0` included. Selects rather than branches: on an unsorted quantile column a branch on the
+/// median mispredicts half the time.
 fn standard_quantile(q: f64) -> f64 {
     let upper = q > 0.5;
     let ln_tail = (2.0 * select_unpredictable(upper, 1.0 - q, q)).ln();
@@ -165,7 +165,7 @@ fn derive_ppf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |q: f64| unstandardise(loc, scale, standard_quantile(q))
 }
 
-/// `isf(q) = ppf(1 - q)` through the symmetry `2 loc - ppf(q)`, solved on `q` itself.
+/// `isf(q) = 2 loc - ppf(q)`, solved on `q` itself rather than on `1 - q`.
 fn derive_isf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |q: f64| unstandardise(loc, scale, -standard_quantile(q))
 }

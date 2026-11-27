@@ -696,8 +696,8 @@ def test_laplace_tails_are_mirror_images_bit_for_bit() -> None:
 
 
 def test_laplace_log_sf_is_the_exponent_itself_bit_for_bit() -> None:
-    """`log_sf = -z - ln 2` from the median outward, the exponent read directly rather than the log of its `exp`, so
-    it keeps going past `z ~ 745` where the mass underflows."""
+    """`log_sf = -z - ln 2` from the median outward, read off the exponent, so it stays finite past `z ~ 745` where
+    the mass underflows."""
     dist = Laplace(loc=_LAPLACE_LOC, scale=_LAPLACE_SCALE)
     got = pl.DataFrame({"d": _LAPLACE_DISTANCES}).select(r=dist.log_sf(_LAPLACE_LOC + pl.col("d")))["r"]
     want = pl.Series([-(d / _LAPLACE_SCALE) - math.log(2.0) for d in _LAPLACE_DISTANCES])
