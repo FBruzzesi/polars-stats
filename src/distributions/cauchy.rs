@@ -7,8 +7,8 @@ use statrs::consts::LN_PI;
 use statrs::distribution::Cauchy;
 
 use crate::distributions::{
-    coerce_f64, on_unit_interval, validated_pair, value_keyed_derived_ternary, value_keyed_scalar,
-    ParamDomain,
+    coerce_f64, on_the_line, on_unit_interval, validated_pair, value_keyed_derived_ternary,
+    value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -54,12 +54,6 @@ impl CauchyParams {
         self.check()?;
         value_keyed_scalar(value, &derive(self.loc, self.scale), select)
     }
-}
-
-/// The `select` of a closed form whose support is the whole line, so there is no branch to pick.
-#[inline]
-fn on_the_line<Arm: Fn(f64) -> f64>(arm: &Arm, value: f64) -> Option<f64> {
-    Some(arm(value))
 }
 
 /// `1 / (pi scale (1 + z^2))`, `z = (value - loc) / scale`, spelled so that only a density outside
