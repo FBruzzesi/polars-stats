@@ -26,6 +26,7 @@ pub mod discrete_uniform;
 pub mod exponential;
 pub mod gamma;
 pub mod geometric;
+pub mod laplace;
 pub mod lognormal;
 pub mod negative_binomial;
 pub mod normal;
@@ -938,6 +939,12 @@ fn discrete_ppf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
 
 fn discrete_isf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
     on_unit_interval(&|q| dist.quantile(D::CDF.complement(), q), q)
+}
+
+/// The `select` of a closed form whose support is the whole line, so there is no branch to pick.
+#[inline]
+pub(crate) fn on_the_line<Arm: Fn(f64) -> f64>(arm: &Arm, value: f64) -> Option<f64> {
+    Some(arm(value))
 }
 
 /// The `select` every inverse shares: the arm on `[0, 1]`, null outside it. `-0.0` is inside.

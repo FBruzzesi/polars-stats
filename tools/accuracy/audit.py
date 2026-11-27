@@ -70,6 +70,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Laplace,
     LogNormal,
     NegativeBinomial,
     Normal,
@@ -180,6 +181,12 @@ def exp_neg(t: mp.mpf) -> mp.mpf:
     return mp.mpf(0) if t > EXP_STALLS_ABOVE else mp.e ** (-t)
 
 
+def z_score(params: Params, x: float) -> mp.mpf:
+    """`(x - location) / scale` at oracle precision, for any `(location, scale)` parameter pair."""
+    location, scale = params
+    return (mp.mpf(x) - mp.mpf(location)) / mp.mpf(scale)
+
+
 def one_minus_exp_neg(t: mp.mpf) -> mp.mpf:
     """`-expm1(-t)`, cut to `1` past [`EXP_STALLS_ABOVE`]; never `1 - exp(-t)`, which cancels at 50 digits too."""
     return mp.mpf(1) if t > EXP_STALLS_ABOVE else -mp.expm1(-t)
@@ -264,31 +271,25 @@ def std_normal_quantile(q: mp.mpf) -> mp.mpf:
         return mp.sqrt(2) * mp.erfinv(2 * q - 1)
 
 
-def normal_z(params: Params, x: float) -> mp.mpf:
-    """Standardised `(x - mu) / sigma` at oracle precision."""
-    mu, sigma = params
-    return (mp.mpf(x) - mp.mpf(mu)) / mp.mpf(sigma)
-
-
 def normal_cdf(params: Params, x: float) -> mp.mpf:
     """`0.5 * erfc(-z / sqrt(2))`."""
-    return mp.erfc(-normal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.erfc(-z_score(params, x) / mp.sqrt(2)) / 2
 
 
 def normal_sf(params: Params, x: float) -> mp.mpf:
     """`0.5 * erfc(z / sqrt(2))`."""
-    return mp.erfc(normal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.erfc(z_score(params, x) / mp.sqrt(2)) / 2
 
 
 def normal_pdf(params: Params, x: float) -> mp.mpf:
     """`exp(-z^2 / 2) / (sigma * sqrt(2 pi))`."""
-    z = normal_z(params, x)
+    z = z_score(params, x)
     return mp.e ** (-z * z / 2) / (mp.mpf(params[1]) * mp.sqrt(2 * mp.pi))
 
 
 def normal_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-z^2 / 2 - ln(sigma) - ln(2 pi) / 2`."""
-    z = normal_z(params, x)
+    z = z_score(params, x)
     return -z * z / 2 - mp.log(mp.mpf(params[1])) - mp.log(2 * mp.pi) / 2
 
 
@@ -313,7 +314,7 @@ def normal_entropy(params: Params, _x: float) -> mp.mpf:
     return mp.log(2 * mp.pi * mp.e * mp.mpf(params[1]) ** 2) / 2
 
 
-def lognormal_z(params: Params, x: float) -> mp.mpf:
+def logz_score(params: Params, x: float) -> mp.mpf:
     """Standardised `(ln x - mu) / sigma`; the caller guards `x > 0`."""
     mu, sigma = params
     return (mp.log(mp.mpf(x)) - mp.mpf(mu)) / mp.mpf(sigma)
@@ -321,19 +322,19 @@ def lognormal_z(params: Params, x: float) -> mp.mpf:
 
 def lognormal_cdf(params: Params, x: float) -> mp.mpf:
     """`0` at/below the support, else the underlying normal's cdf at `ln x`."""
-    return mp.mpf(0) if x <= 0 else mp.erfc(-lognormal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.mpf(0) if x <= 0 else mp.erfc(-logz_score(params, x) / mp.sqrt(2)) / 2
 
 
 def lognormal_sf(params: Params, x: float) -> mp.mpf:
     """`1` at/below the support, else the underlying normal's sf at `ln x`."""
-    return mp.mpf(1) if x <= 0 else mp.erfc(lognormal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.mpf(1) if x <= 0 else mp.erfc(logz_score(params, x) / mp.sqrt(2)) / 2
 
 
 def lognormal_pdf(params: Params, x: float) -> mp.mpf:
     """`exp(-z^2 / 2) / (x sigma sqrt(2 pi))`, `0` at/below the support."""
     if x <= 0:
         return mp.mpf(0)
-    z = lognormal_z(params, x)
+    z = logz_score(params, x)
     return mp.e ** (-z * z / 2) / (mp.mpf(x) * mp.mpf(params[1]) * mp.sqrt(2 * mp.pi))
 
 
@@ -341,7 +342,7 @@ def lognormal_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-z^2 / 2 - ln x - ln(sigma) - ln(2 pi) / 2`, `-inf` at/below the support."""
     if x <= 0:
         return mp.ninf
-    z = lognormal_z(params, x)
+    z = logz_score(params, x)
     return -z * z / 2 - mp.log(mp.mpf(x)) - mp.log(mp.mpf(params[1])) - mp.log(2 * mp.pi) / 2
 
 
@@ -446,32 +447,26 @@ def uniform_isf(params: Params, q: float) -> mp.mpf:
 # `z ~ 1e307`), so every decade of `z` is a live probe of the arctangent cancellation.
 
 
-def cauchy_z(params: Params, x: float) -> mp.mpf:
-    """Standardised `(x - loc) / scale` at oracle precision."""
-    loc, scale = params
-    return (mp.mpf(x) - mp.mpf(loc)) / mp.mpf(scale)
-
-
 def cauchy_pdf(params: Params, x: float) -> mp.mpf:
     """`1 / (pi scale (1 + z^2))`."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return 1 / (mp.pi * mp.mpf(params[1]) * (1 + z * z))
 
 
 def cauchy_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-(ln(pi scale) + log1p(z^2))`."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return -(mp.log(mp.pi * mp.mpf(params[1])) + mp.log1p(z * z))
 
 
 def cauchy_cdf(params: Params, x: float) -> mp.mpf:
     """`1/2 + atan(z) / pi`, as `atan2(1, -z) / pi` so the lower tail keeps relative precision at 50 digits too."""
-    return mp.atan2(1, -cauchy_z(params, x)) / mp.pi
+    return mp.atan2(1, -z_score(params, x)) / mp.pi
 
 
 def cauchy_sf(params: Params, x: float) -> mp.mpf:
     """`1/2 - atan(z) / pi`, as `atan2(1, z) / pi`; see [`cauchy_cdf`]."""
-    return mp.atan2(1, cauchy_z(params, x)) / mp.pi
+    return mp.atan2(1, z_score(params, x)) / mp.pi
 
 
 def cauchy_ppf(params: Params, q: float) -> mp.mpf:
@@ -522,6 +517,61 @@ def cauchy_points(params: Params, rng: random.Random, count: int) -> list[Point]
         k = 10.0 ** rng.uniform(-8.0, 300.0)
         points.extend(((loc + scale * k, "random"), (loc - scale * k, "random")))
     return [(x, origin) for x, origin in points if math.isfinite(x)]
+
+
+# Laplace oracles. Every method is elementary, so this is a control like Cauchy. The tail is `exp(-|z|) / 2`, so
+# past `|z| ~ 745` only the log methods still answer, and the oracles read their exponent rather than logging the mass.
+
+
+def laplace_pdf(params: Params, x: float) -> mp.mpf:
+    """`exp(-|z|) / (2 scale)`."""
+    return exp_neg(abs(z_score(params, x))) / (2 * mp.mpf(params[1]))
+
+
+def laplace_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`-|z| - ln(2 scale)`."""
+    return -abs(z_score(params, x)) - mp.log(2 * mp.mpf(params[1]))
+
+
+def laplace_cdf(params: Params, x: float) -> mp.mpf:
+    """`exp(z) / 2` up to the median, `1 - exp(-z) / 2` above it."""
+    z = z_score(params, x)
+    return exp_neg(-z) / 2 if z <= 0 else 1 - exp_neg(z) / 2
+
+
+def laplace_sf(params: Params, x: float) -> mp.mpf:
+    """[`laplace_cdf`] mirrored about `loc`; negating `loc` and `x` is exact, so the oracle stays exact."""
+    return laplace_cdf((-params[0], params[1]), -x)
+
+
+def laplace_log_cdf(params: Params, x: float) -> mp.mpf:
+    """`z - ln 2` up to the median, `log1p(-exp(-z) / 2)` above it: never the log of a mass that has left range."""
+    z = z_score(params, x)
+    return z - mp.log(2) if z <= 0 else mp.log1p(-exp_neg(z) / 2)
+
+
+def laplace_log_sf(params: Params, x: float) -> mp.mpf:
+    """[`laplace_log_cdf`] mirrored about `loc`."""
+    return laplace_log_cdf((-params[0], params[1]), -x)
+
+
+def laplace_ppf(params: Params, q: float) -> mp.mpf:
+    """`loc + scale ln(2 q)` up to the median, `loc - scale ln(2 (1 - q))` above it."""
+    loc, scale = mp.mpf(params[0]), mp.mpf(params[1])
+    if q <= 0:
+        return mp.ninf
+    if q >= 1:
+        return mp.inf
+    quantile = mp.mpf(q)
+    if quantile <= mp.mpf(0.5):
+        return loc + scale * mp.log(2 * quantile)
+    return loc - scale * mp.log(2 * (1 - quantile))
+
+
+def laplace_isf(params: Params, q: float) -> mp.mpf:
+    """`2 loc - ppf(q)`, the exact inverse survival function (see [`normal_isf`])."""
+    ppf = laplace_ppf(params, q)
+    return 2 * mp.mpf(params[0]) - ppf if mp.isfinite(ppf) else -ppf
 
 
 # Pareto oracles: the exponential oracles read at `t = ln(x / scale)`, which `mpmath` forms exactly.
@@ -1873,6 +1923,18 @@ def exponential_points(params: Params, rng: random.Random, count: int) -> list[P
     return points
 
 
+def laplace_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`cauchy_points`] plus `loc +- scale t` over [`EXPONENT_GRID`], where the tail `exp(-|z|) / 2` underflows.
+
+    The Cauchy sweep jumps from `|z| = 300` to `1e4`, past the whole band where the linear methods leave range.
+    """
+    loc, scale = params
+    points = cauchy_points(params, rng, count)
+    for t in EXPONENT_GRID:
+        points.extend(((loc + scale * t, "danger"), (loc - scale * t, "danger")))
+    return points
+
+
 def pareto_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """`scale exp(t / shape)` over [`EXPONENT_GRID`], both sides of the support edge, and a log-uniform far tail.
 
@@ -2694,6 +2756,29 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     median=lambda p, _x: mp.mpf(p[1]),
                     entropy=students_t_entropy,
                     tolerance=SPECIAL_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="Laplace",
+            build=lambda p: Laplace(loc=p[0], scale=p[1]),
+            param_names=("loc", "scale"),
+            params=((0.0, 1.0), (0.0, 1e-8), (0.0, 1e8), (5.0, 2.0), (-3.0, 0.5), (1e6, 1e3)),
+            methods=(
+                AuditedMethod("pdf", laplace_pdf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("log_pdf", laplace_log_pdf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("cdf", laplace_cdf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("log_cdf", laplace_log_cdf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("sf", laplace_sf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("log_sf", laplace_log_sf, CLOSED_FORM_RTOL, laplace_points),
+                AuditedMethod("ppf", laplace_ppf, CLOSED_FORM_RTOL, quantile_points),
+                AuditedMethod("isf", laplace_isf, CLOSED_FORM_RTOL, survival_points),
+                *moments(
+                    mean=lambda p, _x: mp.mpf(p[0]),
+                    variance=lambda p, _x: cast("mp.mpf", 2 * mp.mpf(p[1]) ** 2),
+                    median=lambda p, _x: mp.mpf(p[0]),
+                    entropy=lambda p, _x: 1 + mp.log(2 * mp.mpf(p[1])),
+                    tolerance=CLOSED_FORM_RTOL,
                 ),
             ),
         ),

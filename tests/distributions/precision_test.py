@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 from scipy.stats import binom as scipy_binom
 from scipy.stats import cauchy as scipy_cauchy
+from scipy.stats import laplace as scipy_laplace
 
 from polars_stats import (
     Beta,
@@ -31,6 +32,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Laplace,
     Pareto,
     Poisson,
     StudentsT,
@@ -579,6 +581,122 @@ def test_cauchy_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regi
     got = pl.DataFrame({"q": [-0.0, 0.0]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
     assert got["ppf"].to_list() == [-math.inf, -math.inf]
     assert got["isf"].to_list() == [math.inf, math.inf]
+
+
+# --------------------------------------------------------------------------------------------------
+# Laplace: a point and a location of opposite signs near `f64::MAX`, whose distance overflows while the
+# number of scales between them is ordinary.
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_standardises_a_point_whose_distance_from_loc_overflows(regime: Regime) -> None:
+    """`Laplace(-1e308, 1e308)` at `1e308` is two scales out: `(x - loc) / scale` is `inf / 1e308`, so the point is
+    standardised as `x / scale - loc / scale` instead, and every method answers as it would at `z = 2`."""
+    loc, scale = -1e308, 1e308
+    dist = _spelled(Laplace, regime, loc, scale)
+    got = pl.DataFrame({"x": [1e308] * 4}).select(
+        log_pdf=dist.log_pdf("x"), cdf=dist.cdf("x"), sf=dist.sf("x"), log_sf=dist.log_sf("x")
+    )
+    assert got["log_pdf"][0] == pytest.approx(-2.0 - math.log(2.0) - math.log(scale), rel=1e-15, abs=0.0)
+    assert got["cdf"][0] == pytest.approx(1.0 - math.exp(-2.0) / 2.0, rel=1e-15, abs=0.0)
+    assert got["sf"][0] == pytest.approx(math.exp(-2.0) / 2.0, rel=1e-15, abs=0.0)
+    assert got["log_sf"][0] == -2.0 - math.log(2.0)
+
+
+@pytest.mark.parametrize("loc", [1e308, -1e308], ids=lambda loc: f"loc={loc:.0e}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_keeps_an_infinite_point_at_the_support_end(regime: Regime, loc: float) -> None:
+    """An infinite point overflows its distance from `loc` like the case above, but `loc / scale` overflows too at
+    `scale = 0.1`, so the split form would read `inf - inf`. It keeps the direct form and lands on the support end."""
+    dist = _spelled(Laplace, regime, loc, 0.1)
+    got = pl.DataFrame({"x": [math.inf, -math.inf] * 2}).select(
+        pdf=dist.pdf("x"),
+        log_pdf=dist.log_pdf("x"),
+        cdf=dist.cdf("x"),
+        log_cdf=dist.log_cdf("x"),
+        sf=dist.sf("x"),
+        log_sf=dist.log_sf("x"),
+    )
+    assert got.row(0, named=True) == {
+        "pdf": 0.0,
+        "log_pdf": -math.inf,
+        "cdf": 1.0,
+        "log_cdf": 0.0,
+        "sf": 0.0,
+        "log_sf": -math.inf,
+    }
+    assert got.row(1, named=True) == {
+        "pdf": 0.0,
+        "log_pdf": -math.inf,
+        "cdf": 0.0,
+        "log_cdf": -math.inf,
+        "sf": 1.0,
+        "log_sf": 0.0,
+    }
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_inverses_answer_where_the_offset_from_loc_overflows(regime: Regime) -> None:
+    """`ppf` at `k = ln(2 q) ~ -2.5` scales out of `Laplace(1e308, 1e308)` is `-1.5e308`, but `scale * k` alone is
+    `-inf`; the inverse splits as `scale * (loc / scale + k)` there, as the forward methods do."""
+    q = math.exp(-2.5) / 2.0
+    k = math.log(2.0 * q)
+    got = pl.DataFrame({"q": [q] * 4}).select(
+        ppf=_spelled(Laplace, regime, 1e308, 1e308).ppf("q"),
+        isf=_spelled(Laplace, regime, -1e308, 1e308).isf("q"),
+    )
+    assert got["ppf"][0] == pytest.approx(1e308 * (1.0 + k), rel=1e-15, abs=0.0)
+    assert got["isf"][0] == pytest.approx(1e308 * (-1.0 - k), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("loc", [1e308, -1e308], ids=lambda loc: f"loc={loc:.0e}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_inverses_keep_the_infinite_endpoints(regime: Regime, loc: float) -> None:
+    """At `scale = 0.1` the endpoint offset `scale * -+inf` and `loc / scale` both overflow, so the split form would
+    read `inf - inf`; the endpoints keep the direct form and land on the support ends."""
+    dist = _spelled(Laplace, regime, loc, 0.1)
+    got = pl.DataFrame({"q": [0.0, 1.0] * 2}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list()[:2] == [-math.inf, math.inf]
+    assert got["isf"].to_list()[:2] == [math.inf, -math.inf]
+
+
+@pytest.mark.parametrize(
+    ("scale", "z"), [(1e-300, 0.0), (1e300, 1.0), (1.0, 30.0), (1.0, 700.0)], ids=lambda v: f"{v:g}"
+)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_pdf_keeps_the_mass_precision(regime: Regime, scale: float, z: float) -> None:
+    """`exp(-z) / (2 scale)` to an ulp or two. Exponentiating `-(z + ln(2 scale))` instead turns the absolute rounding
+    of that sum into up to ~300 ulp of relative error at these points."""
+    got = pl.DataFrame({"x": [z * scale] * 4}).select(r=_spelled(Laplace, regime, 0.0, scale).pdf("x"))["r"][0]
+    assert got == pytest.approx(math.exp(-z) / (2.0 * scale), rel=4e-16, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regime: Regime) -> None:
+    """`-0.0` is inside `[0, 1]` for the range gate and must still mean `q = 0`: `ln(2 * -0.0)` is `-inf`."""
+    dist = _spelled(Laplace, regime, 1.5, 2.0)
+    got = pl.DataFrame({"q": [-0.0, 0.0]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list() == [-math.inf, -math.inf]
+    assert got["isf"].to_list() == [math.inf, math.inf]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_log_pdf_keeps_relative_precision_at_the_mode_near_a_half_scale(regime: Regime) -> None:
+    """At `scale = 1/2 + 1e-12` the log-density at the mode is `-ln(2 scale) ~ -2e-12`; `ln 2 + ln(scale)` would leave
+    it with only the `1e-16` absolute rounding of each term, `5e-5` relative."""
+    scale = 0.5 + 1e-12
+    got = pl.DataFrame({"x": [0.0] * 4}).select(r=_spelled(Laplace, regime, 0.0, scale).log_pdf("x"))["r"][0]
+    assert got == pytest.approx(-math.log1p(2.0 * scale - 1.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_entropy_survives_a_scale_whose_two_e_multiple_overflows(regime: Regime) -> None:
+    """`log(2 e scale)` is `inf` above `scale ~ 3.3e307`; summed as `log(2 e) + log(scale)` it is not, as in scipy."""
+    scale = 1e308
+    dist = _spelled(Laplace, regime, 0.0, scale)
+    got = pl.DataFrame({"_": range(4)}).select(entropy=dist.entropy())["entropy"][0]
+    assert got == pytest.approx(float(scipy_laplace(loc=0.0, scale=scale).entropy()), rel=1e-14)
 
 
 # --------------------------------------------------------------------------------------------------
