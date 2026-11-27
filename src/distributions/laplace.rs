@@ -80,22 +80,36 @@ fn unstandardise(loc: f64, scale: f64, k: f64) -> f64 {
     }
 }
 
-/// `-|z| - ln(2 scale)`, never the log of the mass `exp(-|z|)`, so it answers past that mass's underflow. `2 scale`
-/// is exact, so `ln(2 scale)` is one rounding where `ln 2 + ln(scale)` cancels near `scale = 1/2`; above
-/// `f64::MAX / 2` the doubling overflows and the sum takes over.
-fn derive_ln_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
-    let doubled = 2.0 * scale;
-    let ln_peak = if doubled.is_finite() {
-        doubled.ln()
+/// `ln(2 scale)` in one rounding where `ln 2 + ln(scale)` cancels near `scale = 1/2`; the sum only where `2 scale`
+/// overflows.
+fn ln_two_scale(scale: f64) -> f64 {
+    let two_scale = 2.0 * scale;
+    if two_scale.is_finite() {
+        two_scale.ln()
     } else {
         LN_2 + scale.ln()
-    };
-    move |value: f64| -(standardise(loc, scale, value).abs() + ln_peak)
+    }
 }
 
+/// `-|z| - ln(2 scale)`, finite past the underflow of `exp(-|z|)`.
+fn derive_ln_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
+    let ln_two_scale = ln_two_scale(scale);
+    move |value: f64| -(standardise(loc, scale, value).abs() + ln_two_scale)
+}
+
+/// `exp(-|z|) / (2 scale)` while the mass is a normal number and `2 scale` finite, which keeps an ulp or two;
+/// `exp(-(|z| + ln(2 scale)))` past either, where exponentiating the rounded sum costs up to a few hundred ulp.
 fn derive_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
-    let ln_pdf = derive_ln_pdf(loc, scale);
-    move |value: f64| ln_pdf(value).exp()
+    let two_scale = 2.0 * scale;
+    move |value: f64| {
+        let distance = standardise(loc, scale, value).abs();
+        let mass = (-distance).exp();
+        if mass >= f64::MIN_POSITIVE && two_scale.is_finite() {
+            mass / two_scale
+        } else {
+            (-(distance + ln_two_scale(scale))).exp()
+        }
+    }
 }
 
 /// The standard cdf: the tail mass `exp(-|z|) / 2` below the median, its complement above, so the small side is

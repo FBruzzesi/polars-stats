@@ -661,6 +661,17 @@ def test_laplace_inverses_keep_the_infinite_endpoints(regime: Regime, loc: float
     assert got["isf"].to_list()[:2] == [math.inf, -math.inf]
 
 
+@pytest.mark.parametrize(
+    ("scale", "z"), [(1e-300, 0.0), (1e300, 1.0), (1.0, 30.0), (1.0, 700.0)], ids=lambda v: f"{v:g}"
+)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_pdf_keeps_the_mass_precision(regime: Regime, scale: float, z: float) -> None:
+    """`exp(-z) / (2 scale)` to an ulp or two. Exponentiating `-(z + ln(2 scale))` instead turns the absolute rounding
+    of that sum into up to ~300 ulp of relative error at these points."""
+    got = pl.DataFrame({"x": [z * scale] * 4}).select(r=_spelled(Laplace, regime, 0.0, scale).pdf("x"))["r"][0]
+    assert got == pytest.approx(math.exp(-z) / (2.0 * scale), rel=4e-16, abs=0.0)
+
+
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_laplace_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regime: Regime) -> None:
     """`-0.0` is inside `[0, 1]` for the range gate and must still mean `q = 0`: `ln(2 * -0.0)` is `-inf`."""
