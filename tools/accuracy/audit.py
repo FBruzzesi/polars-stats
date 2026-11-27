@@ -546,9 +546,8 @@ def laplace_cdf(params: Params, x: float) -> mp.mpf:
 
 
 def laplace_sf(params: Params, x: float) -> mp.mpf:
-    """The mirror of [`laplace_cdf`]."""
-    z = cauchy_z(params, x)
-    return exp_neg(z) / 2 if z >= 0 else 1 - exp_neg(-z) / 2
+    """[`laplace_cdf`] mirrored about `loc`; negating `loc` and `x` is exact, so the oracle stays exact."""
+    return laplace_cdf((-params[0], params[1]), -x)
 
 
 def laplace_log_cdf(params: Params, x: float) -> mp.mpf:
@@ -558,9 +557,8 @@ def laplace_log_cdf(params: Params, x: float) -> mp.mpf:
 
 
 def laplace_log_sf(params: Params, x: float) -> mp.mpf:
-    """The mirror of [`laplace_log_cdf`]."""
-    z = cauchy_z(params, x)
-    return -z - mp.log(2) if z >= 0 else mp.log1p(-exp_neg(-z) / 2)
+    """[`laplace_log_cdf`] mirrored about `loc`."""
+    return laplace_log_cdf((-params[0], params[1]), -x)
 
 
 def laplace_ppf(params: Params, q: float) -> mp.mpf:
