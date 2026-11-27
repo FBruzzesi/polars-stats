@@ -40,6 +40,7 @@ Some of these translations are not identities, so check this table rather than g
 | `uniform(loc=min, scale=max - min)` | `Uniform(min=min, max=max)` | **`scale` is the width**, not the upper bound |
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |
+| `laplace(loc=loc, scale=scale)` | `Laplace(loc=loc, scale=scale)` | same meaning |
 | `t(df, loc=loc, scale=scale)` | `StudentsT(dof=df, loc=loc, scale=scale)` | **`df` is `dof`**; the moments `scipy` returns as `nan` at `df <= 1` are `null` here |
 | `pareto(b=shape, scale=scale)` | `Pareto(scale=scale, shape=shape)` | **`b` is the shape**, and the argument order is `(scale, shape)`: pass both by keyword |
 | `weibull_min(c=shape, scale=scale)` | `Weibull(shape=shape, scale=scale)` | **`c` is the shape**; `weibull_max` and `exponweib` have no counterpart |
