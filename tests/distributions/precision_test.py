@@ -650,6 +650,17 @@ def test_laplace_inverses_answer_where_the_offset_from_loc_overflows(regime: Reg
     assert got["isf"][0] == pytest.approx(1e308 * (-1.0 - k), rel=1e-15, abs=0.0)
 
 
+@pytest.mark.parametrize("loc", [1e308, -1e308], ids=lambda loc: f"loc={loc:.0e}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_laplace_inverses_keep_the_infinite_endpoints(regime: Regime, loc: float) -> None:
+    """At `scale = 0.1` the endpoint offset `scale * -+inf` and `loc / scale` both overflow, so the split form would
+    read `inf - inf`; the endpoints keep the direct form and land on the support ends."""
+    dist = _spelled(Laplace, regime, loc, 0.1)
+    got = pl.DataFrame({"q": [0.0, 1.0] * 2}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list()[:2] == [-math.inf, math.inf]
+    assert got["isf"].to_list()[:2] == [math.inf, -math.inf]
+
+
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_laplace_inverses_keep_a_negative_zero_quantile_on_the_negative_side(regime: Regime) -> None:
     """`-0.0` is inside `[0, 1]` for the range gate and must still mean `q = 0`: `ln(2 * -0.0)` is `-inf`."""
