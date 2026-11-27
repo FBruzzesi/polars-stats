@@ -27,6 +27,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Laplace,
     NegativeBinomial,
     Normal,
     Pareto,
@@ -669,3 +670,44 @@ def test_students_t_at_a_huge_dof_is_the_normal_in_the_bulk(method: Method) -> N
     via_t = frame.select(r=getattr(StudentsT(dof=1e15, loc=_T_LOC, scale=_T_SCALE), method)(pl.col("x")))["r"]
     via_normal = frame.select(r=getattr(Normal(mu=_T_LOC, sigma=_T_SCALE), method)(pl.col("x")))["r"]
     assert_series_equal(via_t, via_normal, rel_tol=1e-9, abs_tol=0.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# Laplace is symmetric about `loc`, and its tail is `exp(-z) / 2`, whose log needs no `exp` at all.
+# --------------------------------------------------------------------------------------------------
+
+_LAPLACE_LOC, _LAPLACE_SCALE = 1.5, 2.0
+# `1.5 +- d` and `d / 2` are exact for each, so both sides read the same standardised point.
+_LAPLACE_DISTANCES = [0.0, 0.25, 1.0, 3.5, 1e3, 2.0**40]
+
+
+def test_laplace_tails_are_mirror_images_bit_for_bit() -> None:
+    """`cdf(loc - d) == sf(loc + d)` and the same for the logs, to the last bit: one body serves both tails."""
+    dist = Laplace(loc=_LAPLACE_LOC, scale=_LAPLACE_SCALE)
+    frame = pl.DataFrame({"d": _LAPLACE_DISTANCES})
+    got = frame.select(
+        cdf=dist.cdf(_LAPLACE_LOC - pl.col("d")),
+        sf=dist.sf(_LAPLACE_LOC + pl.col("d")),
+        log_cdf=dist.log_cdf(_LAPLACE_LOC - pl.col("d")),
+        log_sf=dist.log_sf(_LAPLACE_LOC + pl.col("d")),
+    )
+    assert_series_equal(got["cdf"], got["sf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+    assert_series_equal(got["log_cdf"], got["log_sf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+def test_laplace_log_sf_is_the_exponent_itself_bit_for_bit() -> None:
+    """`log_sf = -z - ln 2` from the median outward, the exponent read directly rather than the log of its `exp`, so
+    it keeps going past `z ~ 745` where the mass underflows."""
+    dist = Laplace(loc=_LAPLACE_LOC, scale=_LAPLACE_SCALE)
+    got = pl.DataFrame({"d": _LAPLACE_DISTANCES}).select(r=dist.log_sf(_LAPLACE_LOC + pl.col("d")))["r"]
+    want = pl.Series([-(d / _LAPLACE_SCALE) - math.log(2.0) for d in _LAPLACE_DISTANCES])
+    assert_series_equal(got, want, rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+def test_laplace_isf_is_the_reflected_ppf() -> None:
+    """`isf(q) == 2 loc - ppf(q)`, bit for bit at `loc = 0`, where the reflection adds no rounding of its own."""
+    dist = Laplace(scale=_LAPLACE_SCALE)
+    got = pl.DataFrame({"q": [0.0, 1e-300, 1e-9, 0.2, 0.5, 0.7, 1 - 1e-9, 1.0]}).select(
+        isf=dist.isf(pl.col("q")), ppf=dist.ppf(pl.col("q"))
+    )
+    assert_series_equal(got["isf"], -got["ppf"], rel_tol=0.0, abs_tol=0.0, check_names=False)

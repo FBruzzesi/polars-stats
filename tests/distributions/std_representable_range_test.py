@@ -22,6 +22,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Laplace,
     LogNormal,
     NegativeBinomial,
     Normal,
@@ -88,6 +89,13 @@ def test_students_t_std_is_the_scale_times_a_root(scale: float) -> None:
     """
     got = pl.DataFrame({"z": [0.0]}).select(r=StudentsT(dof=5.0, scale=scale).std())["r"].item()
     assert got == pytest.approx(scale * math.sqrt(5.0 / 3.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("scale", _EXTREME_SCALES, ids=lambda scale: f"scale={scale:.0e}")
+def test_laplace_std_is_the_scale_times_root_two(scale: float) -> None:
+    """`Laplace(loc, scale).std()` is `scale sqrt(2)`, finite and nonzero wherever `scale` is."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Laplace(scale=scale).std())["r"].item()
+    assert got == pytest.approx(scale * math.sqrt(2.0), rel=1e-15, abs=0.0)
 
 
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)

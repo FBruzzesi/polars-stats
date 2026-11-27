@@ -11,6 +11,7 @@ from polars_stats.distributions._discrete_uniform import DiscreteUniform
 from polars_stats.distributions._exponential import Exponential
 from polars_stats.distributions._gamma import Gamma
 from polars_stats.distributions._geometric import Geometric
+from polars_stats.distributions._laplace import Laplace
 from polars_stats.distributions._lognormal import LogNormal
 from polars_stats.distributions._negative_binomial import NegativeBinomial
 from polars_stats.distributions._normal import Normal
@@ -32,6 +33,7 @@ __all__ = (
     "Exponential",
     "Gamma",
     "Geometric",
+    "Laplace",
     "LogNormal",
     "NegativeBinomial",
     "Normal",

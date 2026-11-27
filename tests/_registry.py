@@ -27,6 +27,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Laplace,
     LogNormal,
     NegativeBinomial,
     Normal,
@@ -525,6 +526,27 @@ _CAUCHY = DistSpec(
 )
 
 
+_LAPLACE = DistSpec(
+    name="laplace",
+    cls=Laplace,
+    continuous=True,
+    parameters=(Param("loc", "loc"), Param("scale", "scale")),
+    param_strategy=st.tuples(_finite(-10.0, 10.0), _finite(1e-2, 10.0)),
+    example=(1.5, 2.0),
+    eval_range=lambda p: (p[0] - 6.0 * p[1], p[0] + 6.0 * p[1]),
+    bounds=(-inf, inf),
+    # `loc` itself would be vacuous for `scale`: the cdf is `0.5` at the median whatever the scale.
+    on_support_point=1.5 + 2.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("scale=0", (0.0, 0.0), "scale must be"),
+        InvalidCase("scale=-1", (0.0, -1.0), "scale must be"),
+    ),
+    # The truncated tail mass is `exp(-40)`, far below the `1e-3` tolerance.
+    integration_bounds=lambda p: (p[0] - 40.0 * p[1], p[0] + 40.0 * p[1]),
+)
+
+
 def _students_t_tail_point(params: tuple[float, ...], tail_mass: float) -> tuple[float, float]:
     """`loc -+ scale t` where the far tail's leading term `dof^(dof / 2 - 1) t^-dof / B(dof / 2, 1 / 2)` is `tail_mass`.
 
@@ -816,6 +838,7 @@ ALL_SPECS = [
     _NEGATIVE_BINOMIAL,
     _NORMAL,
     _CAUCHY,
+    _LAPLACE,
     _STUDENTS_T,
     _UNIFORM,
     _LOGNORMAL,

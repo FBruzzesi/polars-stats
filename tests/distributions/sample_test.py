@@ -19,7 +19,16 @@ import polars as pl
 import pytest
 from polars.testing import assert_series_equal, assert_series_not_equal
 
-from polars_stats import Bernoulli, DiscreteUniform, Geometric, NegativeBinomial, Poisson, StudentsT, Uniform
+from polars_stats import (
+    Bernoulli,
+    DiscreteUniform,
+    Geometric,
+    Laplace,
+    NegativeBinomial,
+    Poisson,
+    StudentsT,
+    Uniform,
+)
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
 
 if TYPE_CHECKING:
@@ -422,3 +431,26 @@ def test_a_students_t_draw_keeps_its_mean_variance_and_kurtosis() -> None:
     fourth_moment = (((drawn - loc) / sd) ** 4).mean()
     assert isinstance(fourth_moment, float)
     assert abs(fourth_moment - 4.0) <= _CLT_SIGMAS * math.sqrt((1120.0 - 16.0) / _STUDENTS_T_ROWS)
+
+
+_LAPLACE_ROWS = 200_000
+
+
+def test_a_laplace_draw_keeps_its_mean_variance_and_kurtosis() -> None:
+    """The draw keeps the mean `loc`, the variance `2 scale**2` and the excess kurtosis `3`.
+
+    A normal draw of the same variance passes the first two and has excess kurtosis `0`, so the fourth moment is what
+    pins the double-exponential tail. On the standardised draw `E z**4 = 6` and `E z**8 = 8! / 2**4 = 2520`, so the
+    allowance is `sqrt((2520 - 36) / n)`, and the variance's is `sqrt((6 - 1) / n)` relative.
+    """
+    loc, scale = -1.25, 2.5
+    sd = scale * math.sqrt(2.0)
+    drawn = _frame(_LAPLACE_ROWS).select(z=Laplace(loc=loc, scale=scale).sample(seed=_SEED))["z"]
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - loc) <= _CLT_SIGMAS * sd / math.sqrt(_LAPLACE_ROWS)
+    assert variance == pytest.approx(sd**2, rel=_CLT_SIGMAS * math.sqrt(5.0 / _LAPLACE_ROWS))
+    fourth_moment = (((drawn - loc) / sd) ** 4).mean()
+    assert isinstance(fourth_moment, float)
+    assert abs(fourth_moment - 6.0) <= _CLT_SIGMAS * math.sqrt((2520.0 - 36.0) / _LAPLACE_ROWS)
