@@ -181,6 +181,12 @@ def exp_neg(t: mp.mpf) -> mp.mpf:
     return mp.mpf(0) if t > EXP_STALLS_ABOVE else mp.e ** (-t)
 
 
+def z_score(params: Params, x: float) -> mp.mpf:
+    """`(x - location) / scale` at oracle precision, for any `(location, scale)` parameter pair."""
+    location, scale = params
+    return (mp.mpf(x) - mp.mpf(location)) / mp.mpf(scale)
+
+
 def one_minus_exp_neg(t: mp.mpf) -> mp.mpf:
     """`-expm1(-t)`, cut to `1` past [`EXP_STALLS_ABOVE`]; never `1 - exp(-t)`, which cancels at 50 digits too."""
     return mp.mpf(1) if t > EXP_STALLS_ABOVE else -mp.expm1(-t)
@@ -265,31 +271,25 @@ def std_normal_quantile(q: mp.mpf) -> mp.mpf:
         return mp.sqrt(2) * mp.erfinv(2 * q - 1)
 
 
-def normal_z(params: Params, x: float) -> mp.mpf:
-    """Standardised `(x - mu) / sigma` at oracle precision."""
-    mu, sigma = params
-    return (mp.mpf(x) - mp.mpf(mu)) / mp.mpf(sigma)
-
-
 def normal_cdf(params: Params, x: float) -> mp.mpf:
     """`0.5 * erfc(-z / sqrt(2))`."""
-    return mp.erfc(-normal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.erfc(-z_score(params, x) / mp.sqrt(2)) / 2
 
 
 def normal_sf(params: Params, x: float) -> mp.mpf:
     """`0.5 * erfc(z / sqrt(2))`."""
-    return mp.erfc(normal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.erfc(z_score(params, x) / mp.sqrt(2)) / 2
 
 
 def normal_pdf(params: Params, x: float) -> mp.mpf:
     """`exp(-z^2 / 2) / (sigma * sqrt(2 pi))`."""
-    z = normal_z(params, x)
+    z = z_score(params, x)
     return mp.e ** (-z * z / 2) / (mp.mpf(params[1]) * mp.sqrt(2 * mp.pi))
 
 
 def normal_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-z^2 / 2 - ln(sigma) - ln(2 pi) / 2`."""
-    z = normal_z(params, x)
+    z = z_score(params, x)
     return -z * z / 2 - mp.log(mp.mpf(params[1])) - mp.log(2 * mp.pi) / 2
 
 
@@ -314,7 +314,7 @@ def normal_entropy(params: Params, _x: float) -> mp.mpf:
     return mp.log(2 * mp.pi * mp.e * mp.mpf(params[1]) ** 2) / 2
 
 
-def lognormal_z(params: Params, x: float) -> mp.mpf:
+def logz_score(params: Params, x: float) -> mp.mpf:
     """Standardised `(ln x - mu) / sigma`; the caller guards `x > 0`."""
     mu, sigma = params
     return (mp.log(mp.mpf(x)) - mp.mpf(mu)) / mp.mpf(sigma)
@@ -322,19 +322,19 @@ def lognormal_z(params: Params, x: float) -> mp.mpf:
 
 def lognormal_cdf(params: Params, x: float) -> mp.mpf:
     """`0` at/below the support, else the underlying normal's cdf at `ln x`."""
-    return mp.mpf(0) if x <= 0 else mp.erfc(-lognormal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.mpf(0) if x <= 0 else mp.erfc(-logz_score(params, x) / mp.sqrt(2)) / 2
 
 
 def lognormal_sf(params: Params, x: float) -> mp.mpf:
     """`1` at/below the support, else the underlying normal's sf at `ln x`."""
-    return mp.mpf(1) if x <= 0 else mp.erfc(lognormal_z(params, x) / mp.sqrt(2)) / 2
+    return mp.mpf(1) if x <= 0 else mp.erfc(logz_score(params, x) / mp.sqrt(2)) / 2
 
 
 def lognormal_pdf(params: Params, x: float) -> mp.mpf:
     """`exp(-z^2 / 2) / (x sigma sqrt(2 pi))`, `0` at/below the support."""
     if x <= 0:
         return mp.mpf(0)
-    z = lognormal_z(params, x)
+    z = logz_score(params, x)
     return mp.e ** (-z * z / 2) / (mp.mpf(x) * mp.mpf(params[1]) * mp.sqrt(2 * mp.pi))
 
 
@@ -342,7 +342,7 @@ def lognormal_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-z^2 / 2 - ln x - ln(sigma) - ln(2 pi) / 2`, `-inf` at/below the support."""
     if x <= 0:
         return mp.ninf
-    z = lognormal_z(params, x)
+    z = logz_score(params, x)
     return -z * z / 2 - mp.log(mp.mpf(x)) - mp.log(mp.mpf(params[1])) - mp.log(2 * mp.pi) / 2
 
 
@@ -447,32 +447,26 @@ def uniform_isf(params: Params, q: float) -> mp.mpf:
 # `z ~ 1e307`), so every decade of `z` is a live probe of the arctangent cancellation.
 
 
-def cauchy_z(params: Params, x: float) -> mp.mpf:
-    """Standardised `(x - loc) / scale` at oracle precision."""
-    loc, scale = params
-    return (mp.mpf(x) - mp.mpf(loc)) / mp.mpf(scale)
-
-
 def cauchy_pdf(params: Params, x: float) -> mp.mpf:
     """`1 / (pi scale (1 + z^2))`."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return 1 / (mp.pi * mp.mpf(params[1]) * (1 + z * z))
 
 
 def cauchy_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-(ln(pi scale) + log1p(z^2))`."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return -(mp.log(mp.pi * mp.mpf(params[1])) + mp.log1p(z * z))
 
 
 def cauchy_cdf(params: Params, x: float) -> mp.mpf:
     """`1/2 + atan(z) / pi`, as `atan2(1, -z) / pi` so the lower tail keeps relative precision at 50 digits too."""
-    return mp.atan2(1, -cauchy_z(params, x)) / mp.pi
+    return mp.atan2(1, -z_score(params, x)) / mp.pi
 
 
 def cauchy_sf(params: Params, x: float) -> mp.mpf:
     """`1/2 - atan(z) / pi`, as `atan2(1, z) / pi`; see [`cauchy_cdf`]."""
-    return mp.atan2(1, cauchy_z(params, x)) / mp.pi
+    return mp.atan2(1, z_score(params, x)) / mp.pi
 
 
 def cauchy_ppf(params: Params, q: float) -> mp.mpf:
@@ -531,17 +525,17 @@ def cauchy_points(params: Params, rng: random.Random, count: int) -> list[Point]
 
 def laplace_pdf(params: Params, x: float) -> mp.mpf:
     """`exp(-|z|) / (2 scale)`."""
-    return exp_neg(abs(cauchy_z(params, x))) / (2 * mp.mpf(params[1]))
+    return exp_neg(abs(z_score(params, x))) / (2 * mp.mpf(params[1]))
 
 
 def laplace_log_pdf(params: Params, x: float) -> mp.mpf:
     """`-|z| - ln(2 scale)`."""
-    return -abs(cauchy_z(params, x)) - mp.log(2 * mp.mpf(params[1]))
+    return -abs(z_score(params, x)) - mp.log(2 * mp.mpf(params[1]))
 
 
 def laplace_cdf(params: Params, x: float) -> mp.mpf:
     """`exp(z) / 2` up to the median, `1 - exp(-z) / 2` above it."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return exp_neg(-z) / 2 if z <= 0 else 1 - exp_neg(z) / 2
 
 
@@ -552,7 +546,7 @@ def laplace_sf(params: Params, x: float) -> mp.mpf:
 
 def laplace_log_cdf(params: Params, x: float) -> mp.mpf:
     """`z - ln 2` up to the median, `log1p(-exp(-z) / 2)` above it: never the log of a mass that has left range."""
-    z = cauchy_z(params, x)
+    z = z_score(params, x)
     return z - mp.log(2) if z <= 0 else mp.log1p(-exp_neg(z) / 2)
 
 
