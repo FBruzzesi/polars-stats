@@ -38,6 +38,7 @@ Some of these translations are not identities, so check this table rather than g
 | `gamma(a=shape, scale=1 / rate)` | `Gamma(shape=shape, rate=rate)` | **`a` is the shape** and `scale` is `1 / rate`, as for `expon` |
 | `chi2(df)` | `ChiSquared(dof=df)` | **`df` is `dof`**; it is `Gamma(shape=dof / 2, rate=1 / 2)` |
 | `uniform(loc=min, scale=max - min)` | `Uniform(min=min, max=max)` | **`scale` is the width**, not the upper bound |
+| `triang(c, loc=loc, scale=scale)` | `Triangular(min=loc, mode=loc + c * scale, max=loc + scale)` | **`c` is the mode's fraction of the width**; the mode is passed as a point |
 | `beta(a, b)` | `Beta(a=a, b=b)` | same meaning |
 | `cauchy(loc=loc, scale=scale)` | `Cauchy(loc=loc, scale=scale)` | same meaning; see the undefined-moment row below |
 | `laplace(loc=loc, scale=scale)` | `Laplace(loc=loc, scale=scale)` | same meaning |

@@ -15,7 +15,7 @@ parameter rejects an `int` and an integer bound rejects a `float`, while a metho
 The bounds of `Uniform` and `DiscreteUniform` sit on opposite sides of the float rule despite sharing the names `min`
 and `max`.
 
-| Input | Float parameter (`mu`, `sigma`, `loc`, `scale`, `p`, `rate`, `a`, `b`, `Uniform`'s `min` / `max`) | Count parameter (`n`) | Integer bound (`DiscreteUniform`'s `min` / `max`) | Method argument (`x`, `q`) |
+| Input | Float parameter (`mu`, `sigma`, `loc`, `scale`, `p`, `rate`, `a`, `b`, `Uniform`'s `min` / `max`, `Triangular`'s `min` / `mode` / `max`) | Count parameter (`n`) | Integer bound (`DiscreteUniform`'s `min` / `max`) | Method argument (`x`, `q`) |
 |---|---|---|---|---|
 | `float` | accepted | `TypeError` | `TypeError` | accepted |
 | `int` | `TypeError` | accepted (`0` to `2**63 - 1`) | accepted (any `Int64`) | accepted |
@@ -104,6 +104,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
 | `Pareto(scale, shape)` | `scale > 0`, `shape > 0` | both finite |
 | `StudentsT(dof, loc, scale)` | `dof > 0`, `scale > 0` | all finite: `dof = inf` is `Normal(loc, scale)`, not a `StudentsT` |
+| `Triangular(min, mode, max)` | `max > min`, `min <= mode <= max` | all finite, `max - min` finite |
 | `Uniform(min, max)` | `max > min` | `max - min` finite |
 | `Weibull(shape, scale)` | `shape > 0`, `scale > 0` | both finite |
 | `Bernoulli(p)` | `0 <= p <= 1` | |
@@ -138,7 +139,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric`, `NegativeBinomial`, `Poisson` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `Gumbel`, `Laplace`, `LogNormal`, `Normal`, `Pareto`, `StudentsT`, `Uniform`, `Weibull` | `Float64` |
+| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `Gumbel`, `Laplace`, `LogNormal`, `Normal`, `Pareto`, `StudentsT`, `Triangular`, `Uniform`, `Weibull` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|

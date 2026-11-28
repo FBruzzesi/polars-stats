@@ -88,11 +88,11 @@ Each row is scored against its own `Normal(mu, sigma)`, in one vectorised pass, 
 The maths runs on [`statrs`](https://docs.rs/statrs), and `make audit` sweeps every method against
 an [`mpmath`](https://mpmath.org) oracle at 50 digits, including inputs many decades past where
 `scipy` itself saturates. For tail work on `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `StudentsT`, `Beta`,
-`Binomial`, `Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Exponential`, `Cauchy`,
-`Gumbel`, `Laplace`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), use `log_cdf` / `log_sf` rather
-than the linear pair, and, except on `Beta` and `Binomial`, `isf(q)` rather than `ppf(1 - q)`. `Beta` and `Binomial`
-inherit several documented `statrs`-side limits in this release: their `isf` composes `ppf(1 - q)`, and the extreme
-lower tail of `ppf` misbehaves. Every known limit is listed with a regime and a magnitude in
+`Binomial`, `Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Triangular`, `Exponential`,
+`Cauchy`, `Gumbel`, `Laplace`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), use `log_cdf` /
+`log_sf` rather than the linear pair, and, except on `Beta` and `Binomial`, `isf(q)` rather than `ppf(1 - q)`. `Beta`
+and `Binomial` inherit several documented `statrs`-side limits in this release: their `isf` composes `ppf(1 - q)`, and
+the extreme lower tail of `ppf` misbehaves. Every known limit is listed with a regime and a magnitude in
 [Numerical accuracy](https://fbruzzesi.github.io/polars-stats/explanation/accuracy/).
 
 ## Installation
