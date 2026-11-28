@@ -26,9 +26,8 @@ _HALF_MINUS_LN_2 = 0.5 - math.log(2.0)
 class Triangular(ContinuousDistribution):
     """Triangular distribution on ``[min, max]`` with its peak at ``mode``.
 
-    Equivalent to ``scipy.stats.triang(c=(mode - min) / (max - min), loc=min, scale=max - min)``, and to numpy's
-    ``triangular(left=min, mode=mode, right=max)``. ``statrs`` orders its constructor ``(min, max, mode)``; pass the
-    parameters by keyword.
+    Equivalent to ``scipy.stats.triang(c=(mode - min) / (max - min), loc=min, scale=max - min)`` and to numpy's
+    ``triangular(left=min, mode=mode, right=max)``.
 
     Arguments:
         min: Lower end of the support. Either a Python ``float`` or an ``IntoExprColumn`` (``pl.Expr``, ``pl.Series``
@@ -36,7 +35,7 @@ class Triangular(ContinuousDistribution):
         mode: The peak, with ``min <= mode <= max``; either end is allowed. Same accepted types as ``min``.
         max: Upper end of the support, with ``max > min``. Same accepted types as ``min``.
 
-    Where ``mode`` sits on an end, the density there is its one-sided limit ``2 / (max - min)``, as scipy's.
+    Where ``mode`` sits on an end, the density there is its one-sided limit ``2 / (max - min)``, as in scipy.
 
     An invalid parameterisation (``max <= min``, a ``mode`` outside ``[min, max]``, a non-finite parameter, or a width
     ``max - min`` overflowing ``float64``) is not checked at construction; it raises ``InvalidOperation`` (a
@@ -80,10 +79,7 @@ class Triangular(ContinuousDistribution):
         return self._max - self._mode
 
     def mean(self) -> pl.Expr:
-        """Expected value, ``(min + mode + max) / 3``.
-
-        Read off ``mode``: no sum of the parameters overflows, and a symmetric triangle's mean is its ``mode`` exactly.
-        """
+        """Expected value, ``(min + mode + max) / 3``, read off ``mode`` so a symmetric triangle's mean is ``mode``."""
         return self._moment(self._mode + (self._above_mode - self._below_mode) * _ONE_THIRD)
 
     def variance(self) -> pl.Expr:
@@ -99,13 +95,14 @@ class Triangular(ContinuousDistribution):
         Not ``variance().sqrt()``: squaring and unsquaring the width saturates about 150 decades earlier.
         """
         below, above = self._below_mode, self._above_mode
+        # Not `self._width`: with literal ends it is a literal, which polars divides by as a reciprocal multiply.
         width = below + above
         return self._moment(width * (1.0 - (below / width) * (above / width)).sqrt() * _ROOT_ONE_EIGHTEENTH)
 
     def median(self) -> pl.Expr:
         """Median, read from the end whose piece holds half the mass.
 
-        ``min + sqrt((max - min) * (mode - min) / 2)`` with ``mode`` in the upper half of the support, else
+        ``min + sqrt((max - min) * (mode - min) / 2)`` with ``mode`` in the upper half, else
         ``max - sqrt((max - min) * (max - mode) / 2)``.
         """
         half_width = self._width * 0.5
