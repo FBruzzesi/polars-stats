@@ -70,6 +70,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Gumbel,
     Laplace,
     LogNormal,
     NegativeBinomial,
@@ -572,6 +573,72 @@ def laplace_isf(params: Params, q: float) -> mp.mpf:
     """`2 loc - ppf(q)`, the exact inverse survival function (see [`normal_isf`])."""
     ppf = laplace_ppf(params, q)
     return 2 * mp.mpf(params[0]) - ppf if mp.isfinite(ppf) else -ppf
+
+
+# Gumbel oracles. Every method is elementary in `w = exp(-z)`, so this is a control like Laplace. `w` overflows
+# below `z ~ -709`, where only `log_cdf` and `log_pdf` still carry a finite magnitude, and underflows above `z ~ 745`,
+# where only `log_sf` and `log_pdf` do; the oracles read `-z` there rather than logging a mass that has left range.
+
+
+def gumbel_w(params: Params, x: float) -> mp.mpf:
+    """`exp(-z)`, `inf` past [`EXP_STALLS_ABOVE`] on the left, where `mpmath` would stall, and `0` on the right."""
+    z = z_score(params, x)
+    return mp.inf if -z > EXP_STALLS_ABOVE else exp_neg(z)
+
+
+def gumbel_pdf(params: Params, x: float) -> mp.mpf:
+    """`w exp(-w) / scale`."""
+    w = gumbel_w(params, x)
+    return mp.mpf(0) if mp.isinf(w) else w * exp_neg(w) / mp.mpf(params[1])
+
+
+def gumbel_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`-z - w - ln(scale)`."""
+    return -z_score(params, x) - gumbel_w(params, x) - mp.log(mp.mpf(params[1]))
+
+
+def gumbel_cdf(params: Params, x: float) -> mp.mpf:
+    """`exp(-w)`."""
+    return exp_neg(gumbel_w(params, x))
+
+
+def gumbel_log_cdf(params: Params, x: float) -> mp.mpf:
+    """`-w`."""
+    return -gumbel_w(params, x)
+
+
+def gumbel_sf(params: Params, x: float) -> mp.mpf:
+    """`-expm1(-w)`."""
+    return one_minus_exp_neg(gumbel_w(params, x))
+
+
+def gumbel_log_sf(params: Params, x: float) -> mp.mpf:
+    """`log1p(-exp(-w))` above `w = 1`, `ln(-expm1(-w))` below, and `-z` once `w` is cut to `0`.
+
+    Not `ln(-expm1(-w))` throughout: `1 - exp(-w)` rounds to `1` at 50 digits too, from `w ~ 115`.
+    """
+    w = gumbel_w(params, x)
+    if w > 1:
+        return mp.log1p(-exp_neg(w))
+    return -z_score(params, x) if w == 0 else mp.log(-mp.expm1(-w))
+
+
+def gumbel_ppf(params: Params, q: float) -> mp.mpf:
+    """`loc - scale ln(-ln q)`."""
+    if q <= 0:
+        return mp.ninf
+    if q >= 1:
+        return mp.inf
+    return mp.mpf(params[0]) - mp.mpf(params[1]) * mp.log(-mp.log(mp.mpf(q)))
+
+
+def gumbel_isf(params: Params, q: float) -> mp.mpf:
+    """`loc - scale ln(-log1p(-q))`; `log1p`, since `1 - q` rounds to `1` at 50 digits from `q ~ 1e-50`."""
+    if q <= 0:
+        return mp.inf
+    if q >= 1:
+        return mp.ninf
+    return mp.mpf(params[0]) - mp.mpf(params[1]) * mp.log(-mp.log1p(-mp.mpf(q)))
 
 
 # Pareto oracles: the exponential oracles read at `t = ln(x / scale)`, which `mpmath` forms exactly.
@@ -1935,6 +2002,26 @@ def laplace_points(params: Params, rng: random.Random, count: int) -> list[Point
     return points
 
 
+GUMBEL_SWITCHES = (
+    -math.log(math.log(2.0)),
+    52.0 * math.log(2.0),
+    -math.log(745.0),
+    -math.log(1420.0),
+    -709.0,
+    -710.0,
+)
+"""Standardised points where a Gumbel body switches form (`w = ln 2`, `w = 2^-52`, `sinh(w / 2)` overflowing at
+`w ~ 1420`) or a quantity leaves range (`exp(-w)` underflowing at `w ~ 745`, `w` overflowing at `z ~ -709.8`)."""
+
+
+def gumbel_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`laplace_points`] plus `loc + scale t` at each of [`GUMBEL_SWITCHES`]."""
+    loc, scale = params
+    points = laplace_points(params, rng, count)
+    points.extend((loc + scale * t, "danger") for t in GUMBEL_SWITCHES)
+    return points
+
+
 def pareto_points(params: Params, rng: random.Random, count: int) -> list[Point]:
     """`scale exp(t / shape)` over [`EXPONENT_GRID`], both sides of the support edge, and a log-uniform far tail.
 
@@ -2778,6 +2865,29 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     variance=lambda p, _x: cast("mp.mpf", 2 * mp.mpf(p[1]) ** 2),
                     median=lambda p, _x: mp.mpf(p[0]),
                     entropy=lambda p, _x: 1 + mp.log(2 * mp.mpf(p[1])),
+                    tolerance=CLOSED_FORM_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="Gumbel",
+            build=lambda p: Gumbel(loc=p[0], scale=p[1]),
+            param_names=("loc", "scale"),
+            params=((0.0, 1.0), (0.0, 1e-8), (0.0, 1e8), (5.0, 2.0), (-3.0, 0.5), (1e6, 1e3)),
+            methods=(
+                AuditedMethod("pdf", gumbel_pdf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("log_pdf", gumbel_log_pdf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("cdf", gumbel_cdf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("log_cdf", gumbel_log_cdf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("sf", gumbel_sf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("log_sf", gumbel_log_sf, CLOSED_FORM_RTOL, gumbel_points),
+                AuditedMethod("ppf", gumbel_ppf, CLOSED_FORM_RTOL, quantile_points),
+                AuditedMethod("isf", gumbel_isf, CLOSED_FORM_RTOL, survival_points),
+                *moments(
+                    mean=lambda p, _x: mp.mpf(p[0]) + mp.euler * mp.mpf(p[1]),
+                    variance=lambda p, _x: cast("mp.mpf", mp.pi**2 / 6 * mp.mpf(p[1]) ** 2),
+                    median=lambda p, _x: mp.mpf(p[0]) - mp.mpf(p[1]) * mp.log(mp.log(2)),
+                    entropy=lambda p, _x: mp.log(mp.mpf(p[1])) + mp.euler + 1,
                     tolerance=CLOSED_FORM_RTOL,
                 ),
             ),

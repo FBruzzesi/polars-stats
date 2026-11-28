@@ -32,6 +32,7 @@ from scipy.stats import (
     expon,
     gamma,
     geom,
+    gumbel_r,
     laplace,
     lognorm,
     nbinom,
@@ -54,6 +55,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Gumbel,
     Laplace,
     LogNormal,
     NegativeBinomial,
@@ -108,6 +110,12 @@ def _cauchy(params: Params) -> tuple[Distribution, ScipyFrozen]:
 
 def _laplace(params: Params) -> tuple[Distribution, ScipyFrozen]:
     return Laplace(loc=params.plugin("loc"), scale=params.plugin("scale")), laplace(
+        loc=params.scipy("loc"), scale=params.scipy("scale")
+    )
+
+
+def _gumbel(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    return Gumbel(loc=params.plugin("loc"), scale=params.plugin("scale")), gumbel_r(
         loc=params.scipy("loc"), scale=params.scipy("scale")
     )
 
@@ -206,6 +214,11 @@ REGISTRY: dict[str, Comparison] = {
             name="laplace",
             params={"loc": ParamSpec(0.0, -1.0, 1.0), "scale": ParamSpec(1.0, 0.5, 2.0)},
             build=_laplace,
+        ),
+        Comparison(
+            name="gumbel",
+            params={"loc": ParamSpec(0.0, -1.0, 1.0), "scale": ParamSpec(1.0, 0.5, 2.0)},
+            build=_gumbel,
         ),
         Comparison(
             # `dof = 4.5` has no closed-form quantile, so `ppf` / `isf` time the solver; the column draws stay above
