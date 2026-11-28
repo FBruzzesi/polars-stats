@@ -472,7 +472,7 @@ def test_a_gumbel_draw_keeps_its_mean_variance_and_skewness() -> None:
     the variance's is `sqrt((E z**4 - 1) / n) = sqrt(4.4 / n)` relative.
     """
     loc, scale = -1.25, 2.5
-    mu = loc + 0.5772156649015329 * scale
+    mu = loc + np.euler_gamma * scale
     sd = scale * math.pi / math.sqrt(6.0)
     drawn = _frame(_GUMBEL_ROWS).select(z=Gumbel(loc=loc, scale=scale).sample(seed=_SEED))["z"]
     mean, variance = drawn.mean(), drawn.var()

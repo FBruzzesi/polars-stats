@@ -722,7 +722,7 @@ def test_laplace_isf_is_the_reflected_ppf() -> None:
 _GUMBEL_POINTS = [-700.0, -20.0, -3.0, -0.5, 0.0, 0.25, 1.0, 8.0, 30.0, 100.0, 700.0]
 _GUMBEL_LN_2_SWITCH = -math.log(math.log(2.0))
 _GUMBEL_EPSILON_SWITCH = 52.0 * math.log(2.0)
-# Each switch and its neighbours a few ulps and a few parts in `1e9` either side.
+# Each switch, an ulp either side of it, and one part in `1e9` either side.
 _GUMBEL_SWITCH_POINTS = [
     point
     for switch in (_GUMBEL_LN_2_SWITCH, _GUMBEL_EPSILON_SWITCH)
@@ -737,7 +737,7 @@ _GUMBEL_SWITCH_POINTS = [
 
 
 def test_gumbel_cdf_is_the_unit_exponential_sf_at_exp_neg_x() -> None:
-    """`Gumbel(0, 1).cdf(x) == Exponential(1).sf(exp(-x))`, to an ulp: the one variate read through `-ln`."""
+    """`Gumbel(0, 1).cdf(x) == Exponential(1).sf(exp(-x))` to an ulp."""
     got = pl.DataFrame({"x": _GUMBEL_POINTS}).select(
         gumbel=Gumbel().cdf(pl.col("x")), exponential=Exponential(rate=1.0).sf((-pl.col("x")).exp())
     )
