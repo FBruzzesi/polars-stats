@@ -78,6 +78,7 @@ from polars_stats import (
     Pareto,
     Poisson,
     StudentsT,
+    Triangular,
     Uniform,
     Weibull,
 )
@@ -441,6 +442,102 @@ def uniform_isf(params: Params, q: float) -> mp.mpf:
     """`hi - q * width`, the exact inverse survival function."""
     _, hi, width = uniform_span(params)
     return hi - mp.mpf(q) * width
+
+
+# Triangular oracles. Every method is elementary, so this is a control like Uniform. `params` is `(min, mode, max)`;
+# each mass is its tail from the near end or a sum of non-negative terms, never `1 -` the other, and each quantile is
+# read from its own end, since `1 - sqrt(1 - q)` is `0` at 50 digits for `q = 1e-300`.
+
+
+def triangular_span(params: Params) -> tuple[mp.mpf, mp.mpf, mp.mpf, mp.mpf, mp.mpf, mp.mpf]:
+    """`(min, mode, max, max - min, mode - min, max - mode)` at oracle precision."""
+    lo, mode, hi = (mp.mpf(v) for v in params)
+    return lo, mode, hi, hi - lo, mode - lo, hi - mode
+
+
+def triangular_pdf(params: Params, x: float) -> mp.mpf:
+    """`2 (x - min) / (width below)` up to the mode, `2 (max - x) / (width above)` past it, `2 / width` on it."""
+    lo, mode, hi, width, below, above = triangular_span(params)
+    if x < lo or x > hi:
+        return mp.mpf(0)
+    if x == mode:
+        return cast("mp.mpf", 2 / width)
+    rise = (mp.mpf(x) - lo) / below if x < mode else (hi - mp.mpf(x)) / above
+    return cast("mp.mpf", 2 * rise / width)
+
+
+def triangular_log_pdf(params: Params, x: float) -> mp.mpf:
+    """`ln` of [`triangular_pdf`] at oracle precision."""
+    return ln(triangular_pdf(params, x))
+
+
+def triangular_cdf(params: Params, x: float) -> mp.mpf:
+    """The mass below `x`.
+
+    `(x - min)^2 / (width below)` up to the mode, `below / width + (x - mode) (above + max - x) / (width above)` on.
+    """
+    lo, mode, hi, width, below, above = triangular_span(params)
+    if x <= lo:
+        return mp.mpf(0)
+    if x >= hi:
+        return mp.mpf(1)
+    if x <= mode:
+        return (mp.mpf(x) - lo) ** 2 / (width * below)
+    return below / width + (mp.mpf(x) - mode) * (above + hi - mp.mpf(x)) / (width * above)
+
+
+def triangular_sf(params: Params, x: float) -> mp.mpf:
+    """The mirror of [`triangular_cdf`]."""
+    lo, mode, hi, width, below, above = triangular_span(params)
+    if x <= lo:
+        return mp.mpf(1)
+    if x >= hi:
+        return mp.mpf(0)
+    if x >= mode:
+        return (hi - mp.mpf(x)) ** 2 / (width * above)
+    return above / width + (mode - mp.mpf(x)) * (below + mp.mpf(x) - lo) / (width * below)
+
+
+def _triangular_quantile(near: mp.mpf, sign: int, width: mp.mpf, span: mp.mpf, other_span: mp.mpf, q: float) -> mp.mpf:
+    """The point `q` of mass in from `near`.
+
+    `near + sign sqrt(q width span)` on the near piece; on the far one, the far end's `far - sign sqrt((1 - q) width
+    other_span)` rewritten as a distance from `near`.
+    """
+    q_mp = mp.mpf(q)
+    if q_mp * width <= span:
+        return near + sign * mp.sqrt(q_mp * width * span)
+    return near + sign * width * (span + q_mp * other_span) / (width + mp.sqrt((1 - q_mp) * width * other_span))
+
+
+def triangular_ppf(params: Params, q: float) -> mp.mpf:
+    """The point with mass `q` below it."""
+    lo, _, _, width, below, above = triangular_span(params)
+    return _triangular_quantile(lo, 1, width, below, above, q)
+
+
+def triangular_isf(params: Params, q: float) -> mp.mpf:
+    """The point with mass `q` above it, solved on `q` itself."""
+    _, _, hi, width, below, above = triangular_span(params)
+    return _triangular_quantile(hi, -1, width, above, below, q)
+
+
+def triangular_variance(params: Params, _x: float) -> mp.mpf:
+    """`(width^2 - below above) / 18`."""
+    _, _, _, width, below, above = triangular_span(params)
+    return (width**2 - below * above) / 18
+
+
+def triangular_median(params: Params, _x: float) -> mp.mpf:
+    """`min + sqrt(width below / 2)` with the mode in the upper half, else `max - sqrt(width above / 2)`."""
+    lo, _, hi, width, below, above = triangular_span(params)
+    return lo + mp.sqrt(width * below / 2) if 2 * below >= width else hi - mp.sqrt(width * above / 2)
+
+
+def triangular_entropy(params: Params, _x: float) -> mp.mpf:
+    """`1/2 + ln(width / 2)`."""
+    _, _, _, width, _, _ = triangular_span(params)
+    return cast("mp.mpf", mp.mpf(0.5) + mp.log(width / 2))
 
 
 # Cauchy oracles. Every method is elementary, so this is a control like Exponential and Uniform. Its
@@ -2099,6 +2196,46 @@ def uniform_points(params: Params, rng: random.Random, count: int) -> list[Point
     return points
 
 
+def triangular_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`uniform_points`] on `(min, max)`, plus each end's neighbourhood and the mode's.
+
+    An ulp and `1e-300` widths inside each end, and points hugging the mode from both sides, where the cdf switches
+    piece.
+    """
+    lo, mode, hi = params
+    width = hi - lo
+    points = uniform_points((lo, hi), rng, count)
+    points.extend(((math.nextafter(lo, math.inf), "danger"), (math.nextafter(hi, -math.inf), "danger")))
+    points.extend(((lo + width * 1e-300, "danger"), (hi - width * 1e-300, "danger")))
+    points.extend((v, "danger") for v in (math.nextafter(mode, -math.inf), mode, math.nextafter(mode, math.inf)))
+    for _ in range(count):
+        offset = width * 10.0 ** rng.uniform(-16.0, -0.31)
+        points.extend(((mode - offset, "random"), (mode + offset, "random")))
+    return points
+
+
+def _around_the_mode(mode_mass: float, rng: random.Random, count: int) -> list[Point]:
+    """`q` at the mass on the near side of the mode and an ulp either side, plus log-uniform offsets from it."""
+    neighbours = (math.nextafter(mode_mass, -math.inf), mode_mass, math.nextafter(mode_mass, math.inf))
+    points: list[Point] = [(q, "danger") for q in neighbours]
+    for _ in range(count):
+        offset = 10.0 ** rng.uniform(-16.0, -2.0)
+        points.extend(((mode_mass - offset, "random"), (mode_mass + offset, "random")))
+    return [(q, kind) for q, kind in points if 0.0 <= q <= 1.0]
+
+
+def triangular_quantile_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`quantile_points`] plus `q` around `(mode - min) / (max - min)`, where the answer crosses the mode."""
+    lo, mode, hi = params
+    return [*quantile_points(params, rng, count), *_around_the_mode((mode - lo) / (hi - lo), rng, count)]
+
+
+def triangular_survival_points(params: Params, rng: random.Random, count: int) -> list[Point]:
+    """[`survival_points`] plus `q` around `(max - mode) / (max - min)`, where the answer crosses the mode."""
+    lo, mode, hi = params
+    return [*survival_points(params, rng, count), *_around_the_mode((hi - mode) / (hi - lo), rng, count)]
+
+
 def bernoulli_points(_params: Params, rng: random.Random, count: int) -> list[Point]:
     """The two support points, the gaps between them, and off-support values."""
     points: list[Point] = [(v, "danger") for v in (-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0)]
@@ -2888,6 +3025,45 @@ def build_registry() -> tuple[DistributionSpec, ...]:
                     variance=lambda p, _x: cast("mp.mpf", mp.pi**2 / 6 * mp.mpf(p[1]) ** 2),
                     median=lambda p, _x: mp.mpf(p[0]) - mp.mpf(p[1]) * mp.log(mp.log(2)),
                     entropy=lambda p, _x: mp.log(mp.mpf(p[1])) + mp.euler + 1,
+                    tolerance=CLOSED_FORM_RTOL,
+                ),
+            ),
+        ),
+        DistributionSpec(
+            name="Triangular",
+            build=lambda p: Triangular(min=p[0], mode=p[1], max=p[2]),
+            param_names=("min", "mode", "max"),
+            # An end on `0` makes a distance from it the whole answer, so a quantile read from the far end shows up as a
+            # relative error; the mode on each end and next to one is where a piece's width is `0` or tiny.
+            params=(
+                (0.0, 0.5, 1.0),
+                (0.0, 0.0, 1.0),
+                (-1.0, 0.0, 0.0),
+                (-1.0, -0.5, 0.0),
+                (0.0, 1.0 - 1e-9, 1.0),
+                (-3.0, 2.0, 7.0),
+                (-2.0, 0.0, 1.0),
+                (-1e8, 0.0, 1e8),
+                (0.0, 2.5e-9, 1e-8),
+                (1e6, 1e6 + 0.3, 1e6 + 1.0),
+                (-1e10, 0.5, 1.0),
+            ),
+            methods=(
+                AuditedMethod("pdf", triangular_pdf, CLOSED_FORM_RTOL, triangular_points),
+                AuditedMethod("log_pdf", triangular_log_pdf, CLOSED_FORM_RTOL, triangular_points),
+                AuditedMethod("cdf", triangular_cdf, CLOSED_FORM_RTOL, triangular_points),
+                AuditedMethod(
+                    "log_cdf", stable_log(triangular_cdf, triangular_sf), CLOSED_FORM_RTOL, triangular_points
+                ),
+                AuditedMethod("sf", triangular_sf, CLOSED_FORM_RTOL, triangular_points),
+                AuditedMethod("log_sf", stable_log(triangular_sf, triangular_cdf), CLOSED_FORM_RTOL, triangular_points),
+                AuditedMethod("ppf", triangular_ppf, CLOSED_FORM_RTOL, triangular_quantile_points),
+                AuditedMethod("isf", triangular_isf, CLOSED_FORM_RTOL, triangular_survival_points),
+                *moments(
+                    mean=lambda p, _x: sum(map(mp.mpf, p)) / 3,
+                    variance=triangular_variance,
+                    median=triangular_median,
+                    entropy=triangular_entropy,
                     tolerance=CLOSED_FORM_RTOL,
                 ),
             ),
