@@ -16,15 +16,6 @@ if TYPE_CHECKING:
 
     from polars_stats._typing import DistributionName, IntoExprColumn
 
-_STANDARD_MEDIAN = -math.log(math.log(2.0))
-"""`-ln(ln 2)`, the median of `Gumbel(0, 1)`."""
-
-_STANDARD_VARIANCE = math.pi**2 / 6.0
-"""`pi^2 / 6`, the variance of `Gumbel(0, 1)`."""
-
-_STANDARD_STD = math.pi / math.sqrt(6.0)
-"""`pi / sqrt(6)`, the standard deviation of `Gumbel(0, 1)`."""
-
 
 class Gumbel(ContinuousDistribution):
     """Gumbel (maximum extreme value, type I) distribution with location ``loc`` and scale ``scale``.
@@ -64,18 +55,18 @@ class Gumbel(ContinuousDistribution):
 
     def variance(self) -> pl.Expr:
         """Variance, ``pi ** 2 / 6 * scale ** 2``."""
-        return self._moment(self._scale**2 * _STANDARD_VARIANCE)
+        return self._moment(self._scale**2 * (math.pi**2 / 6.0))
 
     def std(self) -> pl.Expr:
         """Standard deviation, ``pi / sqrt(6) * scale``.
 
         Not ``variance().sqrt()``: squaring and unsquaring ``scale`` saturates across roughly 300 decades.
         """
-        return self._moment(self._scale * _STANDARD_STD)
+        return self._moment(self._scale * (math.pi / math.sqrt(6.0)))
 
     def median(self) -> pl.Expr:
         """Median, ``loc - scale * log(log(2))``."""
-        return self._moment(self._loc + self._scale * _STANDARD_MEDIAN)
+        return self._moment(self._loc - self._scale * math.log(math.log(2.0)))
 
     def entropy(self) -> pl.Expr:
         """Differential entropy, ``log(scale) + euler_gamma + 1``."""
