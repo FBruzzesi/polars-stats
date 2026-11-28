@@ -941,6 +941,31 @@ fn discrete_isf<D: DiscreteTails>(dist: &D, q: f64) -> Option<f64> {
     on_unit_interval(&|q| dist.quantile(D::CDF.complement(), q), q)
 }
 
+/// `(value - loc) / scale`, or `value / scale - loc / scale` where the distance overflows (`value` and `loc` of
+/// opposite signs near `f64::MAX`). An infinite `value` keeps the direct form: the split one reads `inf - inf` once
+/// `loc / scale` overflows.
+#[inline]
+pub(crate) fn standardise(loc: f64, scale: f64, value: f64) -> f64 {
+    let distance = value - loc;
+    if distance.is_finite() || value.is_infinite() {
+        distance / scale
+    } else {
+        value / scale - loc / scale
+    }
+}
+
+/// `loc + scale z`, the inverse of [`standardise`], split the same way where `scale z` overflows; an infinite `z`
+/// keeps the direct form.
+#[inline]
+pub(crate) fn unstandardise(loc: f64, scale: f64, z: f64) -> f64 {
+    let offset = scale * z;
+    if offset.is_finite() || z.is_infinite() {
+        loc + offset
+    } else {
+        scale * (loc / scale + z)
+    }
+}
+
 /// The `select` of a closed form whose support is the whole line, so there is no branch to pick.
 #[inline]
 pub(crate) fn on_the_line<Arm: Fn(f64) -> f64>(arm: &Arm, value: f64) -> Option<f64> {
