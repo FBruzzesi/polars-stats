@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests._registry import Moment, Regime
+    from tests._registry import Method, Moment, Regime
 
 DistT = TypeVar("DistT", bound="_UnivariateDistribution")
 
@@ -1715,7 +1715,7 @@ _TRIANGULAR_QUANTILES = [
 @pytest.mark.parametrize(("params", "method", "q", "quantile"), _TRIANGULAR_QUANTILES)
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_triangular_quantiles_keep_their_distance_from_the_nearer_end(
-    regime: Regime, params: tuple[float, float, float], method: str, q: float, quantile: float
+    regime: Regime, params: tuple[float, float, float], method: Method, q: float, quantile: float
 ) -> None:
     """An answer near an end of `[0, 1]`-wide support sitting on zero is read off that end, never as `far - (width -
     distance)`: `1 - sqrt(1 - q)` is `0` at `q = 1e-300` and `1.1e-4` off at `q = 1e-12`."""
@@ -1738,7 +1738,7 @@ _TRIANGULAR_QUANTILES_NEAR_THE_MODE = [
 @pytest.mark.parametrize(("params", "method", "q", "quantile"), _TRIANGULAR_QUANTILES_NEAR_THE_MODE)
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_triangular_quantiles_keep_their_distance_from_the_mode(
-    regime: Regime, params: tuple[float, float, float], method: str, q: float, quantile: float
+    regime: Regime, params: tuple[float, float, float], method: Method, q: float, quantile: float
 ) -> None:
     """An answer nearer the mode than either end is read off the mode: from an end, `ppf(0.5 + 1e-14)` on
     `Triangular(-1, 0, 1)` is `1 - sqrt(1 - 2e-14)`, `1.1e-2` off."""
@@ -1827,7 +1827,7 @@ def test_triangular_log_pdf_keeps_its_digits_where_the_span_is_subnormal(
 
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_triangular_mean_of_a_symmetric_triangle_is_its_mode_exactly(regime: Regime) -> None:
-    """`(-1e8 + 0 + 1e8) / 3` is `0`; summing `min` with thirds of the widths left `-3.7e-9`."""
+    """`(-1e8 + 0 + 1e8) / 3` is `0`, where summing `min` with thirds of the widths gives `-3.7e-9`."""
     got = pl.DataFrame({"z": [0.0] * 4}).select(
         zero=_spelled(Triangular, regime, -1e8, 0.0, 1e8).mean(),
         one=_spelled(Triangular, regime, -3.0, 1.0, 5.0).mean(),
@@ -1851,8 +1851,8 @@ def test_triangular_moments_round_alike_with_literal_ends_and_a_column_mode(mome
 
 @pytest.mark.parametrize("moment", ["variance", "std"])
 def test_triangular_variance_and_std_stay_finite_at_a_subnormal_width(moment: Moment) -> None:
-    """At width `1e-310` the reciprocal of the width is `inf`, and `0 * inf` made the variance of a mode on `min`
-    `NaN`."""
+    """At width `1e-310` the reciprocal of the width is `inf`, where `0 * inf` would make the variance of a mode on
+    `min` `NaN`."""
     frame = pl.DataFrame({"mode": [0.0, 5e-311, 1e-310]})
     got = frame.select(r=getattr(Triangular(min=0.0, mode="mode", max=1e-310), moment)())["r"]
     assert all(math.isfinite(v) for v in got)

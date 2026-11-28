@@ -818,7 +818,7 @@ one distance from their end."""
 
 
 @pytest.mark.parametrize(("lower", "upper"), [("cdf", "sf"), ("log_cdf", "log_sf")])
-def test_triangular_with_a_centred_mode_mirrors_its_tails_bit_for_bit(lower: str, upper: str) -> None:
+def test_triangular_with_a_centred_mode_mirrors_its_tails_bit_for_bit(lower: Method, upper: Method) -> None:
     """`cdf(mode - d) == sf(mode + d)` to the last bit on `Triangular(-1, 1, 3)`, from the mode out past both ends."""
     dist = Triangular(min=-1.0, mode=1.0, max=3.0)
     got = pl.DataFrame({"d": _TRIANGULAR_OFFSETS}).select(
