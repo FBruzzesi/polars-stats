@@ -36,6 +36,9 @@ ONE_TWELFTH = 1 / 12
 """Multiplied by rather than divided against: polars spells `column / 12` as a division on some engine and row-count
 combinations and as a reciprocal multiply on others, which would make a `variance` depend on the frame's height."""
 
+EULER_GAMMA = 0.5772156649015329
+"""The Euler-Mascheroni constant, `-digamma(1)`."""
+
 UNDEFINED_MOMENT = pl.lit(None, dtype=pl.Float64)
 """A moment with no value. Typed, so the output schema stays `Float64` rather than `Null`, and so a `when` branch
 returning it never folds into `_moment`'s untyped `otherwise`, which would let polars drop the validating gate."""

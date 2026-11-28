@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from polars_stats.distributions._base import ContinuousDistribution, coerce_param, scalar_float, scalar_kwargs
+from polars_stats.distributions._base import (
+    EULER_GAMMA,
+    ContinuousDistribution,
+    coerce_param,
+    scalar_float,
+    scalar_kwargs,
+)
 
 if TYPE_CHECKING:
     import polars as pl
 
     from polars_stats._typing import DistributionName, IntoExprColumn
-
-_EULER_GAMMA = 0.5772156649015329
-"""The Euler-Mascheroni constant, `-digamma(1)`."""
 
 
 class Weibull(ContinuousDistribution):
@@ -66,4 +69,4 @@ class Weibull(ContinuousDistribution):
 
         Summed as ``log(scale) - log(shape)``: the ratio over- and underflows where neither log does.
         """
-        return self._moment(_EULER_GAMMA * (1 - 1 / self._shape) + self._scale.log() - self._shape.log() + 1)
+        return self._moment(EULER_GAMMA * (1 - 1 / self._shape) + self._scale.log() - self._shape.log() + 1)
