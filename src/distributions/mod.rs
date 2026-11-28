@@ -26,6 +26,7 @@ pub mod discrete_uniform;
 pub mod exponential;
 pub mod gamma;
 pub mod geometric;
+pub mod gumbel;
 pub mod laplace;
 pub mod lognormal;
 pub mod negative_binomial;
