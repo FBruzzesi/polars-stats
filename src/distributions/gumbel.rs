@@ -81,14 +81,13 @@ fn derive_ln_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
 /// rounding costs up to a few hundred ulp. On the left tail both forms also inherit about `w / 2` ulp from rounding
 /// `w` itself.
 fn derive_pdf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
-    let ln_scale = scale.ln();
     move |value: f64| {
         let (z, w) = z_and_w(loc, scale, value);
         let mass = w * (-w).exp();
         if mass >= f64::MIN_POSITIVE {
             mass / scale
         } else {
-            ln_density(z, w, ln_scale).exp()
+            ln_density(z, w, scale.ln()).exp()
         }
     }
 }
