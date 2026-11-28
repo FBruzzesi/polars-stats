@@ -117,8 +117,9 @@ below `1.1e-16` the complement is exactly `1.0`, so `Beta.isf` returns the upper
 * **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).variance()`
   and `Uniform(pl.col("lo"), pl.col("hi")).variance()` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
-  identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
-  moments, and `Geometric.std` / `.entropy`.
+  identically. It reaches the methods evaluated as polars expressions rather than in Rust:
+  `Uniform.variance` / `.std`, `Geometric.std` / `.entropy`, `Gamma.variance` / `.std`, `NegativeBinomial.std`
+  and `Triangular.std`.
   The difference is at or below `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs`
   runs the same Rust body either way and stays bit-identical.
 
