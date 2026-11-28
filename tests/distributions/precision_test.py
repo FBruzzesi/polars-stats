@@ -1806,6 +1806,25 @@ def test_triangular_log_pdf_keeps_relative_digits_where_the_density_crosses_one(
     assert got == pytest.approx(log_pdf, rel=1e-15, abs=0.0)
 
 
+# `(params, x, log_pdf)` with a subnormal piece span, where `span * width` keeps a few bits. `mpmath` at 60 digits.
+_TRIANGULAR_LOG_PDF_SUBNORMAL_SPAN = [
+    pytest.param((0.0, 7 * 2.0**-1074, 1.3), 3 * 2.0**-1074, -0.4165149442947494, id="lower-normal-width"),
+    pytest.param((-1.3, -7 * 2.0**-1074, 0.0), -3 * 2.0**-1074, -0.4165149442947494, id="upper-normal-width"),
+    pytest.param((0.0, 1e-161, 2e-161), 1e-322, -0.011939703744561122, id="lower-tiny-width"),
+    pytest.param((-2e-161, -1e-161, 0.0), -1e-322, -0.011939703744561122, id="upper-tiny-width"),
+]
+
+
+@pytest.mark.parametrize(("params", "x", "log_pdf"), _TRIANGULAR_LOG_PDF_SUBNORMAL_SPAN)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_log_pdf_keeps_its_digits_where_the_span_is_subnormal(
+    regime: Regime, params: tuple[float, float, float], x: float, log_pdf: float
+) -> None:
+    """A density near `1` on a piece whose `span * width` is subnormal keeps its relative digits."""
+    got = pl.DataFrame({"x": [x] * 4}).select(r=_spelled(Triangular, regime, *params).log_pdf("x"))["r"][0]
+    assert got == pytest.approx(log_pdf, rel=1e-15, abs=0.0)
+
+
 @pytest.mark.parametrize("regime", DRIVER_REGIMES)
 def test_triangular_mean_of_a_symmetric_triangle_is_its_mode_exactly(regime: Regime) -> None:
     """`(-1e8 + 0 + 1e8) / 3` is `0`; summing `min` with thirds of the widths left `-3.7e-9`."""

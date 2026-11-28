@@ -29,6 +29,10 @@ const MAX: ParamDomain = ParamDomain::finite("max");
 /// `|ln density| >= ln 2` and the plain `ln` keeps its digits.
 const DENSITY_NEAR_ONE: RangeInclusive<f64> = 0.5..=2.0;
 
+/// `2^600`. Scaling a piece's span and distance by it is exact, and inside [`DENSITY_NEAR_ONE`] keeps
+/// `span * width` normal without overflowing it.
+const SPAN_RESCALE: f64 = f64::from_bits(0x6570_0000_0000_0000);
+
 struct ModeAtLeastMin;
 
 impl PairDomain for ModeAtLeastMin {
@@ -374,13 +378,15 @@ impl Piece {
         2.0 * (self.from_end / self.span / self.width)
     }
 
-    /// The excess `(2 from_end - span width) / (span width)` with its numerator in one rounding.
+    /// The excess `(2 from_end - span width) / (span width)` with its numerator in one rounding, over a span and
+    /// distance rescaled by [`SPAN_RESCALE`] so a subnormal `span * width` keeps its bits.
     fn ln_density(&self) -> f64 {
         ln_density(
             self.density(),
             || {
-                let scale = self.span * self.width;
-                (-self.span).mul_add(self.width, 2.0 * self.from_end) / scale
+                let span = self.span * SPAN_RESCALE;
+                let from_end = self.from_end * SPAN_RESCALE;
+                (-span).mul_add(self.width, 2.0 * from_end) / (span * self.width)
             },
             || LN_2 + self.from_end.ln() - self.span.ln() - self.width.ln(),
         )
