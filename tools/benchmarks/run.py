@@ -41,6 +41,7 @@ from scipy.stats import (
     poisson,
     randint,
     t,
+    triang,
     uniform,
     weibull_min,
 )
@@ -63,6 +64,7 @@ from polars_stats import (
     Pareto,
     Poisson,
     StudentsT,
+    Triangular,
     Uniform,
     Weibull,
 )
@@ -141,6 +143,12 @@ def _weibull(params: Params) -> tuple[Distribution, ScipyFrozen]:
 def _uniform(params: Params) -> tuple[Distribution, ScipyFrozen]:
     low, high = params.scipy("min"), params.scipy("max")
     return Uniform(min=params.plugin("min"), max=params.plugin("max")), uniform(loc=low, scale=high - low)
+
+
+def _triangular(params: Params) -> tuple[Distribution, ScipyFrozen]:
+    low, mode, high = params.scipy("min"), params.scipy("mode"), params.scipy("max")
+    dist = Triangular(min=params.plugin("min"), mode=params.plugin("mode"), max=params.plugin("max"))
+    return dist, triang(c=(mode - low) / (high - low), loc=low, scale=high - low)
 
 
 def _exponential(params: Params) -> tuple[Distribution, ScipyFrozen]:
@@ -246,6 +254,15 @@ REGISTRY: dict[str, Comparison] = {
             name="uniform",
             params={"min": ParamSpec(0.0, -1.0, 0.0), "max": ParamSpec(1.0, 0.5, 1.5)},
             build=_uniform,
+        ),
+        Comparison(
+            name="triangular",
+            params={
+                "min": ParamSpec(-1.0, -1.0, -0.5),
+                "mode": ParamSpec(0.0, -0.25, 0.25),
+                "max": ParamSpec(1.0, 0.5, 1.0),
+            },
+            build=_triangular,
         ),
         Comparison(name="exponential", params={"rate": ParamSpec(1.0, 0.5, 2.0)}, build=_exponential),
         Comparison(

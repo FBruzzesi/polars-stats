@@ -19,6 +19,7 @@ from polars_stats.distributions._normal import Normal
 from polars_stats.distributions._pareto import Pareto
 from polars_stats.distributions._poisson import Poisson
 from polars_stats.distributions._students_t import StudentsT
+from polars_stats.distributions._triangular import Triangular
 from polars_stats.distributions._uniform import Uniform
 from polars_stats.distributions._weibull import Weibull
 
@@ -42,6 +43,7 @@ __all__ = (
     "Pareto",
     "Poisson",
     "StudentsT",
+    "Triangular",
     "Uniform",
     "Weibull",
     "__version__",

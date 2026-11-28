@@ -34,11 +34,11 @@ in the report with its reason rather than dropping it. `--skip` replaces that de
 
 `cdf` and `sf` return `0.0` once the true value drops below ~`1e-308`, which is a `float64` range
 limit and not something an algorithm can fix. For `Normal`, `LogNormal`, `Gamma`, `ChiSquared`, `StudentsT`, `Beta`,
-`Binomial`, `Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Exponential`, `Cauchy`,
-`Gumbel`, `Laplace`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and `log_sf` stay
-finite far past that and are the right methods for tail scoring. Likewise `isf(q)` rather than `ppf(1 - q)` on all of
-those but `Beta` and `Binomial`: forming the complement quantises the tail mass to `1.1e-16` absolute before any inverse
-runs.
+`Binomial`, `Poisson`, `NegativeBinomial` and the closed-form distributions (`Uniform`, `Triangular`, `Exponential`,
+`Cauchy`, `Gumbel`, `Laplace`, `Pareto`, `Weibull`, `Bernoulli`, `Geometric`, `DiscreteUniform`), `log_cdf` and
+`log_sf` stay finite far past that and are the right methods for tail scoring. Likewise `isf(q)` rather than
+`ppf(1 - q)` on all of those but `Beta` and `Binomial`: forming the complement quantises the tail mass to `1.1e-16`
+absolute before any inverse runs.
 
 In this release that half of the advice does **not** extend to `Beta` and `Binomial`: their `isf` is the
 `ppf(1 - quantile)` composition, so it carries the complement's quantisation (`1.1e-16 / q` relative, and for `q`
@@ -117,8 +117,9 @@ below `1.1e-16` the complement is exactly `1.0`, so `Beta.isf` returns the upper
 * **A constant parameter and a column parameter can differ in the last bit.** `Uniform(-2.5, 7.5).variance()`
   and `Uniform(pl.col("lo"), pl.col("hi")).variance()` evaluate the same closed form, but polars folds the
   constant spelling over one row and the column spelling over `n`, and the two kernels do not round
-  identically. It reaches the methods evaluated as polars expressions rather than in Rust: `Uniform`'s
-  moments, and `Geometric.std` / `.entropy`.
+  identically. It reaches the methods evaluated as polars expressions rather than in Rust:
+  `Uniform.variance` / `.std`, `Geometric.std` / `.entropy`, `Gamma.variance` / `.std`, `NegativeBinomial.std`
+  and `Triangular.std`.
   The difference is at or below `1e-15` relative, roughly 4x a double's ULP. Everything backed by `statrs`
   runs the same Rust body either way and stays bit-identical.
 

@@ -29,6 +29,7 @@ from polars_stats import (
     Normal,
     Pareto,
     StudentsT,
+    Triangular,
     Uniform,
     Weibull,
 )
@@ -106,6 +107,22 @@ def test_gumbel_std_is_the_scale_times_pi_over_root_six(scale: float) -> None:
     assert got == pytest.approx(scale * math.pi / math.sqrt(6.0), rel=1e-15, abs=0.0)
 
 
+def test_triangular_mean_and_std_stay_finite_across_a_width_near_the_float_ceiling() -> None:
+    """`Triangular(-8e307, 9e307, 9e307)` has a finite width `1.7e308` but `width + (mode - min)` overflows, and
+    `Triangular(-1e307, 0, 1e307)` a variance `1.7e612` past `float64` but a finite `std`. The mean is read as `mode +
+    ((max - mode) - (mode - min)) / 3`, the std as `width sqrt(1 - below above / width**2) / sqrt(18)` over the spans
+    `below = mode - min` and `above = max - mode`."""
+    frame = pl.DataFrame({"z": [0.0]})
+    got = frame.select(
+        mean=Triangular(min=-8e307, mode=9e307, max=9e307).mean(),
+        std=Triangular(min=-1e307, mode=0.0, max=1e307).std(),
+        variance=Triangular(min=-1e307, mode=0.0, max=1e307).variance(),
+    ).row(0, named=True)
+    assert got["mean"] == pytest.approx(10e307 / 3.0, rel=1e-15, abs=0.0)
+    assert got["std"] == pytest.approx(2e307 * math.sqrt(0.75 / 18.0), rel=1e-15, abs=0.0)
+    assert got["variance"] == math.inf
+
+
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)
 """`sqrt(Gamma(2) - Gamma(1.5) ** 2)`, the standard deviation of `Weibull(2, 1)`."""
 
@@ -166,8 +183,9 @@ def test_lognormal_std_outlives_its_variance(sigma: float) -> None:
         (Geometric(p=0.25), math.sqrt(0.75) / 0.25),
         (Pareto(scale=2.0, shape=3.0), math.sqrt(3.0)),
         (NegativeBinomial(r=4.0, p=0.25), 2.0 * math.sqrt(0.75) / 0.25),
+        (Triangular(min=-1.0, mode=0.0, max=3.0), math.sqrt(13.0 / 18.0)),
     ],
-    ids=["normal", "exponential", "uniform", "geometric", "pareto", "negativebinomial"],
+    ids=["normal", "exponential", "uniform", "geometric", "pareto", "negativebinomial", "triangular"],
 )
 def test_std_squared_still_agrees_with_variance_in_the_ordinary_range(
     dist: _UnivariateDistribution, expected: float

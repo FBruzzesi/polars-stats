@@ -105,9 +105,10 @@ The moments (`mean`, `variance`, `std`, `entropy`) do not build a distribution; 
 they still route their *validation* through a small Rust plugin (`normal_sigma`, `uniform_range`, `bernoulli_proba`,
 `binomial_params`, `lognormal_sigma`, `exponential_rate`, `geometric_p`, `beta_params`, `cauchy_scale`,
 `gumbel_scale`, `laplace_scale`, `pareto_shape`, `weibull_scale`, `gamma_rate`, `poisson_rate`, `chisquared_dof`,
-`negativebinomial_p`, `studentst_scale`) so an invalid parameterisation raises the same `ComputeError` as the sampler
-and value-keyed methods rather than silently producing a nonsense moment (see "Invalid parameters raise"). With column
-parameters that plugin checks each parameter column once, over the whole column, before any row is built.
+`negativebinomial_p`, `studentst_scale`, `triangular_max`) so an invalid parameterisation raises the same
+`ComputeError` as the sampler and value-keyed methods rather than silently producing a nonsense moment (see "Invalid
+parameters raise"). With column parameters that plugin checks each parameter column once, over the whole column, before
+any row is built.
 
 For all-scalar parameters the same plugin is called on length-1 `pl.lit` inputs, so its elementwise closure runs once.
 The validated quantity (or, for `Beta.entropy`, `Binomial.entropy`, `Gamma.entropy`, `ChiSquared.entropy`,

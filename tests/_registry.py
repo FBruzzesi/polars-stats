@@ -35,6 +35,7 @@ from polars_stats import (
     Pareto,
     Poisson,
     StudentsT,
+    Triangular,
     Uniform,
     Weibull,
     is_continuous,
@@ -627,6 +628,37 @@ _UNIFORM = DistSpec(
     integration_bounds=lambda p: (p[0], p[1]),
 )
 
+_TRIANGULAR = DistSpec(
+    name="triangular",
+    cls=Triangular,
+    continuous=True,
+    parameters=(
+        Param("min", "lo", paired=True),
+        Param("mode", "mode", paired=True),
+        Param("max", "hi", paired=True),
+    ),
+    # Draw `(min, width, c)` and expose `(min, min + c width, min + width)`: `c = 1` rounds the mode onto `max` exactly,
+    # so every drawn parameterisation is valid, both ends of the mode included.
+    param_strategy=st.tuples(_finite(-10.0, 10.0), _finite(1e-2, 20.0), _finite(0.0, 1.0)).map(
+        lambda mwc: (mwc[0], mwc[0] + mwc[2] * mwc[1], mwc[0] + mwc[1])
+    ),
+    example=(-1.0, 0.0, 3.0),
+    eval_range=lambda p: (p[0] - 0.5 * (p[2] - p[0]), p[2] + 0.5 * (p[2] - p[0])),
+    bounds=(-1.0, 3.0),
+    # Above the mode, where the cdf `(mode - min) / width + ((x - mode) / width) (1 + (max - x) / (max - mode))` reads
+    # all three parameters.
+    on_support_point=1.0,
+    sample_dtype=pl.Float64(),
+    invalid=(
+        InvalidCase("mode<min", (1.0, 0.0, 3.0), "mode must be"),
+        InvalidCase("mode>max", (-1.0, 4.0, 3.0), "mode must be"),
+        InvalidCase("max=min", (1.0, 1.0, 1.0), "max must be"),
+        # Individually finite parameters whose width overflows `f64`: `Uniform`'s rule.
+        InvalidCase("width overflows", (-1e308, 0.0, 1e308), "max must be"),
+    ),
+    integration_bounds=lambda p: (p[0], p[2]),
+)
+
 _LOGNORMAL = DistSpec(
     name="lognormal",
     cls=LogNormal,
@@ -835,6 +867,7 @@ CONTRACT_FRAME = pl.DataFrame(
         "shape": [2.5, 3.0, 1.5],
         "lo": [0.0, -1.0, 2.0],
         "hi": [1.0, 3.0, 5.0],
+        "mode": [0.5, 1.0, 3.0],
         "lo_i": [0, -3, 2],
         "hi_i": [5, 1, 2],
         "n": [5, 10, 20],
@@ -865,6 +898,7 @@ ALL_SPECS = [
     _GUMBEL,
     _STUDENTS_T,
     _UNIFORM,
+    _TRIANGULAR,
     _LOGNORMAL,
     _EXPONENTIAL,
     _PARETO,
@@ -888,6 +922,7 @@ ULP_TOLERANT_MOMENTS: dict[DistributionName, frozenset[Moment]] = {
     "geometric": frozenset({"std", "entropy"}),
     "gamma": frozenset({"variance", "std"}),
     "negativebinomial": frozenset({"std"}),
+    "triangular": frozenset({"std"}),
 }
 """The `(spec, moment)` pairs that compare to `ULP_REL_TOL` instead of bit-exactly.
 
@@ -904,7 +939,8 @@ random `p`); only the `pl.repeat` spelling moves the last bit.
 `(shape, rate)` move the last bit under `pl.repeat`, a materialised pair none.
 
 `negativebinomial`'s `std` is `sqrt(r (1 - p)) / p`, which `variance().sqrt()` rounds differently in the last bit;
-the direct form is kept because squaring `p` overflows first, as `geometric`'s.
+the direct form is kept because squaring `p` overflows first, as `geometric`'s. `triangular`'s is the same trade on
+`width sqrt(1 - below above / width**2) / sqrt(18)`, whose `variance` squares the spans either side of the mode.
 """
 
 

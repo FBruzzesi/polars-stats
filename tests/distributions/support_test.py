@@ -118,6 +118,7 @@ def test_a_finite_endpoint_of_a_continuous_support_is_already_saturated(
 # name -> {endpoint: (density, log_density)}
 _DENSITY_AT_ENDPOINT: dict[str, dict[float, tuple[float, float]]] = {
     "uniform": {-1.0: (0.25, math.log(0.25)), 3.0: (0.25, math.log(0.25))},
+    "triangular": {-1.0: (0.0, _NEG_INF), 3.0: (0.0, _NEG_INF)},
     "lognormal": {0.0: (0.0, _NEG_INF)},
     "exponential": {0.0: (1.5, math.log(1.5))},
     "pareto": {1.5: (2.0, math.log(2.0))},

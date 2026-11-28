@@ -28,6 +28,7 @@ from polars_stats import (
     NegativeBinomial,
     Poisson,
     StudentsT,
+    Triangular,
     Uniform,
 )
 from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME, min_max, moment_is_undefined
@@ -484,3 +485,33 @@ def test_a_gumbel_draw_keeps_its_mean_variance_and_skewness() -> None:
     assert isinstance(third_moment, float)
     allowance = _CLT_SIGMAS * math.sqrt((_GUMBEL_SIXTH_MOMENT - _GUMBEL_SKEWNESS**2) / _GUMBEL_ROWS)
     assert abs(third_moment - _GUMBEL_SKEWNESS) <= allowance
+
+
+_TRIANGULAR_ROWS = 200_000
+_TRIANGULAR_SKEWNESS = 2.0 * math.sqrt(2.0) / 5.0
+"""The skewness of a triangular distribution with its mode on `min`."""
+_TRIANGULAR_SIXTH_MOMENT = 62.0 / 7.0
+"""`E z**6` of the standardised `Triangular(0, 0, 1)`."""
+
+
+def test_a_triangular_draw_keeps_its_mean_variance_and_skewness() -> None:
+    """With the mode on `min`, the draw keeps the mean `min + width / 3`, the variance `width**2 / 18` and the skewness
+    `2 sqrt(2) / 5`.
+
+    A draw mirrored about the mean keeps the first two and has skewness `-0.566`, so the third moment is what pins
+    which end the mass leans on. On the standardised draw the allowance is `sqrt((E z**6 - E z**3 ** 2) / n)`, and the
+    variance's is `sqrt((E z**4 - 1) / n) = sqrt(1.4 / n)` relative.
+    """
+    lo, width = -1.25, 2.5
+    mu = lo + width / 3.0
+    sd = width / math.sqrt(18.0)
+    drawn = _frame(_TRIANGULAR_ROWS).select(z=Triangular(min=lo, mode=lo, max=lo + width).sample(seed=_SEED))["z"]
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - mu) <= _CLT_SIGMAS * sd / math.sqrt(_TRIANGULAR_ROWS)
+    assert variance == pytest.approx(sd**2, rel=_CLT_SIGMAS * math.sqrt(1.4 / _TRIANGULAR_ROWS))
+    third_moment = (((drawn - mu) / sd) ** 3).mean()
+    assert isinstance(third_moment, float)
+    allowance = _CLT_SIGMAS * math.sqrt((_TRIANGULAR_SIXTH_MOMENT - _TRIANGULAR_SKEWNESS**2) / _TRIANGULAR_ROWS)
+    assert abs(third_moment - _TRIANGULAR_SKEWNESS) <= allowance

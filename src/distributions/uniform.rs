@@ -15,7 +15,7 @@ const MIN: ParamDomain = ParamDomain::finite("min");
 const MAX: ParamDomain = ParamDomain::finite("max");
 
 /// `max - min` overflows to `inf` for `min=-1e308, max=1e308`, and every derived quantity with it.
-struct Bounds;
+pub(crate) struct Bounds;
 
 impl PairDomain for Bounds {
     type Native = f64;

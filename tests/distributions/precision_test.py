@@ -37,15 +37,16 @@ from polars_stats import (
     Pareto,
     Poisson,
     StudentsT,
+    Triangular,
     Weibull,
 )
-from tests._registry import DRIVER_REGIMES, SPECS_BY_NAME
+from tests._registry import DRIVER_REGIMES, MOMENTS, SPECS_BY_NAME
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from polars_stats.distributions._base import _UnivariateDistribution
-    from tests._registry import Regime
+    from tests._registry import Method, Moment, Regime
 
 DistT = TypeVar("DistT", bound="_UnivariateDistribution")
 
@@ -1692,3 +1693,185 @@ def test_students_t_quantile_next_to_the_median_keeps_its_relative_precision(dof
     for q, t, mass in zip(qs, ts, masses, strict=True):
         assert math.copysign(1.0, t) == math.copysign(1.0, q - 0.5), f"q={q}: {t}"
         assert mass == pytest.approx(abs(2 * q - 1), rel=2e-14, abs=0.0), f"q={q}: t={t}"
+
+
+# --------------------------------------------------------------------------------------------------
+# Triangular: distances from a support end, kept relatively exact where a difference from the far end
+# or a mass rounded past the representable range would lose them.
+# --------------------------------------------------------------------------------------------------
+
+# `(params, method, q, quantile)`. `mpmath` at 50 digits: `sqrt(q width (mode - min))` below the mode, and
+# `q / (1 + sqrt(1 - q))` for a unit width with the mode on the near end.
+_TRIANGULAR_QUANTILES = [
+    pytest.param((0.0, 0.5, 1.0), "ppf", 1e-300, 7.071067811865476e-151, id="ppf-near-min"),
+    pytest.param((-1.0, -0.5, 0.0), "isf", 1e-300, -7.071067811865476e-151, id="isf-near-max"),
+    pytest.param((0.0, 0.0, 1.0), "ppf", 1e-300, 5e-301, id="ppf-mode-on-min"),
+    pytest.param((0.0, 0.0, 1.0), "ppf", 1e-12, 5.00000000000125e-13, id="ppf-mode-on-min-moderate"),
+    pytest.param((-1.0, 0.0, 0.0), "isf", 1e-300, -5e-301, id="isf-mode-on-max"),
+    pytest.param((-1.0, 0.0, 0.0), "ppf", 1 - 1e-12, -4.999889391400643e-13, id="ppf-mode-on-max-near-one"),
+]
+
+
+@pytest.mark.parametrize(("params", "method", "q", "quantile"), _TRIANGULAR_QUANTILES)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_quantiles_keep_their_distance_from_the_nearer_end(
+    regime: Regime, params: tuple[float, float, float], method: Method, q: float, quantile: float
+) -> None:
+    """An answer near an end of `[0, 1]`-wide support sitting on zero is read off that end, never as `far - (width -
+    distance)`: `1 - sqrt(1 - q)` is `0` at `q = 1e-300` and `1.1e-4` off at `q = 1e-12`."""
+    dist = _spelled(Triangular, regime, *params)
+    got = pl.DataFrame({"q": [q] * 4}).select(r=getattr(dist, method)("q"))["r"][0]
+    assert got == pytest.approx(quantile, rel=1e-15, abs=0.0)
+
+
+# `(params, method, q, quantile)` with the answer next to a mode on `0`. `mpmath` at 60 digits.
+_TRIANGULAR_QUANTILES_NEAR_THE_MODE = [
+    pytest.param((-1.0, 0.0, 1.0), "ppf", 0.5 + 1e-14, 9.99200722162646e-15, id="ppf-above"),
+    pytest.param((-1.0, 0.0, 1.0), "isf", 0.5 + 1e-14, -9.99200722162646e-15, id="isf-below"),
+    pytest.param((-1.0, 0.0, 1.0), "ppf", 0.5 - 1e-12, -9.999778782803785e-13, id="ppf-below"),
+    pytest.param((-1e8, 0.0, 1e8), "ppf", 0.5 + 1e-10, 0.01000000082790371, id="ppf-wide"),
+    pytest.param((-2.0, 0.0, 1.0), "ppf", 2 / 3, -5.551115123125783e-17, id="ppf-skewed"),
+    pytest.param((-2.0, 0.0, 1.0), "isf", 1 / 3, 2.7755575615628914e-17, id="isf-skewed"),
+]
+
+
+@pytest.mark.parametrize(("params", "method", "q", "quantile"), _TRIANGULAR_QUANTILES_NEAR_THE_MODE)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_quantiles_keep_their_distance_from_the_mode(
+    regime: Regime, params: tuple[float, float, float], method: Method, q: float, quantile: float
+) -> None:
+    """An answer nearer the mode than either end is read off the mode: from an end, `ppf(0.5 + 1e-14)` on
+    `Triangular(-1, 0, 1)` is `1 - sqrt(1 - 2e-14)`, `1.1e-2` off."""
+    dist = _spelled(Triangular, regime, *params)
+    got = pl.DataFrame({"q": [q] * 4}).select(r=getattr(dist, method)("q"))["r"][0]
+    assert got == pytest.approx(quantile, rel=1e-15, abs=0.0)
+
+
+# From `k = 27` on, `x^2` needs more than 53 bits, so `1 - cdf` is not exact by accident.
+@pytest.mark.parametrize("k", [27, 30, 40])
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_survival_beside_a_mode_on_max_is_a_sum_not_a_complement(regime: Regime, k: int) -> None:
+    """`Triangular(0, 1, 1).sf(1 - 2^-k)` is `1 - x^2 = 2^-k (2 - 2^-k)` exactly, read as `(1 - x) (1 + x)`; `1 -
+    cdf` is `3.7e-9` off at `k = 27`. `log_sf` is its log, `log_cdf` the `log1p` of its negation."""
+    eps = 2.0**-k
+    sf = eps * (2.0 - eps)
+    dist = _spelled(Triangular, regime, 0.0, 1.0, 1.0)
+    got = pl.DataFrame({"x": [1.0 - eps] * 4}).select(
+        sf=dist.sf("x"), log_sf=dist.log_sf("x"), log_cdf=dist.log_cdf("x")
+    )
+    assert got["sf"][0] == pytest.approx(sf, rel=4e-16, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(math.log(sf), rel=4e-16, abs=0.0)
+    assert got["log_cdf"][0] == pytest.approx(math.log1p(-sf), rel=4e-16, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_log_tails_read_the_factors_where_the_mass_underflows(regime: Regime) -> None:
+    """`2e-400` of mass lies within `1e-200` of `0` on `Triangular(0, 0.5, 1)` and `Triangular(-1, -0.5, 0)`: `log_cdf`
+    and `log_sf` are `2 ln(1e-200) + ln 2` from the logs of the factors, not `ln(0) = -inf`."""
+    frame = pl.DataFrame({"lo": [1e-200] * 4, "hi": [-1e-200] * 4})
+    got = frame.select(
+        log_cdf=_spelled(Triangular, regime, 0.0, 0.5, 1.0).log_cdf("lo"),
+        log_sf=_spelled(Triangular, regime, -1.0, -0.5, 0.0).log_sf("hi"),
+    )
+    want = 2.0 * math.log(1e-200) + math.log(2.0)
+    assert got["log_cdf"][0] == pytest.approx(want, rel=1e-15, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(want, rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_log_pdf_reads_the_factors_where_the_density_is_subnormal(regime: Regime) -> None:
+    """`Triangular(0, 0.3, 1).pdf(1e-315)` is a subnormal `6.7e-315` rounded to its spacing, `3.7e-10` relative; the
+    log density is read off `ln 2 + ln x - ln 0.3` instead. Oracle: `mpmath` at 50 digits."""
+    dist = _spelled(Triangular, regime, 0.0, 0.3, 1.0)
+    got = pl.DataFrame({"x": [1e-315] * 4}).select(r=dist.log_pdf("x"))["r"][0]
+    assert got == pytest.approx(-723.4171843097569, rel=1e-15, abs=0.0)
+
+
+# `(params, x, log_pdf)` where the density is within `1e-9` of `1`, inside a piece and at an end the mode sits on.
+# `mpmath` at 50 digits.
+_TRIANGULAR_LOG_PDF_NEAR_ZERO = [
+    pytest.param((0.0, 1.0 - 1e-9, 1.0), 0.5, 9.999999722180686e-10, id="inside"),
+    pytest.param((0.0, 0.0, 2.0 + 2.0**-40), 0.0, -4.547473508863607e-13, id="peak-on-min"),
+]
+
+
+@pytest.mark.parametrize(("params", "x", "log_pdf"), _TRIANGULAR_LOG_PDF_NEAR_ZERO)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_log_pdf_keeps_relative_digits_where_the_density_crosses_one(
+    regime: Regime, params: tuple[float, float, float], x: float, log_pdf: float
+) -> None:
+    """`ln` of a density rounded to within an ulp of `1` is `1.1e-7` off at `1e-9`; the excess over `1` is formed in one
+    rounding and read through `log1p`."""
+    got = pl.DataFrame({"x": [x] * 4}).select(r=_spelled(Triangular, regime, *params).log_pdf("x"))["r"][0]
+    assert got == pytest.approx(log_pdf, rel=1e-15, abs=0.0)
+
+
+# `(params, x, log_pdf)` with a subnormal piece span, where `span * width` keeps a few bits. `mpmath` at 60 digits.
+_TRIANGULAR_LOG_PDF_SUBNORMAL_SPAN = [
+    pytest.param((0.0, 7 * 2.0**-1074, 1.3), 3 * 2.0**-1074, -0.4165149442947494, id="lower-normal-width"),
+    pytest.param((-1.3, -7 * 2.0**-1074, 0.0), -3 * 2.0**-1074, -0.4165149442947494, id="upper-normal-width"),
+    pytest.param((0.0, 1e-161, 2e-161), 1e-322, -0.011939703744561122, id="lower-tiny-width"),
+    pytest.param((-2e-161, -1e-161, 0.0), -1e-322, -0.011939703744561122, id="upper-tiny-width"),
+]
+
+
+@pytest.mark.parametrize(("params", "x", "log_pdf"), _TRIANGULAR_LOG_PDF_SUBNORMAL_SPAN)
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_log_pdf_keeps_its_digits_where_the_span_is_subnormal(
+    regime: Regime, params: tuple[float, float, float], x: float, log_pdf: float
+) -> None:
+    """A density near `1` on a piece whose `span * width` is subnormal keeps its relative digits."""
+    got = pl.DataFrame({"x": [x] * 4}).select(r=_spelled(Triangular, regime, *params).log_pdf("x"))["r"][0]
+    assert got == pytest.approx(log_pdf, rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_mean_of_a_symmetric_triangle_is_its_mode_exactly(regime: Regime) -> None:
+    """`(-1e8 + 0 + 1e8) / 3` is `0`, where summing `min` with thirds of the widths gives `-3.7e-9`."""
+    got = pl.DataFrame({"z": [0.0] * 4}).select(
+        zero=_spelled(Triangular, regime, -1e8, 0.0, 1e8).mean(),
+        one=_spelled(Triangular, regime, -3.0, 1.0, 5.0).mean(),
+    )
+    assert got["zero"][0] == 0.0
+    assert got["one"][0] == 1.0
+
+
+@pytest.mark.parametrize("moment", MOMENTS)
+def test_triangular_moments_round_alike_with_literal_ends_and_a_column_mode(moment: Moment) -> None:
+    """`Triangular(0.0, pl.col("mode"), 3.0)` matches the all-column spelling bit for bit: polars divides a column by a
+    literal as a reciprocal multiply, which rounds `mode / 3` differently on a third of these rows."""
+    rows = 10_000
+    frame = pl.DataFrame({"lo": [0.0] * rows, "mode": [3.0 * k / rows for k in range(rows)], "hi": [3.0] * rows})
+    got = frame.select(
+        mixed=getattr(Triangular(min=0.0, mode="mode", max=3.0), moment)(),
+        column=getattr(Triangular(min="lo", mode="mode", max="hi"), moment)(),
+    )
+    assert got["mixed"].to_list() == got["column"].to_list()
+
+
+@pytest.mark.parametrize("moment", ["variance", "std"])
+def test_triangular_variance_and_std_stay_finite_at_a_subnormal_width(moment: Moment) -> None:
+    """At width `1e-310` the reciprocal of the width is `inf`, where `0 * inf` would make the variance of a mode on
+    `min` `NaN`."""
+    frame = pl.DataFrame({"mode": [0.0, 5e-311, 1e-310]})
+    got = frame.select(r=getattr(Triangular(min=0.0, mode="mode", max=1e-310), moment)())["r"]
+    assert all(math.isfinite(v) for v in got)
+
+
+def test_triangular_entropy_at_the_smallest_width_is_finite() -> None:
+    """`5e-324 / 2` rounds to `0`; the entropy is `ln(width) + 1/2 - ln 2` instead. `mpmath` at 50 digits."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Triangular(min=0.0, mode=0.0, max=5e-324).entropy())["r"][0]
+    assert got == pytest.approx(-744.6332191019412, rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_triangular_tails_stay_finite_across_a_width_near_the_float_ceiling(regime: Regime) -> None:
+    """On `Triangular(-8e307, 9e307, 9e307)` at `0`, the survival sum's `(mode - x) (span + from_min) / span` would
+    form `span + from_min = 2.5e308`; read as `1 + from_min / span` it stays finite. The masses are `64 / 289` and
+    `225 / 289`.
+    """
+    dist = _spelled(Triangular, regime, -8e307, 9e307, 9e307)
+    got = pl.DataFrame({"x": [0.0] * 4}).select(cdf=dist.cdf("x"), sf=dist.sf("x"), log_sf=dist.log_sf("x"))
+    assert got["cdf"][0] == pytest.approx(64.0 / 289.0, rel=1e-15, abs=0.0)
+    assert got["sf"][0] == pytest.approx(225.0 / 289.0, rel=1e-15, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(math.log(225.0 / 289.0), rel=1e-15, abs=0.0)

@@ -34,6 +34,7 @@ from polars_stats import (
     Pareto,
     Poisson,
     StudentsT,
+    Triangular,
     Uniform,
     Weibull,
 )
@@ -776,3 +777,59 @@ def test_gumbel_log_sf_reads_the_exponent_past_the_underflow() -> None:
     got = pl.DataFrame({"x": points}).select(log_sf=Gumbel().log_sf(pl.col("x")), log_pdf=Gumbel().log_pdf(pl.col("x")))
     assert got["log_sf"].to_list() == [-x for x in points]
     assert got["log_pdf"].to_list() == [-x for x in points]
+
+
+# --------------------------------------------------------------------------------------------------
+# Triangular: a mode on an end is a Beta with one unit shape, and a centred mode makes the two pieces
+# mirror images.
+# --------------------------------------------------------------------------------------------------
+
+# No `0.5`: there the log density of `Beta(1, 2)` is `3.7e-15` where the truth is `ln 1 = 0`.
+_TRIANGULAR_XS = [-0.5, 0.0, 1e-300, 1e-10, 0.1, 0.25, 0.75, 0.9, 1.0 - 1e-10, 1.0, 1.5]
+# No `1e-300`: `Beta.ppf` panics there, inside statrs' inverse.
+_TRIANGULAR_QS = [0.0, 1e-10, 0.1, 0.5, 0.9, 1.0 - 1e-10, 1.0]
+
+
+@pytest.mark.parametrize(
+    ("triangular", "beta"),
+    [
+        (Triangular(min=0.0, mode=0.0, max=1.0), Beta(a=1.0, b=2.0)),
+        (Triangular(min=0.0, mode=1.0, max=1.0), Beta(a=2.0, b=1.0)),
+    ],
+    ids=["mode=min", "mode=max"],
+)
+@pytest.mark.parametrize("method", ["pdf", "log_pdf", "cdf", "log_cdf", "sf", "log_sf", "ppf", "isf"])
+def test_triangular_with_its_mode_on_an_end_is_a_unit_shape_beta(
+    triangular: Triangular, beta: Beta, method: Method
+) -> None:
+    """`Triangular(0, 0, 1)` is `Beta(1, 2)` and `Triangular(0, 1, 1)` is `Beta(2, 1)` on every value-keyed method,
+    the density at the end the mode is on (`2`) included."""
+    column = point_column(method)
+    points = _TRIANGULAR_QS if column == "q" else _TRIANGULAR_XS
+    got = pl.DataFrame({column: points}).select(
+        triangular=getattr(triangular, method)(pl.col(column)), beta=getattr(beta, method)(pl.col(column))
+    )
+    assert_series_equal(got["triangular"], got["beta"], rel_tol=1e-12, abs_tol=0.0, check_names=False)
+
+
+_TRIANGULAR_OFFSETS = [0.0, 2.0**-60, 0.25, 0.5, 1.5, 2.0 - 2.0**-50, 2.0, 3.0]
+"""Distances from the mode of `Triangular(-1, 1, 3)`, dyadic so `1 - d` and `1 + d` are exact and both pieces read
+one distance from their end."""
+
+
+@pytest.mark.parametrize(("lower", "upper"), [("cdf", "sf"), ("log_cdf", "log_sf")])
+def test_triangular_with_a_centred_mode_mirrors_its_tails_bit_for_bit(lower: Method, upper: Method) -> None:
+    """`cdf(mode - d) == sf(mode + d)` to the last bit on `Triangular(-1, 1, 3)`, from the mode out past both ends."""
+    dist = Triangular(min=-1.0, mode=1.0, max=3.0)
+    got = pl.DataFrame({"d": _TRIANGULAR_OFFSETS}).select(
+        lower=getattr(dist, lower)(1.0 - pl.col("d")), upper=getattr(dist, upper)(1.0 + pl.col("d"))
+    )
+    assert_series_equal(got["lower"], got["upper"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+def test_triangular_with_a_centred_mode_mirrors_its_quantiles() -> None:
+    """`ppf(q) - mode == mode - isf(q)` on `Triangular(-1, 1, 3)` to an ulp: `isf` solves on `q` itself, read off
+    `max`, so `q = 1e-300` lands `7.1e-151` inside each end rather than on it."""
+    dist = Triangular(min=-1.0, mode=1.0, max=3.0)
+    got = pl.DataFrame({"q": [1e-300, *_TRIANGULAR_QS]}).select(ppf=dist.ppf(pl.col("q")), isf=dist.isf(pl.col("q")))
+    assert_series_equal(got["ppf"] - 1.0, 1.0 - got["isf"], rel_tol=1e-15, abs_tol=0.0, check_names=False)
