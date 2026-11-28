@@ -34,6 +34,7 @@ pub mod normal;
 pub mod pareto;
 pub mod poisson;
 pub mod students_t;
+pub mod triangular;
 pub mod uniform;
 pub mod weibull;
 
