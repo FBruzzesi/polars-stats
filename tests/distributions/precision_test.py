@@ -799,6 +799,14 @@ def test_gumbel_pdf_keeps_the_mass_precision(regime: Regime, scale: float, z: fl
     assert got == pytest.approx(w * math.exp(-w) / scale, rel=4e-16, abs=0.0)
 
 
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_pdf_exponentiates_the_log_density_where_the_mass_is_subnormal(regime: Regime) -> None:
+    """At `x = -6.58`, `w ~ 720` and `w exp(-w) ~ 8.5e-311` is subnormal: the direct product is `1.9e-11` off, the
+    exponentiated log-density `1.1e-14`. Oracle: `mpmath` at 50 digits."""
+    got = pl.DataFrame({"x": [-6.58] * 4}).select(r=_spelled(Gumbel, regime, 0.0, 1.0).pdf("x"))["r"][0]
+    assert got == pytest.approx(8.538921160312e-311, rel=1e-12, abs=0.0)
+
+
 # --------------------------------------------------------------------------------------------------
 # Pareto: a point just above `scale`, where `ln(x / scale)` has few digits left, and the regimes past
 # where the survival mass, a single `exp`, the literal power, the excess `(x - scale) / scale` or the
