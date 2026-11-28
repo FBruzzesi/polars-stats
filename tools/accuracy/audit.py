@@ -49,7 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Concatenate, Literal, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Concatenate, Literal, NamedTuple, ParamSpec, TypeVar, cast
 
 import mpmath as mp
 import polars as pl
@@ -449,10 +449,21 @@ def uniform_isf(params: Params, q: float) -> mp.mpf:
 # read from its own end, since `1 - sqrt(1 - q)` is `0` at 50 digits for `q = 1e-300`.
 
 
-def triangular_span(params: Params) -> tuple[mp.mpf, mp.mpf, mp.mpf, mp.mpf, mp.mpf, mp.mpf]:
-    """`(min, mode, max, max - min, mode - min, max - mode)` at oracle precision."""
+class TriangleSpans(NamedTuple):
+    """`(min, mode, max)` and the widths `max - min`, `mode - min`, `max - mode`, at oracle precision."""
+
+    lo: mp.mpf
+    mode: mp.mpf
+    hi: mp.mpf
+    width: mp.mpf
+    below: mp.mpf
+    above: mp.mpf
+
+
+def triangular_span(params: Params) -> TriangleSpans:
+    """[`TriangleSpans`] of `params`."""
     lo, mode, hi = (mp.mpf(v) for v in params)
-    return lo, mode, hi, hi - lo, mode - lo, hi - mode
+    return TriangleSpans(lo, mode, hi, hi - lo, mode - lo, hi - mode)
 
 
 def triangular_pdf(params: Params, x: float) -> mp.mpf:
@@ -512,32 +523,33 @@ def _triangular_quantile(near: mp.mpf, sign: int, width: mp.mpf, span: mp.mpf, o
 
 def triangular_ppf(params: Params, q: float) -> mp.mpf:
     """The point with mass `q` below it."""
-    lo, _, _, width, below, above = triangular_span(params)
-    return _triangular_quantile(lo, 1, width, below, above, q)
+    t = triangular_span(params)
+    return _triangular_quantile(t.lo, 1, t.width, t.below, t.above, q)
 
 
 def triangular_isf(params: Params, q: float) -> mp.mpf:
     """The point with mass `q` above it, solved on `q` itself."""
-    _, _, hi, width, below, above = triangular_span(params)
-    return _triangular_quantile(hi, -1, width, above, below, q)
+    t = triangular_span(params)
+    return _triangular_quantile(t.hi, -1, t.width, t.above, t.below, q)
 
 
 def triangular_variance(params: Params, _x: float) -> mp.mpf:
     """`(width^2 - below above) / 18`."""
-    _, _, _, width, below, above = triangular_span(params)
-    return (width**2 - below * above) / 18
+    t = triangular_span(params)
+    return (t.width**2 - t.below * t.above) / 18
 
 
 def triangular_median(params: Params, _x: float) -> mp.mpf:
     """`min + sqrt(width below / 2)` with the mode in the upper half, else `max - sqrt(width above / 2)`."""
-    lo, _, hi, width, below, above = triangular_span(params)
-    return lo + mp.sqrt(width * below / 2) if 2 * below >= width else hi - mp.sqrt(width * above / 2)
+    t = triangular_span(params)
+    if 2 * t.below >= t.width:
+        return t.lo + mp.sqrt(t.width * t.below / 2)
+    return t.hi - mp.sqrt(t.width * t.above / 2)
 
 
 def triangular_entropy(params: Params, _x: float) -> mp.mpf:
     """`1/2 + ln(width / 2)`."""
-    _, _, _, width, _, _ = triangular_span(params)
-    return cast("mp.mpf", mp.mpf(0.5) + mp.log(width / 2))
+    return cast("mp.mpf", mp.mpf(0.5) + mp.log(triangular_span(params).width / 2))
 
 
 # Cauchy oracles. Every method is elementary, so this is a control like Exponential and Uniform. Its
