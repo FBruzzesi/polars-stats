@@ -807,6 +807,35 @@ def test_gumbel_pdf_exponentiates_the_log_density_where_the_mass_is_subnormal(re
     assert got == pytest.approx(8.538921160312e-311, rel=1e-12, abs=0.0)
 
 
+# `(q, ppf(q))` and `(q, isf(q))` of `Gumbel(0, 1)` around the `q` where the quantile crosses `0`: an ulp either side,
+# on it, and `1e-9` and `1e-6` relative away. `mpmath` at 50 digits.
+_GUMBEL_PPF_NEAR_ZERO = [
+    (0.3678794411714423, -1.1711009840963588e-16),
+    (0.36787944117144233, 3.3784855259134224e-17),
+    (0.3678794411714424, 1.8467980892790434e-16),
+    (0.3678794408035629, -9.999999878372002e-10),
+    (0.36787980905088347, 9.999999999271335e-07),
+]
+_GUMBEL_ISF_NEAR_ZERO = [
+    (0.6321205588285576, 3.3557476259667444e-16),
+    (0.6321205588285577, 3.3784855259134224e-17),
+    (0.6321205588285578, -2.68005052078406e-16),
+    (0.6321205581964371, 1.7182819146385383e-09),
+    (0.6321211909491165, -1.7182818283092999e-06),
+]
+
+
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_inverses_keep_relative_digits_where_the_quantile_crosses_zero(regime: Regime, method: str) -> None:
+    """`-ln(-ln q)` near `q = 1/e` takes the `ln` of a number within an ulp of `1` and keeps no relative digits (`9e-2`
+    off at `q = 1/e - 1 ulp`); reading `z` off `e q - 1` keeps them to an ulp or two."""
+    cases = _GUMBEL_PPF_NEAR_ZERO if method == "ppf" else _GUMBEL_ISF_NEAR_ZERO
+    dist = _spelled(Gumbel, regime, 0.0, 1.0)
+    got = pl.DataFrame({"q": [q for q, _ in cases]}).select(r=getattr(dist, method)("q"))["r"].to_list()
+    assert got == pytest.approx([want for _, want in cases], rel=1e-15, abs=0.0)
+
+
 # --------------------------------------------------------------------------------------------------
 # Pareto: a point just above `scale`, where `ln(x / scale)` has few digits left, and the regimes past
 # where the survival mass, a single `exp`, the literal power, the excess `(x - scale) / scale` or the

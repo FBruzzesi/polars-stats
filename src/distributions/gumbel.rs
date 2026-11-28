@@ -1,4 +1,4 @@
-use std::f64::consts::LN_2;
+use std::f64::consts::{E, LN_2};
 
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
@@ -15,6 +15,9 @@ use crate::rng::{
 
 const LOC: ParamDomain = ParamDomain::finite("loc");
 const SCALE: ParamDomain = ParamDomain::positive("scale");
+
+/// `e - E`, the part of Euler's number that [`E`] rounds away.
+const E_ROUNDING_ERROR: f64 = 1.445_646_891_729_250_2e-16;
 
 fn check_params(loc: &Float64Chunked, scale: &Float64Chunked) -> PolarsResult<()> {
     LOC.check_column(loc)?;
@@ -134,20 +137,36 @@ fn derive_ln_sf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     }
 }
 
-/// `z = -ln w` at `w = -ln q`. `ln(-0.0)` is `-inf`, so `q = 1` and `q = -0.0` land on the support ends.
+/// `z = -ln(-ln p)` from `excess = e p - 1`, as `-ln_1p(-ln_1p(excess))`. Near `p = 1/e`, where `z` crosses `0`,
+/// `-ln p` rounds to within an ulp of `1` and its `ln` keeps no relative digits; `excess` keeps them.
+#[inline]
+fn z_from_excess(excess: f64) -> f64 {
+    -(-excess.ln_1p()).ln_1p()
+}
+
+/// `z = -ln w` at `w = -ln q`, and [`z_from_excess`] at `excess = q e - 1` on `[1/4, 1/2]`, around the `q = 1/e`
+/// where `z = 0`. `ln(-0.0)` is `-inf`, so `q = 1` and `q = -0.0` land on the support ends.
 fn derive_ppf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |q: f64| {
-        let w = -q.ln();
-        unstandardise(loc, scale, -w.ln())
+        let z = if (0.25..=0.5).contains(&q) {
+            z_from_excess(q.mul_add(E, -1.0) + q * E_ROUNDING_ERROR)
+        } else {
+            -(-q.ln()).ln()
+        };
+        unstandardise(loc, scale, z)
     }
 }
 
 /// `z = -ln w` at `w = -ln(1 - q)`, read through `ln_1p` so a small `q` keeps its digits rather than being
-/// quantised by `1 - q`.
+/// quantised by `1 - q`; [`z_from_excess`] at `excess = (1 - q) e - 1` on `[1/2, 3/4]`, around `z = 0`.
 fn derive_isf(loc: f64, scale: f64) -> impl Fn(f64) -> f64 {
     move |q: f64| {
-        let w = -(-q).ln_1p();
-        unstandardise(loc, scale, -w.ln())
+        let z = if (0.5..=0.75).contains(&q) {
+            z_from_excess((-q).mul_add(E, E - 1.0) + (1.0 - q) * E_ROUNDING_ERROR)
+        } else {
+            -(-(-q).ln_1p()).ln()
+        };
+        unstandardise(loc, scale, z)
     }
 }
 
