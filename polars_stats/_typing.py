@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         "exponential",
         "gamma",
         "geometric",
+        "gumbel",
         "laplace",
         "lognormal",
         "negativebinomial",

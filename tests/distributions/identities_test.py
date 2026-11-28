@@ -27,6 +27,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Gumbel,
     Laplace,
     NegativeBinomial,
     Normal,
@@ -711,3 +712,67 @@ def test_laplace_isf_is_the_reflected_ppf() -> None:
         isf=dist.isf(pl.col("q")), ppf=dist.ppf(pl.col("q"))
     )
     assert_series_equal(got["isf"], -got["ppf"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+# --------------------------------------------------------------------------------------------------
+# Gumbel(0, 1) is `-ln E` for `E ~ Exponential(1)`: its cdf is `exp(-exp(-x))`, and the survival side switches
+# form twice in `w = exp(-x)`, at `w = ln 2` and at `w = 2^-52`.
+# --------------------------------------------------------------------------------------------------
+
+_GUMBEL_POINTS = [-700.0, -20.0, -3.0, -0.5, 0.0, 0.25, 1.0, 8.0, 30.0, 100.0, 700.0]
+_GUMBEL_LN_2_SWITCH = -math.log(math.log(2.0))
+_GUMBEL_EPSILON_SWITCH = 52.0 * math.log(2.0)
+# Each switch, an ulp either side of it, and one part in `1e9` either side.
+_GUMBEL_SWITCH_POINTS = [
+    point
+    for switch in (_GUMBEL_LN_2_SWITCH, _GUMBEL_EPSILON_SWITCH)
+    for point in (
+        switch * (1.0 - 1e-9),
+        math.nextafter(switch, -math.inf),
+        switch,
+        math.nextafter(switch, math.inf),
+        switch * (1.0 + 1e-9),
+    )
+]
+
+
+def test_gumbel_cdf_is_the_unit_exponential_sf_at_exp_neg_x() -> None:
+    """`Gumbel(0, 1).cdf(x) == Exponential(1).sf(exp(-x))` to an ulp."""
+    got = pl.DataFrame({"x": _GUMBEL_POINTS}).select(
+        gumbel=Gumbel().cdf(pl.col("x")), exponential=Exponential(rate=1.0).sf((-pl.col("x")).exp())
+    )
+    assert_series_equal(got["gumbel"], got["exponential"], rel_tol=1e-15, abs_tol=0.0, check_names=False)
+
+
+def test_gumbel_log_cdf_is_minus_exp_neg_x_bit_for_bit() -> None:
+    """`log_cdf = -exp(-x)` to the last bit, never the log of a cdf that has rounded to `1` or `0`."""
+    got = pl.DataFrame({"x": [*_GUMBEL_POINTS, 800.0]}).select(
+        r=Gumbel().log_cdf(pl.col("x")), want=-(-pl.col("x")).exp()
+    )
+    assert_series_equal(got["r"], got["want"], rel_tol=0.0, abs_tol=0.0, check_names=False)
+
+
+@pytest.mark.parametrize("method", ["sf", "log_sf"])
+def test_gumbel_survival_side_is_continuous_across_its_switches(method: Method) -> None:
+    """`sf` and `log_sf` match Python's `-expm1(-w)` and its log (`log1p(-exp(-w))` above `w = ln 2`) to an ulp on
+    both sides of each switch, so no branch leaves a step."""
+    points = sorted([*_GUMBEL_POINTS, *_GUMBEL_SWITCH_POINTS])
+    got = pl.DataFrame({"x": points}).select(r=getattr(Gumbel(), method)(pl.col("x")))["r"]
+    if method == "sf":
+        want = pl.Series([-math.expm1(-math.exp(-x)) for x in points])
+    else:
+        want = pl.Series(
+            [
+                math.log1p(-math.exp(-w)) if w >= math.log(2.0) else math.log(-math.expm1(-w))
+                for w in (math.exp(-x) for x in points)
+            ]
+        )
+    assert_series_equal(got, want, rel_tol=1e-15, abs_tol=0.0, check_names=False)
+
+
+def test_gumbel_log_sf_reads_the_exponent_past_the_underflow() -> None:
+    """`log_sf` and `log_pdf` are `-x` exactly where `exp(-x)` is subnormal (`720`, `740`) or `0` (`800`, `1e300`)."""
+    points = [720.0, 740.0, 800.0, 1e300]
+    got = pl.DataFrame({"x": points}).select(log_sf=Gumbel().log_sf(pl.col("x")), log_pdf=Gumbel().log_pdf(pl.col("x")))
+    assert got["log_sf"].to_list() == [-x for x in points]
+    assert got["log_pdf"].to_list() == [-x for x in points]

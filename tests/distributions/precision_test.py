@@ -32,6 +32,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Gumbel,
     Laplace,
     Pareto,
     Poisson,
@@ -697,6 +698,142 @@ def test_laplace_entropy_survives_a_scale_whose_two_e_multiple_overflows(regime:
     dist = _spelled(Laplace, regime, 0.0, scale)
     got = pl.DataFrame({"_": range(4)}).select(entropy=dist.entropy())["entropy"][0]
     assert got == pytest.approx(float(scipy_laplace(loc=0.0, scale=scale).entropy()), rel=1e-14)
+
+
+# --------------------------------------------------------------------------------------------------
+# Gumbel: the location-scale overflow cases Laplace pins, and the density's precision where the
+# exponentiated log-density loses digits.
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_standardises_a_point_whose_distance_from_loc_overflows(regime: Regime) -> None:
+    """`Gumbel(-1e308, 1e308)` at `1e308` is two scales out: `(x - loc) / scale` is `inf / 1e308`, so the point is
+    standardised as `x / scale - loc / scale` instead, and every method answers as it would at `z = 2`."""
+    w = math.exp(-2.0)
+    dist = _spelled(Gumbel, regime, -1e308, 1e308)
+    got = pl.DataFrame({"x": [1e308] * 4}).select(
+        log_pdf=dist.log_pdf("x"), cdf=dist.cdf("x"), sf=dist.sf("x"), log_sf=dist.log_sf("x")
+    )
+    assert got["log_pdf"][0] == pytest.approx(-(2.0 + w) - math.log(1e308), rel=1e-15, abs=0.0)
+    assert got["cdf"][0] == pytest.approx(math.exp(-w), rel=1e-15, abs=0.0)
+    assert got["sf"][0] == pytest.approx(-math.expm1(-w), rel=1e-15, abs=0.0)
+    assert got["log_sf"][0] == pytest.approx(math.log(-math.expm1(-w)), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("loc", [1e308, -1e308], ids=lambda loc: f"loc={loc:.0e}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_keeps_an_infinite_point_at_the_support_end(regime: Regime, loc: float) -> None:
+    """An infinite point lands on the support end. At `-inf`, `exp(-z)` is `inf` too, so the log-density reads `-inf`
+    outright rather than `-z - exp(-z) = inf - inf`, and the density follows it rather than `inf * 0`."""
+    dist = _spelled(Gumbel, regime, loc, 0.1)
+    got = pl.DataFrame({"x": [math.inf, -math.inf] * 2}).select(
+        pdf=dist.pdf("x"),
+        log_pdf=dist.log_pdf("x"),
+        cdf=dist.cdf("x"),
+        log_cdf=dist.log_cdf("x"),
+        sf=dist.sf("x"),
+        log_sf=dist.log_sf("x"),
+    )
+    assert got.row(0, named=True) == {
+        "pdf": 0.0,
+        "log_pdf": -math.inf,
+        "cdf": 1.0,
+        "log_cdf": 0.0,
+        "sf": 0.0,
+        "log_sf": -math.inf,
+    }
+    assert got.row(1, named=True) == {
+        "pdf": 0.0,
+        "log_pdf": -math.inf,
+        "cdf": 0.0,
+        "log_cdf": -math.inf,
+        "sf": 1.0,
+        "log_sf": 0.0,
+    }
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_inverses_answer_where_the_offset_from_loc_overflows(regime: Regime) -> None:
+    """`ppf` at `z = -2.5` scales out of `Gumbel(1e308, 1e308)` is `-1.5e308`, but `scale * z` alone is `-inf`; the
+    inverse splits as `scale * (loc / scale + z)` there, as the forward methods do."""
+    q = math.exp(-math.exp(2.5))
+    z = -math.log(-math.log(q))
+    tail = -math.expm1(-math.exp(-2.5))
+    z_tail = -math.log(-math.log1p(-tail))
+    got = pl.DataFrame({"q": [q] * 4, "tail": [tail] * 4}).select(
+        ppf=_spelled(Gumbel, regime, 1e308, 1e308).ppf("q"),
+        isf=_spelled(Gumbel, regime, -1e308, 1e308).isf("tail"),
+    )
+    assert got["ppf"][0] == pytest.approx(1e308 * (1.0 + z), rel=1e-15, abs=0.0)
+    assert got["isf"][0] == pytest.approx(1e308 * (z_tail - 1.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("loc", [1e308, -1e308], ids=lambda loc: f"loc={loc:.0e}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_inverses_keep_the_infinite_endpoints(regime: Regime, loc: float) -> None:
+    """At `scale = 0.1` the endpoint offset `scale * -+inf` and `loc / scale` both overflow, so the split form would
+    read `inf - inf`; the endpoints keep the direct form and land on the support ends."""
+    dist = _spelled(Gumbel, regime, loc, 0.1)
+    got = pl.DataFrame({"q": [0.0, 1.0] * 2}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list()[:2] == [-math.inf, math.inf]
+    assert got["isf"].to_list()[:2] == [math.inf, -math.inf]
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_inverses_keep_a_negative_zero_quantile_on_the_zero_side(regime: Regime) -> None:
+    """`-0.0` is inside `[0, 1]` for the range gate and must still mean `q = 0`: `ln(-0.0)` is `-inf`."""
+    dist = _spelled(Gumbel, regime, 1.5, 2.0)
+    got = pl.DataFrame({"q": [-0.0, 0.0]}).select(ppf=dist.ppf("q"), isf=dist.isf("q"))
+    assert got["ppf"].to_list() == [-math.inf, -math.inf]
+    assert got["isf"].to_list() == [math.inf, math.inf]
+
+
+@pytest.mark.parametrize(("scale", "z"), [(1e-300, 0.0), (1e300, 1.0), (1.0, 30.0)], ids=lambda v: f"{v:g}")
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_pdf_keeps_the_mass_precision(regime: Regime, scale: float, z: float) -> None:
+    """`w exp(-w) / scale` to an ulp or two where `w <= 1`. Exponentiating `-(z + w) - ln scale` instead turns the
+    absolute rounding of that sum into tens to hundreds of ulp of relative error at these points."""
+    w = math.exp(-z)
+    got = pl.DataFrame({"x": [z * scale] * 4}).select(r=_spelled(Gumbel, regime, 0.0, scale).pdf("x"))["r"][0]
+    assert got == pytest.approx(w * math.exp(-w) / scale, rel=4e-16, abs=0.0)
+
+
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_pdf_exponentiates_the_log_density_where_the_mass_is_subnormal(regime: Regime) -> None:
+    """At `x = -6.58`, `w ~ 720` and `w exp(-w) ~ 8.5e-311` is subnormal: the direct product is `1.9e-11` off, the
+    exponentiated log-density `1.1e-14`. Oracle: `mpmath` at 50 digits."""
+    got = pl.DataFrame({"x": [-6.58] * 4}).select(r=_spelled(Gumbel, regime, 0.0, 1.0).pdf("x"))["r"][0]
+    assert got == pytest.approx(8.538921160312e-311, rel=1e-12, abs=0.0)
+
+
+# `(q, ppf(q))` and `(q, isf(q))` of `Gumbel(0, 1)` around the `q` where the quantile crosses `0`: an ulp either side,
+# on it, and `1e-9` and `1e-6` relative away. `mpmath` at 50 digits.
+_GUMBEL_PPF_NEAR_ZERO = [
+    (0.3678794411714423, -1.1711009840963588e-16),
+    (0.36787944117144233, 3.3784855259134224e-17),
+    (0.3678794411714424, 1.8467980892790434e-16),
+    (0.3678794408035629, -9.999999878372002e-10),
+    (0.36787980905088347, 9.999999999271335e-07),
+]
+_GUMBEL_ISF_NEAR_ZERO = [
+    (0.6321205588285576, 3.3557476259667444e-16),
+    (0.6321205588285577, 3.3784855259134224e-17),
+    (0.6321205588285578, -2.68005052078406e-16),
+    (0.6321205581964371, 1.7182819146385383e-09),
+    (0.6321211909491165, -1.7182818283092999e-06),
+]
+
+
+@pytest.mark.parametrize("method", ["ppf", "isf"])
+@pytest.mark.parametrize("regime", DRIVER_REGIMES)
+def test_gumbel_inverses_keep_relative_digits_where_the_quantile_crosses_zero(regime: Regime, method: str) -> None:
+    """`-ln(-ln q)` near `q = 1/e` takes the `ln` of a number within an ulp of `1` and keeps no relative digits (`9e-2`
+    off at `q = 1/e - 1 ulp`); reading `z` off `e q - 1` keeps them to an ulp or two."""
+    cases = _GUMBEL_PPF_NEAR_ZERO if method == "ppf" else _GUMBEL_ISF_NEAR_ZERO
+    dist = _spelled(Gumbel, regime, 0.0, 1.0)
+    got = pl.DataFrame({"q": [q for q, _ in cases]}).select(r=getattr(dist, method)("q"))["r"].to_list()
+    assert got == pytest.approx([want for _, want in cases], rel=1e-15, abs=0.0)
 
 
 # --------------------------------------------------------------------------------------------------

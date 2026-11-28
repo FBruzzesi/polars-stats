@@ -7,8 +7,8 @@ use rand::distr::Distribution as RandDistribution;
 use statrs::distribution::Laplace;
 
 use crate::distributions::{
-    coerce_f64, on_the_line, on_unit_interval, validated_pair, value_keyed_derived_ternary,
-    value_keyed_scalar, ParamDomain,
+    coerce_f64, on_the_line, on_unit_interval, standardise, unstandardise, validated_pair,
+    value_keyed_derived_ternary, value_keyed_scalar, ParamDomain,
 };
 use crate::rng::{
     sample_by_index, sample_per_row_ternary, samples_by_index, samples_f64_output,
@@ -53,31 +53,6 @@ impl LaplaceParams {
     ) -> PolarsResult<Series> {
         self.check()?;
         value_keyed_scalar(value, &derive(self.loc, self.scale), select)
-    }
-}
-
-/// `(value - loc) / scale`, or `value / scale - loc / scale` where the distance overflows (`value` and `loc` of
-/// opposite signs near `f64::MAX`). An infinite `value` keeps the direct form: the split one reads `inf - inf` once
-/// `loc / scale` overflows.
-#[inline]
-fn standardise(loc: f64, scale: f64, value: f64) -> f64 {
-    let distance = value - loc;
-    if distance.is_finite() || value.is_infinite() {
-        distance / scale
-    } else {
-        value / scale - loc / scale
-    }
-}
-
-/// `loc + scale z`, the inverse of [`standardise`], split the same way where `scale z` overflows; an infinite `z`
-/// keeps the direct form.
-#[inline]
-fn unstandardise(loc: f64, scale: f64, z: f64) -> f64 {
-    let offset = scale * z;
-    if offset.is_finite() || z.is_infinite() {
-        loc + offset
-    } else {
-        scale * (loc / scale + z)
     }
 }
 

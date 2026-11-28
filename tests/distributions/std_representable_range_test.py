@@ -22,6 +22,7 @@ from polars_stats import (
     Exponential,
     Gamma,
     Geometric,
+    Gumbel,
     Laplace,
     LogNormal,
     NegativeBinomial,
@@ -96,6 +97,13 @@ def test_laplace_std_is_the_scale_times_root_two(scale: float) -> None:
     """`Laplace(loc, scale).std()` is `scale sqrt(2)`, finite and nonzero wherever `scale` is."""
     got = pl.DataFrame({"z": [0.0]}).select(r=Laplace(scale=scale).std())["r"].item()
     assert got == pytest.approx(scale * math.sqrt(2.0), rel=1e-15, abs=0.0)
+
+
+@pytest.mark.parametrize("scale", _EXTREME_SCALES, ids=lambda scale: f"scale={scale:.0e}")
+def test_gumbel_std_is_the_scale_times_pi_over_root_six(scale: float) -> None:
+    """`Gumbel(loc, scale).std()` is `scale pi / sqrt(6)`, finite and nonzero wherever `scale` is."""
+    got = pl.DataFrame({"z": [0.0]}).select(r=Gumbel(scale=scale).std())["r"].item()
+    assert got == pytest.approx(scale * math.pi / math.sqrt(6.0), rel=1e-15, abs=0.0)
 
 
 _RAYLEIGH_UNIT_STD = math.sqrt(1.0 - math.pi / 4.0)

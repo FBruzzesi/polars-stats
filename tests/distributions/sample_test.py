@@ -23,6 +23,7 @@ from polars_stats import (
     Bernoulli,
     DiscreteUniform,
     Geometric,
+    Gumbel,
     Laplace,
     NegativeBinomial,
     Poisson,
@@ -454,3 +455,32 @@ def test_a_laplace_draw_keeps_its_mean_variance_and_kurtosis() -> None:
     fourth_moment = (((drawn - loc) / sd) ** 4).mean()
     assert isinstance(fourth_moment, float)
     assert abs(fourth_moment - 6.0) <= _CLT_SIGMAS * math.sqrt((2520.0 - 36.0) / _LAPLACE_ROWS)
+
+
+_GUMBEL_ROWS = 200_000
+_GUMBEL_SKEWNESS = 1.1395470994046486
+"""`12 sqrt(6) zeta(3) / pi**3`, the skewness at every parameterisation."""
+_GUMBEL_SIXTH_MOMENT = 91.4142473461869
+"""`E z**6` of the standardised variable, from the cumulants `kappa_n = (n - 1)! zeta(n)`."""
+
+
+def test_a_gumbel_draw_keeps_its_mean_variance_and_skewness() -> None:
+    """The draw keeps the mean `loc + euler_gamma scale`, the variance `pi**2 / 6 scale**2` and the skewness `1.1395`.
+
+    A symmetric draw of the same mean and variance passes the first two and has skewness `0`, so the third moment is
+    what pins the long right tail. On the standardised draw the allowance is `sqrt((E z**6 - E z**3 ** 2) / n)`, and
+    the variance's is `sqrt((E z**4 - 1) / n) = sqrt(4.4 / n)` relative.
+    """
+    loc, scale = -1.25, 2.5
+    mu = loc + np.euler_gamma * scale
+    sd = scale * math.pi / math.sqrt(6.0)
+    drawn = _frame(_GUMBEL_ROWS).select(z=Gumbel(loc=loc, scale=scale).sample(seed=_SEED))["z"]
+    mean, variance = drawn.mean(), drawn.var()
+    assert isinstance(mean, float)
+    assert isinstance(variance, float)
+    assert abs(mean - mu) <= _CLT_SIGMAS * sd / math.sqrt(_GUMBEL_ROWS)
+    assert variance == pytest.approx(sd**2, rel=_CLT_SIGMAS * math.sqrt(4.4 / _GUMBEL_ROWS))
+    third_moment = (((drawn - mu) / sd) ** 3).mean()
+    assert isinstance(third_moment, float)
+    allowance = _CLT_SIGMAS * math.sqrt((_GUMBEL_SIXTH_MOMENT - _GUMBEL_SKEWNESS**2) / _GUMBEL_ROWS)
+    assert abs(third_moment - _GUMBEL_SKEWNESS) <= allowance
