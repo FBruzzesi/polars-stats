@@ -26,6 +26,8 @@ The concrete classes follow, alphabetically, and list only what they define or o
 
 ::: polars_stats.Gamma
 
+::: polars_stats.Gumbel
+
 ::: polars_stats.Laplace
 
 ::: polars_stats.LogNormal

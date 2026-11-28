@@ -98,6 +98,7 @@ may hold any count its dtype can, up to `UInt64`.
 | `ChiSquared(dof)` | `dof > 0` | finite |
 | `Exponential(rate)` | `rate > 0` | finite |
 | `Gamma(shape, rate)` | `shape > 0`, `rate > 0` | both finite |
+| `Gumbel(loc, scale)` | `scale > 0` | both finite |
 | `Laplace(loc, scale)` | `scale > 0` | both finite |
 | `LogNormal(mu, sigma)` | `sigma > 0` | both finite |
 | `Normal(mu, sigma)` | `sigma > 0` | both finite |
@@ -137,7 +138,7 @@ Element dtype is per distribution and is not normalised to `Float64`:
 | `Bernoulli` | `Boolean` |
 | `Binomial`, `Geometric`, `NegativeBinomial`, `Poisson` | `UInt64` |
 | `DiscreteUniform` | `Int64` |
-| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `Laplace`, `LogNormal`, `Normal`, `Pareto`, `StudentsT`, `Uniform`, `Weibull` | `Float64` |
+| `Beta`, `Cauchy`, `ChiSquared`, `Exponential`, `Gamma`, `Gumbel`, `Laplace`, `LogNormal`, `Normal`, `Pareto`, `StudentsT`, `Uniform`, `Weibull` | `Float64` |
 
 | Aspect | Behaviour |
 |---|---|
